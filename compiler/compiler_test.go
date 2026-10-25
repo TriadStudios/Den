@@ -122,16 +122,6 @@ component App() {
 component App() {
     <p>{if 1 { yes }}</p>
 }`, `app.den:3:12: non-boolean condition in if statement`},
-		{"slice element write", `
-component App() {
-    xs := signal([]int{1})
-    <button onclick={xs.Update(func(v []int) []int { v[0] = 2; return v })}>x</button>
-}`, `app.den:4:54: slice elements are read-only`},
-		{"slice compared with nil", `
-func empty(xs []int) bool { return xs == nil }
-component App() {
-    <p>{empty(nil)}</p>
-}`, `app.den:2:36: comparing a []int with nil is not supported`},
 		{"method", `
 type T struct{}
 func (t T) Name() string { return "" }

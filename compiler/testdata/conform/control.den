@@ -1,0 +1,71 @@
+// Loops, closures, named results and generics.
+
+func fib(n int) (r int) {
+	a, b := 0, 1
+	_ = a
+	for i := 0; i < n; i++ {
+		next := a + b
+		a = b
+		b = next
+	}
+	r = a
+	return
+}
+
+func Map[T, U any](xs []T, f func(T) U) []U {
+	out := []U{}
+	for _, x := range xs {
+		out = append(out, f(x))
+	}
+	return out
+}
+
+func divmod(a, b int) (int, int) {
+	return a / b, a % b
+}
+
+func split(n int) (hi, lo int) {
+	hi, lo = n/10, n%10
+	return
+}
+
+func add(a, b int) int { return a + b }
+
+func run() string {
+	out := ""
+	q, r := divmod(17, 5)
+	x, y := 1, 2
+	x, y = y, x
+	q, z := split(42)
+	out += itoa(q) + itoa(r) + itoa(x) + itoa(y) + itoa(z) + itoa(add(divmod(9, 4))) + " "
+	var fns []func() int
+	for i := range 3 {
+		fns = append(fns, func() int { return i * i })
+	}
+	for _, f := range fns {
+		out += itoa(f())
+	}
+	for i := 0; i < 10; i++ {
+		if i%2 == 0 {
+			continue
+		}
+		if i > 7 {
+			break
+		}
+		out += itoa(i)
+	}
+	n := 0
+	for n < 5 {
+		n += 2
+	}
+	words := Map([]int{1, 2, 3}, func(x int) string { return "<" + itoa(x) + ">" })
+	for _, w := range words {
+		out += w
+	}
+	if s := fib(10); s > 50 {
+		out += " big" + itoa(s)
+	} else if t := s * 2; t > 0 {
+		out += " small" + itoa(t)
+	}
+	return out + " " + itoa(n) + " " + itoa(len("héllo")) + " " + itoa(min(4, 2, 8)) + itoa(max(4, 2, 8))
+}

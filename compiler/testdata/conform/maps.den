@@ -1,0 +1,24 @@
+// Maps: zero values on a miss, comma-ok, delete, in-place updates.
+
+func run() string {
+	m := map[string]int{"a": 1}
+	m["b"] += 5
+	m["c"]++
+	delete(m, "a")
+	v, ok := m["a"]
+	w, ok2 := m["b"]
+	alias := m
+	alias["d"] = 4
+	var none map[string]bool
+	out := itoa(len(m)) + itoa(v) + itoa(w) + itoa(m["zzz"]) + itoa(m["d"]) + itoa(len(none))
+	if !ok && ok2 && !none["x"] {
+		out += " ok"
+	}
+	total := 0
+	for k, n := range m {
+		total += n + len(k)
+	}
+	out += " " + itoa(total)
+	clear(m)
+	return out + " " + itoa(len(alias))
+}

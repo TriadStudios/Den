@@ -1,0 +1,42 @@
+// Structs and arrays are values; integer maths truncates like Go.
+
+type Point struct{ X, Y int }
+
+type Box struct {
+	Point
+	Tags  [2]string
+	Inner struct{ Z int }
+}
+
+func move(b Box) Box {
+	b.X += 10
+	b.Inner.Z = 9
+	b.Tags[0] = "moved"
+	return b
+}
+
+func run() string {
+	a := Box{Point: Point{1, 2}}
+	b := move(a)
+	c := a
+	c.Y = 7
+	arr := [3]int{1, 2}
+	arr2 := arr
+	arr2[2] = 5
+	out := itoa(a.X) + itoa(a.Inner.Z) + a.Tags[0] + "|" + itoa(b.X) + itoa(b.Inner.Z) + b.Tags[0] + "|" + itoa(c.Y) + itoa(a.Y)
+	out += "|" + itoa(arr[2]) + itoa(arr2[2])
+	if a == c {
+		out += " eq"
+	} else {
+		out += " ne"
+	}
+	if a.Point == (Point{1, 2}) {
+		out += " eq"
+	}
+	out += " " + itoa(7/2) + itoa(-7/2) + itoa(7%3) + itoa(-7%3)
+	x, y := 17, 5
+	out += " " + itoa(x/y) + itoa(-x/y)
+	x /= 2
+	out += " " + itoa(x)
+	return out
+}

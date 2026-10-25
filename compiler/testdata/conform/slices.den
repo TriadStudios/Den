@@ -1,0 +1,50 @@
+// Slices share backing arrays and grow as in Go.
+
+type T struct{ N int }
+
+func show(xs []int) string {
+	out := "["
+	for i, x := range xs {
+		if i > 0 {
+			out += " "
+		}
+		out += itoa(x)
+	}
+	return out + "]"
+}
+
+func sum(base int, xs ...int) int {
+	for _, x := range xs {
+		base += x
+	}
+	return base
+}
+
+func run() string {
+	a := []int{1, 2, 3, 4}
+	b := a[1:3]
+	b[0] = 20
+	c := append(b, 30)
+	d := a[:2:2]
+	d = append(d, 99)
+	var n []int
+	n = append(n, 7)
+	big := make([]int, 0)
+	for i := range 10000 {
+		big = append(big, i)
+	}
+	m := make([]int, 3, 10)
+	k := copy(m, a)
+	ts := []T{{1}, {2}}
+	ts[1].N = 5
+	var none []int
+	grow := []int{}
+	caps := ""
+	for i := range 5 {
+		grow = append(grow, i)
+		caps += itoa(cap(grow)) + ","
+	}
+	return show(a) + show(b) + show(c) + show(d) + show(n) + " " + itoa(len(big)) + " " + itoa(big[9999]) +
+		" " + show(m) + itoa(k) + " " + itoa(cap(b)) + " " + itoa(ts[1].N) + " " + itoa(sum(1, 2, 3)) + " " +
+		itoa(sum(1, a[:2]...)) + " " + itoa(sum(5)) + " " + itoa(len(none)) + " " + itoa(len(none[0:0])) + " " + caps
+}

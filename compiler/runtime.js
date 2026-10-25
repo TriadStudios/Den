@@ -26,12 +26,14 @@ class $Node {
     return this.value;
   }
   set(v) {
-    if (Object.is(v, this.value) && !(v instanceof Map)) return; // maps change in place
+    if (Object.is(v, this.value) && !$mutable(v)) return;
     this.value = v;
     if (this.observers) for (const o of this.observers) $stale(o, 2);
   }
   update(f) { this.set(f(this.value)); }
 }
+// Maps and slices change in place, so setting one always notifies.
+function $mutable(v) { return v instanceof Map || v instanceof $Slice; }
 function $stale(n, state) {
   if (n.state >= state) return;
   if (n.state === 0 && n.effect) {
@@ -59,7 +61,7 @@ function $update(n) {
   if (old) for (const s of old) if (!n.sources?.has(s)) s.observers?.delete(n);
   if (n.sources && !n.dead) for (const s of n.sources) (s.observers ??= new Set()).add(n);
   n.state = 0;
-  if (!n.effect && n.observers && (!Object.is(before, n.value) || n.value instanceof Map)) for (const o of n.observers) o.state = 2;
+  if (!n.effect && n.observers && (!Object.is(before, n.value) || $mutable(n.value))) for (const o of n.observers) o.state = 2;
 }
 function $flush() {
   for (let rounds = 0; $queue.length; rounds++) {
@@ -216,6 +218,42 @@ function $lis(a) {
   for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) keep.add(i);
   return keep;
 }
+// A Go slice is a window onto a shared backing array, as in Go: append
+// grows in place while there is capacity, and slices that share an array
+// see each other's writes. nil is null.
+class $Slice {
+  constructor(a, o, n, c) { this.a = a; this.o = o; this.n = n; this.c = c; }
+  toJSON() { return $arr(this); }
+}
+function $sl(a) { return new $Slice(a, 0, a.length, a.length); }
+function $arr(s) { return s === null ? [] : s.o === 0 && s.n === s.a.length ? s.a : s.a.slice(s.o, s.o + s.n); }
+function $slen(s) { return s === null ? 0 : s.n; }
+function $scap(s) { return s === null ? 0 : s.c; }
+function $panic(msg) { throw new Error("den: " + msg); }
+function $at(s, i) { if (s === null || i < 0 || i >= s.n) $panic("index out of range"); return s.a[s.o + i]; }
+function $put(s, i, v) { if (s === null || i < 0 || i >= s.n) $panic("index out of range"); s.a[s.o + i] = v; }
+function $slice(s, lo, hi = $slen(s), max = $scap(s)) {
+  if (lo < 0 || hi < lo || max < hi || max > $scap(s)) $panic("slice bounds out of range");
+  return s === null ? null : new $Slice(s.a, s.o + lo, hi - lo, max - lo);
+}
+function $append(s, vs) {
+  const n = $slen(s), m = n + vs.length;
+  if (s !== null && m <= s.c) {
+    for (let i = 0; i < vs.length; i++) s.a[s.o + n + i] = vs[i];
+    return new $Slice(s.a, s.o, m, s.c);
+  }
+  if (!vs.length) return s;
+  const a = s === null ? [] : s.a.slice(s.o, s.o + n);
+  for (const v of vs) a.push(v);
+  return new $Slice(a, 0, m, Math.max(m, 2 * $scap(s)));
+}
+function $make(n, c, zero) { return new $Slice(Array(n).fill(zero), 0, n, c); }
+function $copy(d, s) {
+  const n = Math.min($slen(d), $slen(s));
+  if (n) { const t = s.a.slice(s.o, s.o + n); for (let i = 0; i < n; i++) d.a[d.o + i] = t[i]; }
+  return n;
+}
+function $fill(s, zero) { for (let i = 0; i < $slen(s); i++) s.a[s.o + i] = zero; }
 function $entries(m) { const a = [...m.values()]; a.$k = [...m.keys()]; return a; }
 function $seq(n) { return Array.from({ length: n }, (_, i) => i); }
 // $eq is Go == for structs and arrays.

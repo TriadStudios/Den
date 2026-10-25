@@ -203,9 +203,6 @@ func (e *emitter) params(fl *ast.FieldList) string {
 			if n.Name == "_" {
 				p = e.name("$p")
 			}
-			if _, ok := f.Type.(*ast.Ellipsis); ok {
-				p = "..." + p
-			}
 			out = append(out, p)
 		}
 	}
@@ -336,6 +333,9 @@ func (e *emitter) forNode(parent string, n *For, svg bool) {
 	b, isInt := e.ck.info.TypeOf(rs.X).Underlying().(*types.Basic)
 	isInt = isInt && b.Info()&types.IsInteger != 0
 	list := e.expr(rs.X)
+	if isSlice(e.ck.info.TypeOf(rs.X)) {
+		list = "$arr(" + list + ")"
+	}
 	if !e.ck.reactive(rs.X) {
 		l := e.name("$l")
 		e.line("const %s = %s;", l, list)
@@ -424,6 +424,14 @@ func (e *emitter) stmt(s ast.Stmt) {
 		}
 		for _, spec := range gd.Specs {
 			vs := spec.(*ast.ValueSpec)
+			if len(vs.Names) > 1 && len(vs.Values) == 1 {
+				t := e.name("$r")
+				e.line("const %s = %s;", t, e.expr(vs.Values[0]))
+				for i, n := range vs.Names {
+					e.line("let %s = %s[%d];", jsIdent(n.Name), t, i)
+				}
+				continue
+			}
 			for i, n := range vs.Names {
 				var init string
 				if i < len(vs.Values) {
@@ -463,10 +471,17 @@ func (e *emitter) stmt(s ast.Stmt) {
 		switch {
 		case len(s.Results) == 1:
 			e.line("return %s;", e.expr(s.Results[0]))
-		case len(s.Results) > 1 || len(e.results) > 1:
-			e.errAt(s, "multiple return values are not supported yet")
+		case len(s.Results) > 1:
+			// Multiple results travel as an array.
+			var rs []string
+			for _, r := range s.Results {
+				rs = append(rs, e.expr(r))
+			}
+			e.line("return [%s];", strings.Join(rs, ", "))
 		case len(e.results) == 1:
 			e.line("return %s;", e.results[0])
+		case len(e.results) > 1:
+			e.line("return [%s];", strings.Join(e.results, ", "))
 		default:
 			e.line("return;")
 		}
@@ -535,13 +550,19 @@ func (e *emitter) rangeStmt(s *ast.RangeStmt) {
 			e.line("  let %s = %s;", k, i)
 		}
 	case *types.Slice, *types.Array:
-		e.line("for (let %s = 0; %s < %s.length; %s++) {", i, i, l, i)
+		elem := l + "[" + i + "]"
+		if _, ok := t.(*types.Slice); ok {
+			e.line("for (let %s = 0; %s < $slen(%s); %s++) {", i, i, l, i)
+			elem = l + ".a[" + l + ".o + " + i + "]"
+		} else {
+			e.line("for (let %s = 0; %s < %s.length; %s++) {", i, i, l, i)
+		}
 		var vars []string
 		if k != "" {
 			vars = append(vars, k+" = "+i)
 		}
 		if v != "" {
-			vars = append(vars, v+" = "+l+"["+i+"]")
+			vars = append(vars, v+" = "+elem)
 		}
 		if len(vars) > 0 {
 			e.line("  let %s;", strings.Join(vars, ", "))
@@ -573,7 +594,7 @@ func (e *emitter) assign(s *ast.AssignStmt) {
 		m, k := e.name("$m"), e.name("$k")
 		e.line("const %s = %s, %s = %s;", m, e.expr(ix.X), k, e.expr(ix.Index))
 		has := m + ".has(" + k + ")"
-		val := has + " ? " + m + ".get(" + k + ") : " + zeroValue(e.ck.info.TypeOf(ix))
+		val := has + " ? " + m + ".get(" + k + ") : " + zeroValue(e.ck.info.TypeOf(ix.X).Underlying().(*types.Map).Elem())
 		if s.Tok == token.DEFINE {
 			var decls []string
 			if n := loopVar(s.Lhs[0]); n != "" {
@@ -591,8 +612,31 @@ func (e *emitter) assign(s *ast.AssignStmt) {
 		e.store(s.Lhs[1], has)
 		return
 	}
-	if len(s.Lhs) != 1 || len(s.Rhs) != 1 {
-		e.errAt(s, "multiple assignment is not supported yet")
+	if len(s.Lhs) > 1 {
+		// a, b = b, a and a, b := f(): evaluate everything, then assign.
+		var vals []string
+		if len(s.Rhs) == 1 {
+			t := e.name("$r")
+			e.line("const %s = %s;", t, e.expr(s.Rhs[0]))
+			for i := range s.Lhs {
+				vals = append(vals, fmt.Sprintf("%s[%d]", t, i))
+			}
+		} else {
+			var decls []string
+			for _, r := range s.Rhs {
+				t := e.name("$r")
+				decls = append(decls, t+" = "+e.expr(r))
+				vals = append(vals, t)
+			}
+			e.line("const %s;", strings.Join(decls, ", "))
+		}
+		for i, l := range s.Lhs {
+			if id, ok := l.(*ast.Ident); ok && s.Tok == token.DEFINE && e.ck.info.Defs[id] != nil {
+				e.line("let %s = %s;", jsIdent(id.Name), vals[i])
+			} else if !isBlank(l) {
+				e.store(l, vals[i])
+			}
+		}
 		return
 	}
 	lhs, rhs := s.Lhs[0], s.Rhs[0]
@@ -648,14 +692,19 @@ func (e *emitter) store(lhs ast.Expr, val string) {
 			e.line("%s.set(%s, %s);", e.expr(x.X), e.expr(x.Index), val)
 			return
 		}
-		if _, ok := e.ck.info.TypeOf(x.X).Underlying().(*types.Array); !ok {
-			e.errAt(x, "slice elements are read-only in den for now; build a new slice instead (for example with append)")
+		if isSlice(e.ck.info.TypeOf(x.X)) {
+			e.line("$put(%s, %s, %s);", e.expr(x.X), e.expr(x.Index), val)
 			return
 		}
 		e.store(x.X, e.expr(x.X)+".with("+e.expr(x.Index)+", "+val+")")
 	default:
 		e.errAt(lhs, "cannot assign to this expression")
 	}
+}
+
+func isBlank(x ast.Expr) bool {
+	id, ok := x.(*ast.Ident)
+	return ok && id.Name == "_"
 }
 
 // commaOk reports whether s is `v, ok := m[k]` (or =) on a map.
@@ -734,7 +783,7 @@ func (e *emitter) binary(op token.Token, x, y ast.Expr, ys string, result types.
 				return "!$eq(" + xs + ", " + ys + ")"
 			}
 			return "$eq(" + xs + ", " + ys + ")"
-		case *types.Slice, *types.Map:
+		case *types.Map:
 			e.errAt(x, "comparing a %s with nil is not supported; use len(...) == 0", t)
 		}
 	}
@@ -755,10 +804,8 @@ func (e *emitter) expr(x ast.Expr) string {
 		case "true", "false":
 			return x.Name
 		case "nil":
-			if t := e.ck.nilTypes[x]; t != nil && isSlice(t) {
-				return "[]" // a nil slice behaves like an empty one
-			} else if t != nil && isMap(t) {
-				return "new Map()" // and a nil map like an empty one
+			if t := e.ck.nilTypes[x]; t != nil && isMap(t) {
+				return "new Map()" // a nil map behaves like an empty one
 			}
 			return "null"
 		}
@@ -796,7 +843,9 @@ func (e *emitter) expr(x ast.Expr) string {
 		return e.expr(x.X) + "." + strings.Join(fieldPath(sel), ".")
 	case *ast.IndexExpr:
 		switch e.ck.info.TypeOf(x.X).Underlying().(type) {
-		case *types.Slice, *types.Array:
+		case *types.Slice:
+			return "$at(" + e.expr(x.X) + ", " + e.expr(x.Index) + ")"
+		case *types.Array:
 			return e.expr(x.X) + "[" + e.expr(x.Index) + "]"
 		case *types.Map:
 			return "(" + e.expr(x.X) + ".get(" + e.expr(x.Index) + ") ?? " + zeroValue(e.ck.info.TypeOf(x)) + ")"
@@ -808,24 +857,23 @@ func (e *emitter) expr(x ast.Expr) string {
 	case *ast.IndexListExpr:
 		return e.expr(x.X)
 	case *ast.SliceExpr:
-		switch e.ck.info.TypeOf(x.X).Underlying().(type) {
-		case *types.Slice, *types.Array:
-		default:
+		if !isSlice(e.ck.info.TypeOf(x.X)) {
 			e.errAt(x, "slicing %s is not supported yet", e.ck.info.TypeOf(x.X))
 			return "undefined"
 		}
-		if x.Slice3 {
-			e.errAt(x, "3-index slices are not supported")
-			return "undefined"
-		}
-		lo, hi := "0", ""
+		args := []string{e.expr(x.X), "0", "undefined"}
 		if x.Low != nil {
-			lo = e.expr(x.Low)
+			args[1] = e.expr(x.Low)
 		}
 		if x.High != nil {
-			hi = ", " + e.expr(x.High)
+			args[2] = e.expr(x.High)
 		}
-		return e.expr(x.X) + ".slice(" + lo + hi + ")"
+		if x.Max != nil {
+			args = append(args, e.expr(x.Max))
+		} else if x.High == nil {
+			args = args[:2]
+		}
+		return "$slice(" + strings.Join(args, ", ") + ")"
 	}
 	e.errAt(x, "this expression is not supported yet")
 	return "undefined"
@@ -865,8 +913,9 @@ func (e *emitter) compositeLit(x *ast.CompositeLit) string {
 			for int64(len(parts)) < a.Len() {
 				parts = append(parts, zeroValue(a.Elem()))
 			}
+			return "[" + strings.Join(parts, ", ") + "]"
 		}
-		return "[" + strings.Join(parts, ", ") + "]"
+		return "$sl([" + strings.Join(parts, ", ") + "])"
 	case *types.Map:
 		for _, el := range x.Elts {
 			kv := el.(*ast.KeyValueExpr)
@@ -881,12 +930,20 @@ func (e *emitter) compositeLit(x *ast.CompositeLit) string {
 func (e *emitter) call(x *ast.CallExpr) string {
 	args := func() string {
 		var out []string
-		for i, a := range x.Args {
-			s := e.expr(a)
-			if x.Ellipsis.IsValid() && i == len(x.Args)-1 {
-				s = "..." + s
+		for _, a := range x.Args {
+			out = append(out, e.expr(a))
+		}
+		if len(x.Args) == 1 {
+			if tup, ok := e.ck.info.TypeOf(x.Args[0]).(*types.Tuple); ok && tup.Len() > 1 {
+				return "..." + out[0] // f(g()) where g returns several values
 			}
-			out = append(out, s)
+		}
+		// A variadic function takes its extra arguments as one slice, as in Go.
+		if sig, ok := e.ck.info.TypeOf(x.Fun).(*types.Signature); ok && sig.Variadic() && !x.Ellipsis.IsValid() {
+			n := sig.Params().Len() - 1
+			if n <= len(out) {
+				out = append(out[:n:n], "$sl(["+strings.Join(out[n:], ", ")+"])")
+			}
 		}
 		return strings.Join(out, ", ")
 	}
@@ -981,28 +1038,43 @@ func (e *emitter) builtin(name string, x *ast.CallExpr) string {
 			}
 		case *types.Map:
 			return arg(0) + ".size"
+		case *types.Slice:
+			return "$s" + name + "(" + arg(0) + ")"
 		}
 		return arg(0) + ".length"
 	case "delete":
 		return arg(0) + ".delete(" + arg(1) + ")"
 	case "clear":
-		if isMap(e.ck.info.TypeOf(x.Args[0])) {
+		switch t := e.ck.info.TypeOf(x.Args[0]).Underlying().(type) {
+		case *types.Map:
 			return arg(0) + ".clear()"
+		case *types.Slice:
+			return "$fill(" + arg(0) + ", " + zeroValue(t.Elem()) + ")"
 		}
 	case "append":
-		out := []string{"..." + arg(0)}
-		for i := 1; i < len(x.Args); i++ {
-			if x.Ellipsis.IsValid() && i == len(x.Args)-1 {
-				out = append(out, "..."+arg(i))
-			} else {
-				out = append(out, arg(i))
+		if x.Ellipsis.IsValid() {
+			if isString(e.ck.info.TypeOf(x.Args[1])) {
+				break
 			}
+			return "$append(" + arg(0) + ", $arr(" + arg(1) + "))"
 		}
-		return "[" + strings.Join(out, ", ") + "]"
+		var out []string
+		for i := 1; i < len(x.Args); i++ {
+			out = append(out, arg(i))
+		}
+		return "$append(" + arg(0) + ", [" + strings.Join(out, ", ") + "])"
+	case "copy":
+		if isSlice(e.ck.info.TypeOf(x.Args[1])) {
+			return "$copy(" + arg(0) + ", " + arg(1) + ")"
+		}
 	case "make":
 		switch t := e.ck.info.TypeOf(x).Underlying().(type) {
 		case *types.Slice:
-			return "Array(" + arg(1) + ").fill(" + zeroValue(t.Elem()) + ")"
+			c := arg(1)
+			if len(x.Args) > 2 {
+				c = arg(2)
+			}
+			return "$make(" + arg(1) + ", " + c + ", " + zeroValue(t.Elem()) + ")"
 		case *types.Map:
 			return "new Map()"
 		}
@@ -1017,6 +1089,11 @@ func (e *emitter) builtin(name string, x *ast.CallExpr) string {
 	}
 	e.errAt(x, "%s is not supported here yet", name)
 	return "undefined"
+}
+
+func isString(t types.Type) bool {
+	b, ok := t.Underlying().(*types.Basic)
+	return ok && b.Info()&types.IsString != 0
 }
 
 func isMap(t types.Type) bool {
@@ -1082,8 +1159,6 @@ func zeroValue(t types.Type) string {
 		return "({" + strings.Join(parts, ", ") + "})"
 	case *types.Array:
 		return fmt.Sprintf("Array(%d).fill(%s)", u.Len(), zeroValue(u.Elem()))
-	case *types.Slice:
-		return "[]"
 	case *types.Map:
 		return "new Map()"
 	}

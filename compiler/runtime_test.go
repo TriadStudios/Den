@@ -336,3 +336,48 @@ log(html(find("ul")), "kept:", findAll("li").map((li) => li.mark ?? "new").join(
 		`<ul><li>ann:1</li><li>bob:2</li></ul> a=2 zed missing 0 0`,
 		`<ul><li>bob:12</li><li>cat:3</li></ul> kept: new,new`)
 }
+
+func TestBoundsCheck(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    xs := []int{1}
+    <button onclick={xs[0] = xs[5]}>oob</button>
+}`, `try { click(find("button")); } catch (e) { log(e.message); }`)
+	expectLines(t, got, `den: index out of range`)
+}
+
+// TestGoConformance runs each testdata/conform/*.den file (plain Go
+// declarations) with Go and with den and requires identical output. Each
+// file declares func run() string.
+func TestGoConformance(t *testing.T) {
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not on PATH")
+	}
+	files, _ := filepath.Glob("testdata/conform/*.den")
+	if len(files) == 0 {
+		t.Fatal("no conformance files")
+	}
+	for _, f := range files {
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			main := "package main\n\nimport (\n\t\"fmt\"\n\t\"strconv\"\n)\n\nfunc itoa(n int) string { return strconv.Itoa(n) }\n\nfunc main() { fmt.Println(run()) }\n\n" + string(src)
+			os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0o644)
+			os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module conform\n\ngo 1.24\n"), 0o644)
+			cmd := exec.Command(goTool, "run", ".")
+			cmd.Dir = dir
+			want, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("go run: %v\n%s", err, want)
+			}
+			got := runApp(t, string(src)+"\ncomponent App() {\n    <p>{run()}</p>\n}\n", `log(find("p").textContent);`)
+			if got != strings.TrimSpace(string(want)) {
+				t.Errorf("den and Go differ\n  go: %s\n den: %s", strings.TrimSpace(string(want)), got)
+			}
+		})
+	}
+}
