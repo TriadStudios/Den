@@ -29,6 +29,8 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test -race ./...
+      - name: size and speed budgets
+        run: go test -run Budget -v ./compiler
       - name: build examples
         run: |
           go build -o bin/den ./cmd/den
