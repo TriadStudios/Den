@@ -8,13 +8,15 @@
 //	}
 //
 // The Go statements at the top of a component body are real Go, checked by
-// go/types. The markup below them is parsed here.
+// go/types. The markup below them is parsed here. Plain Go declarations
+// (types, constants and functions) may sit between components.
 package compiler
 
 import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"html"
 	"sort"
@@ -67,6 +69,13 @@ func (l ErrorList) sorted() ErrorList {
 type File struct {
 	Name       string
 	Components []*Component
+	Decls      []*GoDecl
+}
+
+// GoDecl is plain Go source between components.
+type GoDecl struct {
+	Src string
+	Pos Pos
 }
 
 // Component is one `component Name(params) { ... }` block.
@@ -85,7 +94,7 @@ type Component struct {
 // Param is one component parameter (prop).
 type Param struct{ Name, Type string }
 
-// Node is a markup node: *Element, *Text or *Interp.
+// Node is a markup node: *Element, *Text, *Interp, *If or *For.
 type Node interface{ pos() Pos }
 
 // Element is an HTML element or a component use (capitalised tag).
@@ -126,9 +135,31 @@ type Interp struct {
 	Pos_ Pos
 }
 
+// If is `{if cond { ... } else { ... }}` in markup. An `else if` is stored
+// as an Else holding a single *If.
+type If struct {
+	Pos_    Pos
+	Cond    string
+	CondPos Pos
+	Then    []Node
+	Else    []Node
+}
+
+// For is `{for i, x := range xs key x.ID { ... }}` in markup.
+type For struct {
+	Pos_      Pos
+	Header    string // "i, x := range xs"
+	HeaderPos Pos
+	Key       string
+	KeyPos    Pos
+	Body      []Node
+}
+
 func (e *Element) pos() Pos { return e.Pos }
 func (t *Text) pos() Pos    { return t.Pos_ }
 func (i *Interp) pos() Pos  { return i.Pos_ }
+func (n *If) pos() Pos      { return n.Pos_ }
+func (n *For) pos() Pos     { return n.Pos_ }
 
 // IsComponent reports whether the tag names a component rather than HTML.
 func (e *Element) IsComponent() bool {
@@ -170,6 +201,10 @@ func Parse(name, src string) (f *File, err error) {
 		if p.eof() {
 			break
 		}
+		if !p.atWord("component") {
+			f.Decls = append(f.Decls, p.parseGoDecls())
+			continue
+		}
 		c := p.parseComponent()
 		if seen[c.Name] {
 			p.failAt(c.NamePos, "component %s is declared twice", c.Name)
@@ -207,6 +242,15 @@ func (p *parser_) peekAt(n int) byte {
 		return 0
 	}
 	return p.src[p.off+n]
+}
+
+// atWord reports whether the identifier w starts at p.off.
+func (p *parser_) atWord(w string) bool {
+	if !strings.HasPrefix(p.src[p.off:], w) {
+		return false
+	}
+	c := p.peekAt(len(w))
+	return !isLetter(c) && !isDigit(c)
 }
 
 func (p *parser_) expect(s string) {
@@ -275,8 +319,82 @@ func (p *parser_) readName() string {
 	return p.src[start:p.off]
 }
 
+// parseGoDecls reads plain Go declarations up to the next `component` at the
+// start of a line. go/parser and go/types check them later.
+func (p *parser_) parseGoDecls() *GoDecl {
+	start := p.off
+	depth := 0
+	lineStart := false
+	for !p.eof() {
+		c := p.src[p.off]
+		switch {
+		case c == '\n':
+			lineStart = true
+			p.off++
+			continue
+		case c == ' ' || c == '\t' || c == '\r':
+			p.off++
+			continue
+		case lineStart && depth == 0 && p.atWord("component"):
+			return &GoDecl{Src: p.src[start:p.off], Pos: p.posAt(start)}
+		case p.atLiteral():
+			p.skipLiteral()
+			lineStart = false
+			continue
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		}
+		lineStart = false
+		p.off++
+	}
+	return &GoDecl{Src: p.src[start:], Pos: p.posAt(start)}
+}
+
+// atLiteral reports whether a Go string, rune or comment starts at p.off.
+func (p *parser_) atLiteral() bool {
+	c := p.peek()
+	return c == '"' || c == '\'' || c == '`' || (c == '/' && (p.peekAt(1) == '/' || p.peekAt(1) == '*'))
+}
+
+// skipLiteral moves past the Go string, rune or comment at p.off.
+func (p *parser_) skipLiteral() {
+	start := p.posAt(p.off)
+	rest := p.src[p.off:]
+	switch {
+	case strings.HasPrefix(rest, "//"):
+		if i := strings.IndexByte(rest, '\n'); i >= 0 {
+			p.off += i
+		} else {
+			p.off = len(p.src)
+		}
+		return
+	case strings.HasPrefix(rest, "/*"):
+		i := strings.Index(rest[2:], "*/")
+		if i < 0 {
+			p.failAt(start, "unterminated comment")
+		}
+		p.off += i + 4
+		return
+	}
+	q := rest[0]
+	for i := 1; i < len(rest); i++ {
+		switch {
+		case rest[i] == '\\' && q != '`':
+			i++
+		case rest[i] == q:
+			p.off += i + 1
+			return
+		case rest[i] == '\n' && q != '`':
+			p.failAt(start, "unterminated literal")
+		}
+	}
+	p.failAt(start, "unterminated literal")
+}
+
 func (p *parser_) parseComponent() *Component {
-	if !strings.HasPrefix(p.src[p.off:], "component") || isLetter(p.peekAt(len("component"))) {
+	if !p.atWord("component") {
 		p.fail("expected 'component' declaration")
 	}
 	p.off += len("component")
@@ -468,22 +586,38 @@ func (p *parser_) parseAttr(el *Element) *Attr {
 }
 
 func (p *parser_) parseChildren(el *Element) {
+	el.Children = p.parseNodes(el, el.Pos)
+}
+
+// parseNodes parses markup up to the closing tag of el or, when el is nil, up
+// to the '}' that ends a control-flow block opened at open.
+func (p *parser_) parseNodes(el *Element, open Pos) []Node {
+	var nodes []Node
 	for {
 		if p.eof() {
-			p.failAt(el.Pos, "unclosed <%s>", el.Tag)
+			if el != nil {
+				p.failAt(el.Pos, "unclosed <%s>", el.Tag)
+			}
+			p.failAt(open, "unclosed {")
 		}
 		rest := p.src[p.off:]
 		switch {
+		case el == nil && rest[0] == '}':
+			p.off++
+			return nodes
 		case strings.HasPrefix(rest, "</"):
 			closePos := p.posAt(p.off)
 			p.off += 2
 			name := p.readName()
+			if el == nil {
+				p.failAt(closePos, "</%s> has no matching open tag inside this block", name)
+			}
 			if name != el.Tag {
 				p.failAt(closePos, "</%s> does not match <%s> opened at line %d", name, el.Tag, el.Pos.Line)
 			}
 			p.skipSpace()
 			p.expect(">")
-			return
+			return nodes
 		case strings.HasPrefix(rest, "<!--"):
 			end := strings.Index(rest, "-->")
 			if end < 0 {
@@ -491,26 +625,220 @@ func (p *parser_) parseChildren(el *Element) {
 			}
 			p.off += end + 3
 		case rest[0] == '<':
-			el.Children = append(el.Children, p.parseElement(false))
+			nodes = append(nodes, p.parseElement(false))
+		case rest[0] == '{' && p.controlWord() != "":
+			nodes = append(nodes, p.parseControl())
 		case rest[0] == '{':
-			pos := p.posAt(p.off)
 			src, srcPos := p.readBraced()
 			trimmed := strings.TrimSpace(src)
 			if trimmed == "" || (strings.HasPrefix(trimmed, "/*") && strings.HasSuffix(trimmed, "*/")) {
 				continue
 			}
-			_ = pos
-			el.Children = append(el.Children, &Interp{Src: src, Pos_: srcPos})
+			nodes = append(nodes, &Interp{Src: src, Pos_: srcPos})
 		default:
 			start := p.off
-			for !p.eof() && p.peek() != '<' && p.peek() != '{' {
+			for !p.eof() && p.peek() != '<' && p.peek() != '{' && (el != nil || p.peek() != '}') {
 				p.off++
 			}
-			if t := normalizeText(p.src[start:p.off]); t != "" {
-				el.Children = append(el.Children, &Text{Value: html.UnescapeString(t), Pos_: p.posAt(start)})
+			t := normalizeText(p.src[start:p.off])
+			if el == nil && len(nodes) == 0 {
+				t = strings.TrimLeft(t, " ") // space just inside a block's braces is layout
+			}
+			if el == nil && p.peek() == '}' {
+				t = strings.TrimRight(t, " ")
+			}
+			if t != "" {
+				nodes = append(nodes, &Text{Value: html.UnescapeString(t), Pos_: p.posAt(start)})
 			}
 		}
 	}
+}
+
+// controlWord returns "if" or "for" when the '{' at p.off opens a
+// control-flow block.
+func (p *parser_) controlWord() string {
+	save := p.off
+	defer func() { p.off = save }()
+	p.off++
+	p.skipSpace()
+	for _, w := range []string{"if", "for"} {
+		if p.atWord(w) {
+			return w
+		}
+	}
+	return ""
+}
+
+func (p *parser_) parseControl() Node {
+	open := p.posAt(p.off)
+	kw := p.controlWord()
+	p.off++
+	p.skipSpace()
+	var n Node
+	if kw == "if" {
+		n = p.parseIf()
+	} else {
+		n = p.parseFor()
+	}
+	p.skipSpace()
+	if p.peek() != '}' {
+		p.fail("expected } to close the {%s opened at line %d", kw, open.Line)
+	}
+	p.off++
+	return n
+}
+
+func (p *parser_) parseIf() *If {
+	n := &If{Pos_: p.posAt(p.off)}
+	p.off += len("if")
+	var off int
+	n.Cond, off = p.readHeader("if", n.Pos_)
+	n.CondPos = p.posAt(off)
+	n.Then = p.parseNodes(nil, n.Pos_)
+	p.skipSpace()
+	if !p.atWord("else") {
+		return n
+	}
+	p.off += len("else")
+	p.skipSpace()
+	if p.atWord("if") {
+		n.Else = []Node{p.parseIf()}
+		return n
+	}
+	if p.peek() != '{' {
+		p.fail("expected { or if after else")
+	}
+	p.off++
+	n.Else = p.parseNodes(nil, n.Pos_)
+	return n
+}
+
+func (p *parser_) parseFor() *For {
+	n := &For{Pos_: p.posAt(p.off)}
+	p.off += len("for")
+	header, off := p.readHeader("for", n.Pos_)
+	head, key, keyOff := splitKey(header)
+	if key == "" {
+		p.failAt(n.Pos_, "for in markup needs a key so rows can move instead of being rebuilt: {for _, x := range xs key x.ID { ... }}")
+	}
+	n.Header, n.HeaderPos = head, p.posAt(off)
+	n.Key, n.KeyPos = key, p.posAt(off+keyOff)
+	n.Body = p.parseNodes(nil, n.Pos_)
+	return n
+}
+
+// readHeader reads the Go source of an if or for header up to the '{' that
+// opens its body, consumes the '{' and returns the source and its offset.
+// As in Go, a '{' after a slice, array or map type starts a composite
+// literal, and a literal of a named type must be wrapped in parentheses.
+func (p *parser_) readHeader(kw string, kwPos Pos) (string, int) {
+	p.skipSpace()
+	start := p.off
+	depth := 0
+	for {
+		if p.eof() {
+			p.failAt(kwPos, "unterminated {%s", kw)
+		}
+		if p.atLiteral() {
+			p.skipLiteral()
+			continue
+		}
+		switch c := p.src[p.off]; {
+		case c == '(' || c == '[' || (c == '{' && afterTypeLit(p.src[start:p.off])):
+			depth++
+		case c == ')' || c == ']' || (c == '}' && depth > 0):
+			depth--
+		case c == '{' && depth == 0:
+			src := strings.TrimRight(p.src[start:p.off], " \t\r\n")
+			if src == "" {
+				p.failAt(kwPos, "%s needs a condition before {", kw)
+			}
+			p.off++
+			return src, start
+		case c == '}' && depth == 0:
+			p.fail("expected { to start the %s body", kw)
+		}
+		p.off++
+	}
+}
+
+// afterTypeLit reports whether src ends in a slice, array or map type such
+// as []T, [3]*T or map[K]V, so that a following '{' starts a literal.
+func afterTypeLit(src string) bool {
+	i := len(src)
+	for i > 0 && (isLetter(src[i-1]) || isDigit(src[i-1])) {
+		i--
+	}
+	if i == len(src) {
+		return false
+	}
+	for i > 0 && src[i-1] == '*' {
+		i--
+	}
+	return i > 0 && src[i-1] == ']'
+}
+
+// splitKey splits "i, x := range xs key x.ID" into the range clause and the
+// key expression. `key` is not a Go keyword, so it is the identifier "key"
+// that sits between the end of one expression and the start of another,
+// which no valid Go expression contains.
+func splitKey(src string) (head, key string, keyOff int) {
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(src))
+	var s scanner.Scanner
+	s.Init(file, []byte(src), nil, 0)
+	type tok struct {
+		t     token.Token
+		off   int
+		lit   string
+		depth int
+	}
+	var toks []tok
+	depth := 0
+	for {
+		pos, t, lit := s.Scan()
+		if t == token.EOF {
+			break
+		}
+		if t == token.SEMICOLON && lit == "\n" {
+			continue
+		}
+		switch t {
+		case token.RPAREN, token.RBRACK, token.RBRACE:
+			depth--
+		}
+		toks = append(toks, tok{t, file.Offset(pos), lit, depth})
+		switch t {
+		case token.LPAREN, token.LBRACK, token.LBRACE:
+			depth++
+		}
+	}
+	for i := 1; i+1 < len(toks); i++ {
+		k := toks[i]
+		if k.depth == 0 && k.t == token.IDENT && k.lit == "key" && endsExpr(toks[i-1].t) && startsExpr(toks[i+1].t) {
+			return strings.TrimSpace(src[:k.off]), strings.TrimSpace(src[toks[i+1].off:]), toks[i+1].off
+		}
+	}
+	return src, "", 0
+}
+
+func endsExpr(t token.Token) bool {
+	switch t {
+	case token.IDENT, token.INT, token.FLOAT, token.IMAG, token.CHAR, token.STRING,
+		token.RPAREN, token.RBRACK, token.RBRACE, token.INC, token.DEC:
+		return true
+	}
+	return false
+}
+
+func startsExpr(t token.Token) bool {
+	switch t {
+	case token.IDENT, token.INT, token.FLOAT, token.IMAG, token.CHAR, token.STRING,
+		token.LPAREN, token.LBRACK, token.NOT, token.SUB, token.ADD, token.XOR,
+		token.MUL, token.AND, token.ARROW, token.FUNC, token.STRUCT, token.MAP:
+		return true
+	}
+	return false
 }
 
 // readBraced reads `{...}` with nesting and Go string literals; returns the inner text.

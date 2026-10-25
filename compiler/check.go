@@ -43,8 +43,11 @@ type renderable interface {
 func denText[T renderable](v T)  {}
 func denAttr[T renderable](v T)  {}
 func denHandler(f func(e Event)) {}
+func denKey[T comparable](v T)   {}
 func denMark()                   {}
 `
+
+const preludeFile = "den_prelude.go"
 
 // partKind identifies a dynamic piece of markup.
 type partKind int
@@ -54,31 +57,36 @@ const (
 	partAttr
 	partHandler
 	partComponent
+	partIf
+	partFor
 )
 
 // part links a markup node to the Go AST that the type checker produced for it.
 type part struct {
-	kind partKind
-	attr *Attr
-	elem *Element
-	// filled after type checking:
-	expr  ast.Expr   // partText, partAttr
-	stmts []ast.Stmt // partHandler
-	args  []ast.Expr // partComponent, in param order
+	kind  partKind
+	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor (key)
+	stmts []ast.Stmt     // partHandler
+	args  []ast.Expr     // partComponent, in param order
+	rng   *ast.RangeStmt // partFor
 }
 
 // checked is the result of type checking a whole program.
 type checked struct {
-	fset  *token.FileSet
-	info  *types.Info
-	comps []*checkedComponent
+	fset        *token.FileSet
+	info        *types.Info
+	comps       []*checkedComponent
+	funcs       []*ast.FuncDecl // top-level Go functions
+	components  map[string]*Component
+	readsSignal map[types.Object]bool // functions that may read a signal
+	nilTypes    map[*ast.Ident]types.Type
 }
 
 type checkedComponent struct {
 	c     *Component
 	decl  *ast.FuncDecl
 	stmts []ast.Stmt
-	parts map[any]*part // keyed by *Interp, *Attr or *Element (component use)
+	parts map[Node]*part // keyed by *Interp, *If, *For or *Element (component use)
+	attrs map[*Attr]*part
 }
 
 func lineDirective(file string, p Pos) string {
@@ -102,66 +110,30 @@ func check(files []*File) (*checked, error) {
 
 	var src strings.Builder
 	src.WriteString(prelude)
-	type genComp struct {
-		c     *Component
-		parts []*part
+	for _, f := range files {
+		for _, d := range f.Decls {
+			if err := screenDecl(f.Name, d); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			src.WriteString("\n" + lineDirective(f.Name, d.Pos) + d.Src + "\n")
+		}
 	}
-	var gens []genComp
+	g := &gen{src: &src, byName: byName, errs: &errs}
 	for _, f := range files {
 		for _, c := range f.Components {
-			var parts []*part
+			g.file = c.File
 			fmt.Fprintf(&src, "\nfunc %s%s(%s) {", c.Name, lineDirective(c.File, c.ParamsPos), c.ParamsSrc)
 			src.WriteString(lineDirective(c.File, c.StmtsPos))
 			src.WriteString(c.StmtsSrc)
 			src.WriteString("\n\tdenMark()\n")
-			walkMarkup(c.Root, func(n Node) {
-				switch n := n.(type) {
-				case *Interp:
-					d := lineDirective(c.File, n.Pos_)
-					fmt.Fprintf(&src, "\t%sdenText(%s%s)\n", d, d, n.Src)
-					parts = append(parts, &part{kind: partText})
-				case *Element:
-					if n.IsComponent() {
-						call, err := componentCall(c.File, n, byName)
-						if err != nil {
-							errs = append(errs, err)
-							return
-						}
-						src.WriteString("\t" + call + "\n")
-						parts = append(parts, &part{kind: partComponent, elem: n})
-						return
-					}
-					switch n.Tag {
-					case "script", "iframe", "object", "embed", "frame":
-						errs = append(errs, &Error{File: c.File, Pos: n.Pos, Msg: fmt.Sprintf("<%s> is not allowed in components", n.Tag)})
-						return
-					}
-					for _, a := range n.Attrs {
-						if err := validateAttr(c.File, n, a); err != nil {
-							errs = append(errs, err)
-							continue
-						}
-						if a.Kind != AttrExpr {
-							continue
-						}
-						d := lineDirective(c.File, a.ValuePos)
-						if isEventAttr(a.Name) {
-							fmt.Fprintf(&src, "\t%sdenHandler(func(e Event) {%s%s\n\t})\n", lineDirective(c.File, a.Pos), d, a.Value)
-							parts = append(parts, &part{kind: partHandler, attr: a})
-						} else {
-							fmt.Fprintf(&src, "\t%sdenAttr(%s%s)\n", d, d, a.Value)
-							parts = append(parts, &part{kind: partAttr, attr: a})
-						}
-					}
-				}
-			})
+			g.node(c.Root)
 			src.WriteString("}\n")
-			gens = append(gens, genComp{c, parts})
 		}
 	}
 	// Keep going after markup errors so the type checker can report the rest.
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "den_prelude.go", src.String(), parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, preludeFile, src.String(), parser.SkipObjectResolution)
 	if err != nil {
 		if list, ok := err.(scanner.ErrorList); ok {
 			for _, e := range list {
@@ -190,69 +162,350 @@ func check(files []*File) (*checked, error) {
 		},
 	}
 	conf.Check("app", fset, []*ast.File{file}, info)
-	if len(file.Imports) > 0 {
-		p := fset.Position(file.Imports[0].Pos())
-		errs = append(errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column}, Msg: "imports are not supported yet"})
-	}
 	if len(errs) > 0 {
 		return nil, errs.sorted()
 	}
 
-	out := &checked{fset: fset, info: info}
+	out := &checked{fset: fset, info: info, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info)}
 	decls := map[string]*ast.FuncDecl{}
 	for _, d := range file.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Recv != nil {
+			continue
+		}
+		switch {
+		case byName[fd.Name.Name] != nil:
 			decls[fd.Name.Name] = fd
+		case fset.Position(fd.Pos()).Filename != preludeFile:
+			out.funcs = append(out.funcs, fd)
 		}
 	}
-	for _, g := range gens {
-		fd := decls[g.c.Name]
-		cc := &checkedComponent{c: g.c, decl: fd, parts: map[any]*part{}}
-		mark := -1
-		for i, s := range fd.Body.List {
-			if isMark(s) {
-				mark = i
-				break
+	// A function reads a signal if its body does, directly or through
+	// another function. Iterate until nothing changes.
+	for changed := true; changed; {
+		changed = false
+		for _, fd := range out.funcs {
+			if obj := info.Defs[fd.Name]; !out.readsSignal[obj] && out.reactive(fd.Body) {
+				out.readsSignal[obj] = true
+				changed = true
 			}
 		}
-		cc.stmts = fd.Body.List[:mark]
-		rest := fd.Body.List[mark+1:]
-		// Re-walk markup in the same order to pair nodes with their AST.
-		i := 0
-		walkMarkup(g.c.Root, func(n Node) {
-			switch n := n.(type) {
-			case *Interp:
-				pt := g.parts[i]
-				pt.expr = rest[i].(*ast.ExprStmt).X.(*ast.CallExpr).Args[0]
-				cc.parts[n] = pt
-				i++
-			case *Element:
-				if n.IsComponent() {
-					pt := g.parts[i]
-					pt.args = rest[i].(*ast.ExprStmt).X.(*ast.CallExpr).Args
-					cc.parts[n] = pt
-					i++
-					return
-				}
-				for _, a := range n.Attrs {
-					if a.Kind != AttrExpr {
-						continue
-					}
-					pt := g.parts[i]
-					call := rest[i].(*ast.ExprStmt).X.(*ast.CallExpr)
-					if pt.kind == partHandler {
-						pt.stmts = call.Args[0].(*ast.FuncLit).Body.List
-					} else {
-						pt.expr = call.Args[0]
-					}
-					cc.parts[a] = pt
-					i++
+	}
+	for _, f := range files {
+		for _, c := range f.Components {
+			fd := decls[c.Name]
+			cc := &checkedComponent{c: c, decl: fd, parts: map[Node]*part{}, attrs: map[*Attr]*part{}}
+			mark := -1
+			for i, s := range fd.Body.List {
+				if isMark(s) {
+					mark = i
+					break
 				}
 			}
-		})
-		out.comps = append(out.comps, cc)
+			cc.stmts = fd.Body.List[:mark]
+			pr := &pairer{ck: out, cc: cc}
+			pr.node(c.Root, fd.Body.List[mark+1:])
+			errs = append(errs, pr.errs...)
+			out.comps = append(out.comps, cc)
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errs.sorted()
 	}
 	return out, nil
+}
+
+// nilTargets finds the type each nil is converted to. go/types records nil
+// as untyped, but den needs to know which nils are slices.
+func nilTargets(file *ast.File, info *types.Info) map[*ast.Ident]types.Type {
+	out := map[*ast.Ident]types.Type{}
+	set := func(x ast.Expr, t types.Type) {
+		if id, ok := ast.Unparen(x).(*ast.Ident); ok && id.Name == "nil" && t != nil {
+			out[id] = t
+		}
+	}
+	var stack []ast.Node
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			if len(n.Lhs) == len(n.Rhs) {
+				for i, r := range n.Rhs {
+					set(r, info.TypeOf(n.Lhs[i]))
+				}
+			}
+		case *ast.ValueSpec:
+			for i, v := range n.Values {
+				if i < len(n.Names) {
+					set(v, info.TypeOf(n.Names[i]))
+				}
+			}
+		case *ast.CallExpr:
+			sig, ok := info.TypeOf(n.Fun).(*types.Signature)
+			if !ok {
+				if tv := info.Types[n.Fun]; tv.IsType() && len(n.Args) == 1 {
+					set(n.Args[0], tv.Type) // conversion
+				}
+				return true
+			}
+			for i, a := range n.Args {
+				ps := sig.Params()
+				switch {
+				case sig.Variadic() && i >= ps.Len()-1 && !n.Ellipsis.IsValid():
+					set(a, ps.At(ps.Len()-1).Type().(*types.Slice).Elem())
+				case i < ps.Len():
+					set(a, ps.At(i).Type())
+				}
+			}
+		case *ast.ReturnStmt:
+			for i := len(stack) - 1; i >= 0; i-- {
+				var sig *types.Signature
+				switch f := stack[i].(type) {
+				case *ast.FuncLit:
+					sig, _ = info.TypeOf(f).(*types.Signature)
+				case *ast.FuncDecl:
+					if obj := info.Defs[f.Name]; obj != nil {
+						sig, _ = obj.Type().(*types.Signature)
+					}
+				default:
+					continue
+				}
+				if sig != nil && sig.Results().Len() == len(n.Results) {
+					for j, r := range n.Results {
+						set(r, sig.Results().At(j).Type())
+					}
+				}
+				break
+			}
+		case *ast.CompositeLit:
+			switch u := info.TypeOf(n).Underlying().(type) {
+			case *types.Slice:
+				for _, el := range n.Elts {
+					set(el, u.Elem())
+				}
+			case *types.Array:
+				for _, el := range n.Elts {
+					set(el, u.Elem())
+				}
+			case *types.Struct:
+				for i, el := range n.Elts {
+					if kv, ok := el.(*ast.KeyValueExpr); ok {
+						for j := 0; j < u.NumFields(); j++ {
+							if u.Field(j).Name() == kv.Key.(*ast.Ident).Name {
+								set(kv.Value, u.Field(j).Type())
+							}
+						}
+					} else if i < u.NumFields() {
+						set(el, u.Field(i).Type())
+					}
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// screenDecl rejects top-level Go that den does not support before go/parser
+// sees it, so the errors are about den rather than about the generated file.
+func screenDecl(file string, d *GoDecl) *Error {
+	fset := token.NewFileSet()
+	f := fset.AddFile("", fset.Base(), len(d.Src))
+	var s scanner.Scanner
+	s.Init(f, []byte(d.Src), nil, 0)
+	depth := 0
+	prev := token.SEMICOLON
+	for {
+		pos, t, _ := s.Scan()
+		atStart := prev == token.SEMICOLON
+		prev = t
+		at := func(msg string) *Error {
+			p := f.Position(pos)
+			col := p.Column
+			if p.Line == 1 {
+				col += d.Pos.Col - 1
+			}
+			return &Error{File: file, Pos: Pos{d.Pos.Line + p.Line - 1, col}, Msg: msg}
+		}
+		switch t {
+		case token.EOF:
+			return nil
+		case token.LPAREN, token.LBRACK, token.LBRACE:
+			depth++
+		case token.RPAREN, token.RBRACK, token.RBRACE:
+			depth--
+		case token.IMPORT:
+			return at("imports are not supported yet")
+		case token.PACKAGE:
+			return at(".den files have no package clause")
+		case token.VAR:
+			if depth == 0 {
+				return at("package-level variables are not supported yet; keep state in a component")
+			}
+		case token.FUNC:
+			if depth == 0 && atStart {
+				if _, next, _ := s.Scan(); next == token.LPAREN {
+					return at("methods are not supported yet; use a function that takes the value")
+				}
+			}
+		}
+	}
+}
+
+// gen writes the Go that stands in for markup: every {expr} becomes a typed
+// call, every handler a func(e Event), every <Card .../> a call to Card, and
+// {if} and {for} become real Go if and for statements so their scopes and
+// types are Go's own.
+type gen struct {
+	src    *strings.Builder
+	file   string
+	byName map[string]*Component
+	errs   *ErrorList
+}
+
+func (g *gen) d(p Pos) string { return lineDirective(g.file, p) }
+
+func (g *gen) nodes(ns []Node) {
+	for _, n := range ns {
+		g.node(n)
+	}
+}
+
+func (g *gen) node(n Node) {
+	switch n := n.(type) {
+	case *Interp:
+		fmt.Fprintf(g.src, "\t%sdenText(%s%s)\n", g.d(n.Pos_), g.d(n.Pos_), n.Src)
+	case *If:
+		fmt.Fprintf(g.src, "\t%sif %s%s {\n", g.d(n.Pos_), g.d(n.CondPos), n.Cond)
+		g.nodes(n.Then)
+		if len(n.Else) > 0 {
+			g.src.WriteString("\t} else {\n")
+			g.nodes(n.Else)
+		}
+		g.src.WriteString("\t}\n")
+	case *For:
+		fmt.Fprintf(g.src, "\t%sfor %s%s {\n", g.d(n.Pos_), g.d(n.HeaderPos), n.Header)
+		fmt.Fprintf(g.src, "\t%sdenKey(%s%s)\n", g.d(n.KeyPos), g.d(n.KeyPos), n.Key)
+		g.nodes(n.Body)
+		g.src.WriteString("\t}\n")
+	case *Element:
+		if n.IsComponent() {
+			call, err := componentCall(g.file, n, g.byName)
+			if err != nil {
+				*g.errs = append(*g.errs, err)
+				return
+			}
+			g.src.WriteString("\t" + call + "\n")
+			return
+		}
+		switch n.Tag {
+		case "script", "iframe", "object", "embed", "frame":
+			*g.errs = append(*g.errs, &Error{File: g.file, Pos: n.Pos, Msg: fmt.Sprintf("<%s> is not allowed in components", n.Tag)})
+			return
+		}
+		for _, a := range n.Attrs {
+			if err := validateAttr(g.file, n, a); err != nil {
+				*g.errs = append(*g.errs, err)
+				continue
+			}
+			if a.Kind != AttrExpr {
+				continue
+			}
+			d := g.d(a.ValuePos)
+			if isEventAttr(a.Name) {
+				fmt.Fprintf(g.src, "\t%sdenHandler(func(e Event) {%s%s\n\t})\n", g.d(a.Pos), d, a.Value)
+			} else {
+				fmt.Fprintf(g.src, "\t%sdenAttr(%s%s)\n", d, d, a.Value)
+			}
+		}
+		g.nodes(n.Children)
+	}
+}
+
+// pairer walks markup in the same order as gen and links each node to the
+// checked Go statements that gen wrote for it.
+type pairer struct {
+	ck   *checked
+	cc   *checkedComponent
+	errs ErrorList
+}
+
+func (pr *pairer) errAt(n ast.Node, format string, args ...any) {
+	p := pr.ck.fset.Position(n.Pos())
+	pr.errs = append(pr.errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column}, Msg: fmt.Sprintf(format, args...)})
+}
+
+func callArgs(s ast.Stmt) []ast.Expr { return s.(*ast.ExprStmt).X.(*ast.CallExpr).Args }
+
+func (pr *pairer) nodes(ns []Node, stmts []ast.Stmt) []ast.Stmt {
+	for _, n := range ns {
+		stmts = pr.node(n, stmts)
+	}
+	return stmts
+}
+
+func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
+	switch n := n.(type) {
+	case *Interp:
+		pr.cc.parts[n] = &part{kind: partText, expr: callArgs(stmts[0])[0]}
+		return stmts[1:]
+	case *If:
+		is := stmts[0].(*ast.IfStmt)
+		pr.cc.parts[n] = &part{kind: partIf, expr: is.Cond}
+		pr.nodes(n.Then, is.Body.List)
+		if len(n.Else) > 0 {
+			pr.nodes(n.Else, is.Else.(*ast.BlockStmt).List)
+		}
+		return stmts[1:]
+	case *For:
+		rs, ok := stmts[0].(*ast.RangeStmt)
+		if !ok {
+			pr.errAt(stmts[0], "for in markup must range over a slice, array or int: {for i, x := range xs key x.ID { ... }}")
+			return stmts[1:]
+		}
+		if rs.Tok == token.ASSIGN {
+			pr.errAt(rs, "for in markup must declare its variables with :=")
+		}
+		switch t := pr.ck.info.TypeOf(rs.X).Underlying().(type) {
+		case *types.Slice, *types.Array:
+		case *types.Basic:
+			if t.Info()&types.IsInteger == 0 {
+				pr.errAt(rs.X, "for in markup can range over slices, arrays and ints, not %s", t)
+			}
+		default:
+			pr.errAt(rs.X, "for in markup can range over slices, arrays and ints, not %s", pr.ck.info.TypeOf(rs.X))
+		}
+		key := callArgs(rs.Body.List[0])[0]
+		if _, ok := pr.ck.info.TypeOf(key).Underlying().(*types.Basic); !ok {
+			pr.errAt(key, "list keys must be strings, numbers or bools, not %s", pr.ck.info.TypeOf(key))
+		}
+		pr.cc.parts[n] = &part{kind: partFor, expr: key, rng: rs}
+		pr.nodes(n.Body, rs.Body.List[1:])
+		return stmts[1:]
+	case *Element:
+		if n.IsComponent() {
+			pr.cc.parts[n] = &part{kind: partComponent, args: callArgs(stmts[0])}
+			return stmts[1:]
+		}
+		for _, a := range n.Attrs {
+			if a.Kind != AttrExpr {
+				continue
+			}
+			arg := callArgs(stmts[0])[0]
+			if isEventAttr(a.Name) {
+				pr.cc.attrs[a] = &part{kind: partHandler, stmts: arg.(*ast.FuncLit).Body.List}
+			} else {
+				pr.cc.attrs[a] = &part{kind: partAttr, expr: arg}
+			}
+			stmts = stmts[1:]
+		}
+		return pr.nodes(n.Children, stmts)
+	}
+	return stmts
 }
 
 func isMark(s ast.Stmt) bool {
@@ -268,17 +521,58 @@ func isMark(s ast.Stmt) bool {
 	return ok && id.Name == "denMark"
 }
 
-// walkMarkup visits elements and interpolations in document order. Children of
-// component uses are not visited (components take no children yet).
-func walkMarkup(n Node, fn func(Node)) {
-	fn(n)
-	el, ok := n.(*Element)
-	if !ok || el.IsComponent() {
-		return
+// reactive reports whether evaluating n may read a signal, i.e. whether a DOM
+// binding for it needs an effect. Decided at compile time from types. Calls
+// through function values are assumed to read signals.
+func (ck *checked) reactive(n ast.Node) bool {
+	found := false
+	ast.Inspect(n, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := ast.Unparen(call.Fun).(type) {
+		case *ast.SelectorExpr:
+			if fun.Sel.Name == "Get" {
+				if recv := ck.recvName(fun); recv == "Signal" || recv == "Computed" {
+					found = true
+				}
+			}
+		case *ast.Ident:
+			switch o := ck.info.Uses[fun].(type) {
+			case *types.Var:
+				found = true
+			case *types.Func:
+				found = ck.readsSignal[o]
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// recvName returns the type name of a method call's receiver.
+func (ck *checked) recvName(sel *ast.SelectorExpr) string {
+	s := ck.info.Selections[sel]
+	if s == nil || s.Kind() != types.MethodVal {
+		return ""
 	}
-	for _, ch := range el.Children {
-		walkMarkup(ch, fn)
+	t := s.Recv()
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
 	}
+	if n, ok := t.(*types.Named); ok {
+		return n.Obj().Name()
+	}
+	return ""
+}
+
+// isPrelude reports whether obj is declared by den's built-in prelude.
+func (ck *checked) isPrelude(obj types.Object) bool {
+	return ck.components[obj.Name()] == nil && ck.fset.Position(obj.Pos()).Filename == preludeFile
 }
 
 func isEventAttr(name string) bool {
