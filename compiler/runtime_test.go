@@ -12,6 +12,12 @@ import (
 // script (async JS using the helpers in dom.js) and returns what it logged.
 func runApp(t *testing.T, src, script string) string {
 	t.Helper()
+	return runAppWith(t, src, "", script)
+}
+
+// runAppWith is runApp with JS that runs before the app starts.
+func runAppWith(t *testing.T, src, before, script string) string {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not installed")
@@ -24,7 +30,7 @@ func runApp(t *testing.T, src, script string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prog := string(dom) + "\n" + res.JS + "\n(async () => {\n" + script +
+	prog := string(dom) + "\n" + before + "\n" + res.JS + "\n(async () => {\n" + script +
 		"\n})().catch((e) => { console.error(e); process.exit(1); });\n"
 	file := filepath.Join(t.TempDir(), "app.js")
 	if err := os.WriteFile(file, []byte(prog), 0o644); err != nil {
@@ -365,7 +371,8 @@ func TestGoConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			dir := t.TempDir()
-			main := "package main\n\nimport (\n\t\"fmt\"\n\t\"strconv\"\n)\n\nfunc itoa(n int) string { return strconv.Itoa(n) }\n\nfunc main() { fmt.Println(run()) }\n\n" + string(src)
+			main := "package main\n\nimport \"fmt\"\n\n" + string(src) +
+				"\n\nfunc itoa(n int) string { return fmt.Sprint(n) }\n\nfunc main() { fmt.Println(run()) }\n"
 			os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0o644)
 			os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module conform\n\ngo 1.24\n"), 0o644)
 			cmd := exec.Command(goTool, "run", ".")
@@ -394,4 +401,100 @@ log(html());`)
 	expectLines(t, got,
 		`<a href="https://go.dev">x</a>`,
 		`<a href="about:blank#den-blocked-url">x</a>`)
+}
+
+const storedSrc = `
+type Item struct {
+    Name string
+    Tags []string
+    Done bool
+}
+
+component App() {
+    items := stored("items", []Item{{Name: "first"}})
+    counts := stored("counts", map[string]int{})
+    route := hash()
+    <div>
+        <p>{route.Get()}: {for _, it := range items.Get() key it.Name {{it.Name}{len(it.Tags)}{it.Done} }}</p>
+        <p>{counts.Get()["x"]}</p>
+        <button onclick={
+            items.Set(append(items.Get(), Item{Name: "second", Tags: []string{"a", "b"}}))
+            counts.Update(func(m map[string]int) map[string]int { m["x"]++; return m })
+            route.Set("#/done")
+        }>add</button>
+    </div>
+}`
+
+func TestStoredAndHash(t *testing.T) {
+	got := runApp(t, storedSrc, `
+log(findAll("p").map((p) => p.textContent).join(" | "), localStorage.getItem("items"));
+click(find("button")); await tick(); await tick();
+log(findAll("p").map((p) => p.textContent).join(" | "), location.hash);
+log(localStorage.getItem("items"), localStorage.getItem("counts"));
+location.hash = "#/all"; await tick(); await tick();
+log(find("p").textContent);`)
+	expectLines(t, got,
+		`: first0false | 0 [{"Name":"first","Tags":null,"Done":false}]`,
+		`#/done: first0falsesecond2false | 1 #/done`,
+		`[{"Name":"first","Tags":null,"Done":false},{"Name":"second","Tags":["a","b"],"Done":false}] {"x":1}`,
+		`#/all: first0falsesecond2false`)
+
+	// Stored JSON is decoded back into den values; a missing field gets its
+	// zero value, and JSON that does not fit the type falls back to the
+	// initial value.
+	got = runAppWith(t, storedSrc, `localStorage.setItem("items", '[{"Name":"saved","Tags":["t"]}]'); localStorage.setItem("counts", '{"x":5}');`,
+		`log(findAll("p").map((p) => p.textContent).join(" | "));`)
+	expectLines(t, got, `: saved1false | 5`)
+	got = runAppWith(t, storedSrc, `localStorage.setItem("items", '[{"Name":3}]'); localStorage.setItem("counts", '[1]');`,
+		`log(findAll("p").map((p) => p.textContent).join(" | "));`)
+	expectLines(t, got, `: first0false | 0`)
+}
+
+// TestTodoMVC runs examples/todomvc through the main flows of the TodoMVC
+// spec on the test DOM. examples/todomvc/e2e.js covers the full spec in
+// Chromium.
+func TestTodoMVC(t *testing.T) {
+	src, err := os.ReadFile("../examples/todomvc/app.den")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := runApp(t, string(src), `
+await tick();
+const titles = () => findAll("label").filter((l) => l.parentNode.getAttribute("class") === "view").map((l) => l.textContent).join(",");
+const count = () => find("span").textContent;
+const add = async (s) => { const i = findAll("input").find((e) => e.getAttribute("class") === "new-todo"); input(i, s); key(i, "Enter"); await tick(); };
+log("empty:", findAll("section").length, findAll("footer").length, document.activeElement?.getAttribute("class"));
+await add("  a  "); await add(" "); await add("b"); await add("c");
+log(titles(), "|", count());
+const toggles = () => findAll("input").filter((e) => e.getAttribute("class") === "toggle");
+check(toggles()[0], true); await tick();
+log(count(), findAll("li")[0].getAttribute("class"));
+check(findAll("input").find((e) => e.id === "toggle-all" || e.getAttribute("id") === "toggle-all"), true); await tick();
+log(count());
+check(findAll("input").find((e) => e.getAttribute("id") === "toggle-all"), false); await tick();
+log(count());
+findAll("label")[2].dispatch("dblclick"); await tick(); await tick();
+const ed = findAll("input").find((e) => e.getAttribute("class") === "edit");
+log("editing:", findAll("li")[1].getAttribute("class"), ed.value, document.activeElement === ed);
+input(ed, " bee "); key(ed, "Enter"); await tick();
+log(titles());
+check(toggles()[2], true); await tick();
+location.hash = "#/active"; await tick(); await tick();
+log("active:", titles());
+location.hash = "#/completed"; await tick(); await tick();
+log("completed:", titles());
+location.hash = "#/"; await tick(); await tick();
+click(find("button", "Clear completed")); await tick();
+log(titles(), "|", count(), "|", localStorage.getItem("todos-den"));`)
+	expectLines(t, got,
+		`empty: 1 1 new-todo`,
+		`a,b,c | 3 items left`,
+		`2 items left completed`,
+		`0 items left`,
+		`3 items left`,
+		`editing: editing b true`,
+		`a,bee,c`,
+		`active: a,bee`,
+		`completed: c`,
+		`a,bee | 2 items left | [{"ID":1,"Title":"a","Completed":false},{"ID":2,"Title":"bee","Completed":false}]`)
 }

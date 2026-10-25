@@ -1,0 +1,30 @@
+// The curated strings and strconv packages behave like Go's.
+
+import (
+	"strconv"
+	"strings"
+)
+
+func q(s string) string { return "<" + s + ">" }
+
+func run() string {
+	out := q(strings.TrimSpace("\t hi there \n\u00a0")) + q(strings.TrimSpace("\ufeffbom"))
+	out += q(strings.Join(strings.Fields("  a b\t\tc  "), ","))
+	out += q(strings.Join(strings.Split("a,b,,c", ","), "|")) + q(strings.Join(strings.Split("héllo", ""), "."))
+	out += q(strings.ReplaceAll("a.b.c", ".", "$&")) + q(strings.ReplaceAll("ab", "", "-"))
+	out += q(strings.TrimPrefix("prefix-x", "prefix-")) + q(strings.TrimSuffix("x.go", ".go")) + q(strings.TrimSuffix("x", ""))
+	out += q(strings.ToUpper("abc")) + q(strings.Repeat("ab", 3))
+	if strings.Contains("seafood", "foo") && strings.HasPrefix("golang", "go") && !strings.HasSuffix("golang", "x") {
+		out += " yes"
+	}
+	n, err := strconv.Atoi("-42")
+	out += " " + strconv.Itoa(n*2)
+	if err == nil {
+		out += " ok"
+	}
+	_, err = strconv.Atoi("4x2")
+	if err != nil {
+		out += " " + err.Error()
+	}
+	return out + " " + strconv.FormatBool(true)
+}

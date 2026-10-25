@@ -1,0 +1,184 @@
+// TodoMVC (todomvc.com), following its app spec: the standard markup and
+// class names, localStorage persistence and #/ routing.
+
+import "strings"
+
+type Todo struct {
+    ID        int
+    Title     string
+    Completed bool
+}
+
+func visible(ts []Todo, route string) []Todo {
+    out := []Todo{}
+    for _, t := range ts {
+        if route == "#/active" && t.Completed || route == "#/completed" && !t.Completed {
+            continue
+        }
+        out = append(out, t)
+    }
+    return out
+}
+
+func countDone(ts []Todo) int {
+    n := 0
+    for _, t := range ts {
+        if t.Completed {
+            n++
+        }
+    }
+    return n
+}
+
+func nextID(ts []Todo) int {
+    id := 1
+    for _, t := range ts {
+        id = max(id, t.ID+1)
+    }
+    return id
+}
+
+// edit returns ts with the todo id changed by f, or removed if f says so.
+func edit(ts []Todo, id int, f func(t Todo) (Todo, bool)) []Todo {
+    out := make([]Todo, 0, len(ts))
+    for _, t := range ts {
+        if t.ID == id {
+            var keep bool
+            t, keep = f(t)
+            if !keep {
+                continue
+            }
+        }
+        out = append(out, t)
+    }
+    return out
+}
+
+func setAll(ts []Todo, completed bool) []Todo {
+    out := make([]Todo, 0, len(ts))
+    for _, t := range ts {
+        t.Completed = completed
+        out = append(out, t)
+    }
+    return out
+}
+
+func classes(t Todo, editing int) string {
+    var c []string
+    if t.Completed {
+        c = append(c, "completed")
+    }
+    if t.ID == editing {
+        c = append(c, "editing")
+    }
+    return strings.Join(c, " ")
+}
+
+func plural(n int) string {
+    if n == 1 {
+        return "item"
+    }
+    return "items"
+}
+
+func selected(route, want string) string {
+    if route == want || route == "" && want == "#/" {
+        return "selected"
+    }
+    return ""
+}
+
+component App() {
+    todos := stored("todos-den", []Todo(nil))
+    route := hash()
+    editing := signal(0)
+    draft := signal("")
+    done := computed(countDone(todos.Get()))
+    left := computed(len(todos.Get()) - done.Get())
+    remove := func(id int) {
+        todos.Set(edit(todos.Get(), id, func(t Todo) (Todo, bool) { return t, false }))
+    }
+    save := func(id int, title string) {
+        title = strings.TrimSpace(title)
+        editing.Set(0)
+        if title == "" {
+            remove(id)
+            return
+        }
+        todos.Set(edit(todos.Get(), id, func(t Todo) (Todo, bool) {
+            t.Title = title
+            return t, true
+        }))
+    }
+    <div>
+        <section class="todoapp">
+            <header class="header">
+                <h1>todos</h1>
+                <input class="new-todo" placeholder="What needs to be done?" autofocus value={draft.Get()}
+                    oninput={draft.Set(e.Value())}
+                    onkeydown={
+                        if e.Key() == "Enter" {
+                            if title := strings.TrimSpace(draft.Get()); title != "" {
+                                ts := todos.Get()
+                                todos.Set(append(ts, Todo{ID: nextID(ts), Title: title}))
+                            }
+                            draft.Set("")
+                        }
+                    } />
+            </header>
+            {if len(todos.Get()) > 0 {
+                <section class="main">
+                    <input id="toggle-all" class="toggle-all" type="checkbox" checked={left.Get() == 0}
+                        onchange={todos.Set(setAll(todos.Get(), e.Checked()))} />
+                    <label for="toggle-all">Mark all as complete</label>
+                    <ul class="todo-list">
+                        {for _, t := range visible(todos.Get(), route.Get()) key t.ID {
+                            <li class={classes(t, editing.Get())}>
+                                <div class="view">
+                                    <input class="toggle" type="checkbox" checked={t.Completed}
+                                        onchange={todos.Set(edit(todos.Get(), t.ID, func(t Todo) (Todo, bool) {
+                                            t.Completed = !t.Completed
+                                            return t, true
+                                        }))} />
+                                    <label ondblclick={editing.Set(t.ID)}>{t.Title}</label>
+                                    <button class="destroy" onclick={remove(t.ID)}></button>
+                                </div>
+                                {if editing.Get() == t.ID {
+                                    <input class="edit" value={t.Title} autofocus
+                                        onkeydown={
+                                            if e.Key() == "Enter" {
+                                                save(t.ID, e.Value())
+                                            } else if e.Key() == "Escape" {
+                                                editing.Set(0)
+                                            }
+                                        }
+                                        onblur={
+                                            if editing.Get() == t.ID {
+                                                save(t.ID, e.Value())
+                                            }
+                                        } />
+                                }}
+                            </li>
+                        }}
+                    </ul>
+                </section>
+                <footer class="footer">
+                    <span class="todo-count"><strong>{left.Get()}</strong> {plural(left.Get())} left</span>
+                    <ul class="filters">
+                        <li><a class={selected(route.Get(), "#/")} href="#/">All</a></li>
+                        <li><a class={selected(route.Get(), "#/active")} href="#/active">Active</a></li>
+                        <li><a class={selected(route.Get(), "#/completed")} href="#/completed">Completed</a></li>
+                    </ul>
+                    {if done.Get() > 0 {
+                        <button class="clear-completed" onclick={todos.Set(visible(todos.Get(), "#/active"))}>Clear completed</button>
+                    }}
+                </footer>
+            }}
+        </section>
+        <footer class="info">
+            <p>Double-click to edit a todo</p>
+            <p>Written in <a href="https://github.com/TriadStudios/Den">Den</a></p>
+            <p>Part of <a href="https://todomvc.com">TodoMVC</a></p>
+        </footer>
+    </div>
+}

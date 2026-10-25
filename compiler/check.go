@@ -7,6 +7,7 @@ import (
 	"go/scanner"
 	"go/token"
 	"go/types"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -45,6 +46,12 @@ func denAttr[T renderable](v T)  {}
 func denHandler(f func(e Event)) {}
 func denKey[T comparable](v T)   {}
 func denMark()                   {}
+
+// stored is a signal kept in localStorage under key, as JSON.
+func stored[T any](key string, initial T) *Signal[T] { return &Signal[T]{v: initial} }
+
+// hash is a signal holding location.hash, for simple routing.
+func hash() *Signal[string] { return nil }
 `
 
 const preludeFile = "den_prelude.go"
@@ -108,17 +115,33 @@ func check(files []*File) (*checked, error) {
 		}
 	}
 
-	var src strings.Builder
-	src.WriteString(prelude)
+	// Imports must come first in the generated file, so they are lifted out
+	// of the declarations (keeping positions) and written after the package
+	// clause.
+	var declSrc strings.Builder
+	imports := map[string]bool{}
+	var importSrc strings.Builder
 	for _, f := range files {
 		for _, d := range f.Decls {
-			if err := screenDecl(f.Name, d); err != nil {
+			code, imps, err := screenDecl(f.Name, d)
+			if err != nil {
 				errs = append(errs, err)
 				continue
 			}
-			src.WriteString("\n" + lineDirective(f.Name, d.Pos) + d.Src + "\n")
+			for _, im := range imps {
+				if !imports[im.spec] {
+					imports[im.spec] = true
+					fmt.Fprintf(&importSrc, "import %s%s\n", lineDirective(f.Name, im.pos), im.spec)
+				}
+			}
+			declSrc.WriteString("\n" + lineDirective(f.Name, d.Pos) + code + "\n")
 		}
 	}
+	var src strings.Builder
+	src.WriteString("package app\n\n" + importSrc.String())
+	// The import directives would otherwise carry on into the prelude.
+	src.WriteString("/*line " + preludeFile + ":2:1*/" + strings.TrimPrefix(prelude, "package app\n"))
+	src.WriteString(declSrc.String())
 	g := &gen{src: &src, byName: byName, errs: &errs}
 	for _, f := range files {
 		for _, c := range f.Components {
@@ -151,6 +174,7 @@ func check(files []*File) (*checked, error) {
 		Selections: map[*ast.SelectorExpr]*types.Selection{},
 	}
 	conf := types.Config{
+		Importer: stdImporter{fset: fset, pkgs: map[string]*types.Package{}},
 		Error: func(err error) {
 			te := err.(types.Error)
 			p := fset.Position(te.Pos)
@@ -322,36 +346,94 @@ func nilTargets(file *ast.File, info *types.Info) map[*ast.Ident]types.Type {
 	return out
 }
 
+type importSpec struct {
+	spec string // `"strings"` or `name "strings"`
+	pos  Pos
+}
+
 // screenDecl rejects top-level Go that den does not support before go/parser
 // sees it, so the errors are about den rather than about the generated file.
-func screenDecl(file string, d *GoDecl) *Error {
+// It returns the declarations with their imports blanked out (so positions
+// stay put) and the imports themselves.
+func screenDecl(file string, d *GoDecl) (string, []importSpec, *Error) {
 	fset := token.NewFileSet()
 	f := fset.AddFile("", fset.Base(), len(d.Src))
 	var s scanner.Scanner
 	s.Init(f, []byte(d.Src), nil, 0)
 	depth := 0
 	prev := token.SEMICOLON
+	code := []byte(d.Src)
+	var imps []importSpec
+	posOf := func(pos token.Pos) Pos {
+		p := f.Position(pos)
+		col := p.Column
+		if p.Line == 1 {
+			col += d.Pos.Col - 1
+		}
+		return Pos{d.Pos.Line + p.Line - 1, col}
+	}
+	blank := func(from, to int) {
+		for i := from; i < to; i++ {
+			if code[i] != '\n' {
+				code[i] = ' '
+			}
+		}
+	}
 	for {
-		pos, t, _ := s.Scan()
+		pos, t, lit := s.Scan()
 		atStart := prev == token.SEMICOLON
 		prev = t
-		at := func(msg string) *Error {
-			p := f.Position(pos)
-			col := p.Column
-			if p.Line == 1 {
-				col += d.Pos.Col - 1
-			}
-			return &Error{File: file, Pos: Pos{d.Pos.Line + p.Line - 1, col}, Msg: msg}
+		at := func(msg string) (string, []importSpec, *Error) {
+			return "", nil, &Error{File: file, Pos: posOf(pos), Msg: msg}
 		}
 		switch t {
 		case token.EOF:
-			return nil
+			return string(code), imps, nil
 		case token.LPAREN, token.LBRACK, token.LBRACE:
 			depth++
 		case token.RPAREN, token.RBRACK, token.RBRACE:
 			depth--
 		case token.IMPORT:
-			return at("imports are not supported yet")
+			start := f.Offset(pos)
+			grouped := false
+			for {
+				p2, t2, lit2 := s.Scan()
+				switch {
+				case t2 == token.LPAREN && !grouped:
+					grouped = true
+					continue
+				case t2 == token.SEMICOLON:
+					continue
+				case t2 == token.IDENT || t2 == token.PERIOD:
+					name := lit2
+					if t2 == token.PERIOD || name == "_" {
+						return "", nil, &Error{File: file, Pos: posOf(p2), Msg: "dot and blank imports are not supported"}
+					}
+					p3, t3, lit3 := s.Scan()
+					if t3 != token.STRING {
+						return "", nil, &Error{File: file, Pos: posOf(p3), Msg: "expected import path"}
+					}
+					if err := checkImport(file, lit3, posOf(p3)); err != nil {
+						return "", nil, err
+					}
+					imps = append(imps, importSpec{name + " " + lit3, posOf(p2)})
+				case t2 == token.STRING:
+					if err := checkImport(file, lit2, posOf(p2)); err != nil {
+						return "", nil, err
+					}
+					imps = append(imps, importSpec{lit2, posOf(p2)})
+				case t2 == token.RPAREN && grouped:
+					grouped = false
+				default:
+					return "", nil, &Error{File: file, Pos: posOf(p2), Msg: "expected import path"}
+				}
+				if !grouped {
+					p4, _, _ := s.Scan() // the semicolon that ends the import
+					blank(start, f.Offset(p4))
+					break
+				}
+			}
+			prev = token.SEMICOLON
 		case token.PACKAGE:
 			return at(".den files have no package clause")
 		case token.VAR:
@@ -365,7 +447,21 @@ func screenDecl(file string, d *GoDecl) *Error {
 				}
 			}
 		}
+		_ = lit
 	}
+}
+
+func checkImport(file, lit string, pos Pos) *Error {
+	path, _ := strconv.Unquote(lit)
+	if stdPackages[path] == "" {
+		var names []string
+		for p := range stdPackages {
+			names = append(names, p)
+		}
+		sort.Strings(names)
+		return &Error{File: file, Pos: pos, Msg: fmt.Sprintf("package %q is not available in den; you can import %s", path, strings.Join(names, ", "))}
+	}
+	return nil
 }
 
 // gen writes the Go that stands in for markup: every {expr} becomes a typed

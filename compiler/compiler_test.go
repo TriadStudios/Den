@@ -133,11 +133,23 @@ var count = 1
 component App() {
     <p>x</p>
 }`, `app.den:2:1: package-level variables are not supported yet`},
-		{"import", `
-import "strings"
+		{"import outside the curated set", `
+import "fmt"
 component App() {
     <p>x</p>
-}`, `app.den:2:1: imports are not supported yet`},
+}`, `app.den:2:8: package "fmt" is not available in den; you can import strconv, strings`},
+		{"unused import", `
+import (
+    "strings"
+)
+component App() {
+    <p>x</p>
+}`, `app.den:3:5: "strings" imported and not used`},
+		{"value that cannot be stored", `
+component App() {
+    s := stored("k", signal(1))
+    <p>{s.Get().Get()}</p>
+}`, `app.den:3:10: cannot store *Signal[int] in localStorage`},
 		{"struct map key", `
 type P struct{ A int }
 func f(m map[P]int) int { return len(m) }

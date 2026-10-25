@@ -81,6 +81,7 @@ class Element extends Node {
   getAttribute(k) { return this.attributes.get(k) ?? null; }
   removeAttribute(k) { this.attributes.delete(k); }
   addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }
+  focus() { document.activeElement = this; }
   dispatch(type, extra = {}) {
     const ev = { type, target: this, defaultPrevented: false, cancelBubble: false, preventDefault() { this.defaultPrevented = true; }, ...extra };
     for (let n = this; n && !ev.cancelBubble; n = n.parentNode) for (const fn of n.listeners?.[type] ?? []) fn(ev);
@@ -98,6 +99,25 @@ globalThis.document = {
   createComment: (s) => new Comment(s),
   createDocumentFragment: () => new DocumentFragment(),
   getElementById: (id) => (id === "app" ? root : null),
+};
+
+// localStorage, location.hash and window events.
+const storage = new Map();
+globalThis.localStorage = { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, String(v)) };
+const winListeners = {};
+globalThis.addEventListener = (t, f) => (winListeners[t] ??= []).push(f);
+globalThis.removeEventListener = (t, f) => { winListeners[t] = (winListeners[t] ?? []).filter((g) => g !== f); };
+let hashValue = "";
+globalThis.location = {
+  get hash() { return hashValue; },
+  set hash(v) {
+    v = String(v);
+    if (v && v[0] !== "#") v = "#" + v;
+    if (v === "#") v = "";
+    if (v === hashValue) return;
+    hashValue = v;
+    setTimeout(() => (winListeners.hashchange ?? []).forEach((f) => f()), 0);
+  },
 };
 
 // ---- helpers for test scripts ----------------------------------------------
@@ -124,6 +144,8 @@ function find(tag, text) {
   return el;
 }
 function click(el) { el.dispatch("click"); }
+function key(el, k) { el.dispatch("keydown", { key: k }); }
+function check(el, on) { el.checked = on; el.dispatch("change"); }
 function input(el, value) { el.value = value; el.dispatch("input"); }
 function tick() { return new Promise((r) => setTimeout(r, 0)); }
 function ops() { const n = domOps; domOps = 0; return n; }

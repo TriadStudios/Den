@@ -88,8 +88,8 @@ var (
 	runtimeRef  = regexp.MustCompile(`\$\w+`)
 )
 
-// runtimeFor returns the top-level runtime declarations that code uses,
-// directly or through other runtime declarations, in runtime.js order.
+// runtimeFor returns the top-level declarations of runtime.js and stdlib.js
+// that code uses, directly or through other declarations, in source order.
 func runtimeFor(code string) string {
 	type decl struct {
 		name, src string
@@ -97,7 +97,7 @@ func runtimeFor(code string) string {
 	}
 	var decls []*decl
 	byName := map[string]*decl{}
-	for _, line := range strings.Split(runtimeJS, "\n") {
+	for _, line := range strings.Split(runtimeJS+"\n"+stdlibJS, "\n") {
 		if t := strings.TrimSpace(line); t == "" || strings.HasPrefix(t, "//") {
 			continue
 		}
@@ -275,9 +275,10 @@ func (e *emitter) tnodes(nodes []Node, svg bool) []*tnode {
 			}
 			t := &tnode{kind: 'e', tag: n.Tag, svg: svg || n.Tag == "svg", src: n}
 			for _, a := range n.Attrs {
-				if a.Kind == AttrExpr {
+				if a.Kind == AttrExpr || a.Name == "autofocus" {
 					t.need = true
-				} else {
+				}
+				if a.Kind != AttrExpr {
 					t.attrs = append(t.attrs, a)
 				}
 			}
@@ -422,6 +423,11 @@ func (e *emitter) bind(ts []*tnode) {
 				continue
 			}
 			for _, a := range n.Attrs {
+				if a.Name == "autofocus" && a.Kind != AttrExpr {
+					// Browsers only autofocus on page load; den also focuses
+					// elements it adds later, once they are in the document.
+					e.line("queueMicrotask(() => %s.focus());", t.v)
+				}
 				if a.Kind != AttrExpr {
 					continue
 				}
@@ -1167,6 +1173,20 @@ func (e *emitter) call(x *ast.CallExpr) string {
 	}
 	switch fun := ast.Unparen(x.Fun).(type) {
 	case *ast.SelectorExpr:
+		if id, ok := fun.X.(*ast.Ident); ok {
+			if pkg, ok := e.ck.info.Uses[id].(*types.PkgName); ok {
+				name := pkg.Imported().Path() + "." + fun.Sel.Name
+				if f := stdCalls[name]; f != nil {
+					var as []string
+					for _, a := range x.Args {
+						as = append(as, e.expr(a))
+					}
+					return f(as)
+				}
+				e.errAt(x, "%s is not supported yet", name)
+				return "undefined"
+			}
+		}
 		recv := e.ck.recvName(fun)
 		obj := e.expr(fun.X)
 		switch recv + "." + fun.Sel.Name {
@@ -1184,6 +1204,8 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return obj + ".key"
 		case "Event.PreventDefault":
 			return obj + ".preventDefault()"
+		case "error.Error":
+			return obj + ".message"
 		}
 		if sel := e.ck.info.Selections[fun]; sel != nil && sel.Kind() == types.FieldVal {
 			return e.expr(fun) + "(" + args() + ")" // a func-typed field
@@ -1207,6 +1229,16 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "$computed(() => " + args() + ")"
 				case "itoa":
 					return "String(" + args() + ")"
+				case "stored":
+					t := e.ck.info.TypeOf(x).(*types.Pointer).Elem().(*types.Named).TypeArgs().At(0)
+					dec, ok := e.decoder(t, "j")
+					if !ok {
+						e.errAt(x, "cannot store %s in localStorage", t)
+						return "undefined"
+					}
+					return "$stored(" + args() + ", (j) => " + dec + ")"
+				case "hash":
+					return "$hash()"
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -1218,6 +1250,75 @@ func (e *emitter) call(x *ast.CallExpr) string {
 	}
 	e.errAt(x, "this call is not supported yet")
 	return "undefined"
+}
+
+// stdCalls implements the functions of the importable packages.
+var stdCalls = map[string]func(a []string) string{
+	"strings.Contains":   func(a []string) string { return "(" + a[0] + ").includes(" + a[1] + ")" },
+	"strings.HasPrefix":  func(a []string) string { return "(" + a[0] + ").startsWith(" + a[1] + ")" },
+	"strings.HasSuffix":  func(a []string) string { return "(" + a[0] + ").endsWith(" + a[1] + ")" },
+	"strings.ToLower":    func(a []string) string { return "(" + a[0] + ").toLowerCase()" },
+	"strings.ToUpper":    func(a []string) string { return "(" + a[0] + ").toUpperCase()" },
+	"strings.Repeat":     func(a []string) string { return "(" + a[0] + ").repeat(" + a[1] + ")" },
+	"strings.Join":       func(a []string) string { return "$arr(" + a[0] + ").join(" + a[1] + ")" },
+	"strings.TrimSpace":  func(a []string) string { return "$trimSpace(" + a[0] + ")" },
+	"strings.TrimPrefix": func(a []string) string { return "$trimPrefix(" + a[0] + ", " + a[1] + ")" },
+	"strings.TrimSuffix": func(a []string) string { return "$trimSuffix(" + a[0] + ", " + a[1] + ")" },
+	"strings.Split":      func(a []string) string { return "$split(" + a[0] + ", " + a[1] + ")" },
+	"strings.ReplaceAll": func(a []string) string { return "$replaceAll(" + a[0] + ", " + a[1] + ", " + a[2] + ")" },
+	"strings.Fields":     func(a []string) string { return "$fields(" + a[0] + ")" },
+	"strconv.Itoa":       func(a []string) string { return "String(" + a[0] + ")" },
+	"strconv.FormatBool": func(a []string) string { return "String(" + a[0] + ")" },
+	"strconv.Atoi":       func(a []string) string { return "$atoi(" + a[0] + ")" },
+}
+
+// decoder returns JS that turns the parsed JSON in x back into a den value
+// of type t, throwing if it does not fit. Fields missing from the JSON get
+// their zero value, as with encoding/json.
+func (e *emitter) decoder(t types.Type, x string) (string, bool) {
+	v := e.name("v")
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		switch {
+		case u.Info()&types.IsString != 0:
+			return "$want(" + x + `, "string")`, true
+		case u.Info()&types.IsBoolean != 0:
+			return "$want(" + x + `, "boolean")`, true
+		case u.Info()&types.IsNumeric != 0:
+			return "$want(" + x + `, "number")`, true
+		}
+	case *types.Slice:
+		dec, ok := e.decoder(u.Elem(), v)
+		return "(" + x + " === null ? null : $sl($list(" + x + ").map((" + v + ") => " + dec + ")))", ok
+	case *types.Array:
+		dec, ok := e.decoder(u.Elem(), v)
+		return "$list(" + x + ").map((" + v + ") => " + dec + ")", ok
+	case *types.Struct:
+		o := e.name("o")
+		var fields []string
+		for i := 0; i < u.NumFields(); i++ {
+			f := u.Field(i)
+			fx := o + "." + fieldName(f.Name())
+			dec, ok := e.decoder(f.Type(), fx)
+			if !ok {
+				return "", false
+			}
+			fields = append(fields, fieldName(f.Name())+": "+fx+" === undefined ? "+zeroValue(f.Type())+" : "+dec)
+		}
+		return "((" + o + ") => ({" + strings.Join(fields, ", ") + "}))($obj(" + x + "))", true
+	case *types.Map:
+		k := e.name("k")
+		key := k
+		switch b := u.Key().Underlying().(*types.Basic); {
+		case b.Info()&types.IsNumeric != 0:
+			key = "Number(" + k + ")"
+		case b.Info()&types.IsBoolean != 0:
+			key = k + ` === "true"`
+		}
+		dec, ok := e.decoder(u.Elem(), v)
+		return "new Map(Object.entries($obj(" + x + ")).map(([" + k + ", " + v + "]) => [" + key + ", " + dec + "]))", ok
+	}
+	return "", false
 }
 
 func (e *emitter) builtin(name string, x *ast.CallExpr) string {
