@@ -39,11 +39,30 @@ class Node {
     domOps++;
   }
   replaceChildren(...nodes) { for (const c of [...this.childNodes]) c.remove(); this.append(...nodes); }
+  replaceWith(...nodes) { const p = this.parentNode; p.#insert(nodes.filter((n) => n !== this), this); this.remove(); }
+  cloneNode(deep) {
+    const c = this.shallow();
+    if (deep) for (const k of this.childNodes) c.append(k.cloneNode(true));
+    return c;
+  }
   get textContent() { return this.childNodes.map((c) => c.textContent).join(""); }
 }
-class Text extends Node { constructor(s) { super(); this.data = String(s); } get textContent() { return this.data; } }
-class Comment extends Node { constructor(s) { super(); this.data = String(s); } get textContent() { return ""; } }
-class DocumentFragment extends Node {}
+class Text extends Node {
+  constructor(s) { super(); this.data = String(s); }
+  get nodeType() { return 3; }
+  get textContent() { return this.data; }
+  shallow() { return new Text(this.data); }
+}
+class Comment extends Node {
+  constructor(s) { super(); this.data = String(s); }
+  get nodeType() { return 8; }
+  get textContent() { return ""; }
+  shallow() { return new Comment(this.data); }
+}
+class DocumentFragment extends Node {
+  get nodeType() { return 11; }
+  shallow() { return new DocumentFragment(); }
+}
 class Element extends Node {
   constructor(tag, ns) {
     super();
@@ -54,6 +73,8 @@ class Element extends Node {
     this.value = "";
     this.checked = false;
   }
+  get nodeType() { return 1; }
+  shallow() { const e = new Element(this.tagName, this.namespaceURI); e.attributes = new Map(this.attributes); return e; }
   setAttribute(k, v) { this.attributes.set(k, String(v)); }
   getAttribute(k) { return this.attributes.get(k) ?? null; }
   removeAttribute(k) { this.attributes.delete(k); }

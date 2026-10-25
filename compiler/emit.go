@@ -48,7 +48,7 @@ func Compile(sources []Source) (*Result, error) {
 		return nil, err
 	}
 	var body strings.Builder
-	e := &emitter{ck: ck, w: &body}
+	e := &emitter{ck: ck, w: &body, tpls: map[string]string{}}
 	for _, fd := range ck.funcs {
 		e.funcDecl(fd)
 	}
@@ -74,10 +74,11 @@ func Compile(sources []Source) (*Result, error) {
 		return nil, e.errs.sorted()
 	}
 	body.WriteString("$mount(App, document.getElementById(\"app\"));\n")
+	code := e.tplOut.String() + body.String()
 	var out strings.Builder
 	out.WriteString("// Built by Den. Do not edit.\n(() => {\n\"use strict\";\n")
-	out.WriteString(runtimeFor(body.String()))
-	out.WriteString(body.String())
+	out.WriteString(runtimeFor(code))
+	out.WriteString(code)
 	out.WriteString("})();\n")
 	return &Result{JS: out.String(), Components: names}, nil
 }
@@ -125,11 +126,13 @@ func runtimeFor(code string) string {
 			b.WriteString(d.src)
 		}
 	}
-	return b.String()
+	return minifyJS(b.String())
 }
 
 type emitter struct {
 	ck      *checked
+	tpls    map[string]string // template code -> name
+	tplOut  strings.Builder
 	w       *strings.Builder
 	ind     string
 	errs    ErrorList
@@ -179,8 +182,7 @@ func (e *emitter) component(cc *checkedComponent) {
 	}
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
 	e.stmts(cc.stmts)
-	root := e.element(cc.c.Root, false)
-	e.line("return %s;", root)
+	e.line("return %s;", e.instantiate([]Node{cc.c.Root}, false))
 	e.w.WriteString("}\n")
 }
 
@@ -224,109 +226,272 @@ func (e *emitter) funcBody(ft *ast.FuncType, body *ast.BlockStmt) {
 	e.results = saved
 }
 
-// element emits code that builds el and returns the JS expression for it.
-func (e *emitter) element(el *Element, svg bool) string {
-	if el.IsComponent() {
-		pt := e.cc.parts[el]
-		var args []string
-		for _, a := range pt.args {
-			args = append(args, e.expr(a))
-		}
-		return jsIdent(el.Tag) + "(" + strings.Join(args, ", ") + ")"
-	}
-	svg = svg || el.Tag == "svg"
-	v := e.name("$e")
-	maker := "$h"
-	if svg {
-		maker = "$hs"
-	}
-	e.line("const %s = %s(%s);", v, maker, jsString(el.Tag))
-	for _, a := range el.Attrs {
-		switch a.Kind {
-		case AttrStatic:
-			e.line("%s.setAttribute(%s, %s);", v, jsString(a.Name), jsString(a.Value))
-		case AttrBool:
-			e.line("%s.setAttribute(%s, \"\");", v, jsString(a.Name))
-		case AttrExpr:
-			pt := e.cc.attrs[a]
-			if pt.kind == partHandler {
-				body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
-				e.line("$on(%s, %s, (e) => {\n%s%s});", v, jsString(a.Name[2:]), body, e.ind)
-				continue
-			}
-			x := e.expr(pt.expr)
-			if e.ck.reactive(pt.expr) {
-				e.line("$attr(%s, %s, () => %s);", v, jsString(a.Name), x)
-			} else {
-				e.line("$set(%s, %s, %s);", v, jsString(a.Name), x)
-			}
-		}
-	}
-	e.children(v, el.Children, svg && el.Tag != "foreignObject")
-	return v
+// A tnode is one node of a static template. Each component root and each
+// block body is built once with DOM calls and then copied with cloneNode,
+// which is much faster than building every instance node by node. Dynamic
+// parts get a placeholder: an empty text node for {expr}, a comment for a
+// component, and comment anchors for {if} and {for}.
+type tnode struct {
+	kind     byte // 'e' element, 't' text, 'c' comment
+	tag      string
+	svg      bool // element is SVG, or (for anchors) content goes inside SVG
+	text     string
+	attrs    []*Attr // static attributes
+	children []*tnode
+	src      Node   // the markup node that needs code after cloning
+	end      *tnode // reactive {if} or {for}: the anchor after its content
+	need     bool   // code needs a reference to this node
+	v        string // that reference
 }
 
-// children emits code that appends nodes to the DOM node named parent.
-func (e *emitter) children(parent string, nodes []Node, svg bool) {
-	for _, ch := range nodes {
-		switch ch := ch.(type) {
+func (t *tnode) needed() bool {
+	if t.need {
+		return true
+	}
+	for _, c := range t.children {
+		if c.needed() {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *emitter) tnodes(nodes []Node, svg bool) []*tnode {
+	var out []*tnode
+	for _, n := range nodes {
+		switch n := n.(type) {
 		case *Text:
-			e.line("%s.append(%s);", parent, jsString(ch.Value))
+			out = append(out, &tnode{kind: 't', text: n.Value})
 		case *Interp:
-			pt := e.cc.parts[ch]
-			if tv := e.ck.info.Types[pt.expr]; tv.Value != nil {
-				e.line("%s.append(%s);", parent, jsString(constString(tv.Value)))
-			} else if e.ck.reactive(pt.expr) {
-				e.line("$text(%s, () => %s);", parent, e.expr(pt.expr))
+			if tv := e.ck.info.Types[e.cc.parts[n].expr]; tv.Value != nil {
+				out = append(out, &tnode{kind: 't', text: constString(tv.Value)})
 			} else {
-				e.line("%s.append(String(%s));", parent, e.expr(pt.expr))
+				out = append(out, &tnode{kind: 't', src: n, need: true})
 			}
 		case *Element:
-			e.line("%s.append(%s);", parent, e.element(ch, svg))
+			if n.IsComponent() {
+				out = append(out, &tnode{kind: 'c', src: n, need: true})
+				continue
+			}
+			t := &tnode{kind: 'e', tag: n.Tag, svg: svg || n.Tag == "svg", src: n}
+			for _, a := range n.Attrs {
+				if a.Kind == AttrExpr {
+					t.need = true
+				} else {
+					t.attrs = append(t.attrs, a)
+				}
+			}
+			t.children = e.tnodes(n.Children, t.svg && n.Tag != "foreignObject")
+			out = append(out, t)
+		case *If, *For:
+			start := &tnode{kind: 'c', svg: svg, src: n, need: true}
+			out = append(out, start)
+			if e.reactiveNode(n) {
+				start.end = &tnode{kind: 'c', need: true}
+				out = append(out, start.end)
+			}
+		}
+		// Merge static text, including folded constants, into one node.
+		if k := len(out); k > 1 && out[k-1].kind == 't' && out[k-2].kind == 't' && !out[k-1].need && !out[k-2].need {
+			out[k-2].text += out[k-1].text
+			out = out[:k-1]
+		}
+	}
+	return out
+}
+
+func (e *emitter) reactiveNode(n Node) bool {
+	pt := e.cc.parts[n]
+	if pt.kind == partFor {
+		return e.ck.reactive(pt.rng.X)
+	}
+	return e.ck.reactive(pt.expr)
+}
+
+// template returns the name of a function that clones the static DOM for
+// ts. Identical templates are shared.
+func (e *emitter) template(ts []*tnode) string {
+	var b strings.Builder
+	n := 0
+	var build func(t *tnode) string
+	build = func(t *tnode) string {
+		switch t.kind {
+		case 't':
+			return jsString(t.text)
+		case 'c':
+			return "$cm()"
+		}
+		v := fmt.Sprintf("a%d", n)
+		n++
+		maker := "$h"
+		if t.svg {
+			maker = "$hs"
+		}
+		fmt.Fprintf(&b, "  const %s = %s(%s);\n", v, maker, jsString(t.tag))
+		for _, a := range t.attrs {
+			fmt.Fprintf(&b, "  %s.setAttribute(%s, %s);\n", v, jsString(a.Name), jsString(a.Value))
+		}
+		var kids []string
+		for _, c := range t.children {
+			kids = append(kids, build(c))
+		}
+		if len(kids) > 0 {
+			fmt.Fprintf(&b, "  %s.append(%s);\n", v, strings.Join(kids, ", "))
+		}
+		return v
+	}
+	root := ""
+	if len(ts) == 1 && ts[0].kind == 'e' {
+		root = build(ts[0])
+	} else {
+		var kids []string
+		for _, t := range ts {
+			kids = append(kids, build(t))
+		}
+		root = "f"
+		fmt.Fprintf(&b, "  const f = $frag();\n  f.append(%s);\n", strings.Join(kids, ", "))
+	}
+	code := b.String() + "  return " + root + ";\n"
+	if name, ok := e.tpls[code]; ok {
+		return name
+	}
+	name := fmt.Sprintf("$t%d", len(e.tpls))
+	e.tpls[code] = name
+	fmt.Fprintf(&e.tplOut, "const %s = $tpl(() => {\n%s});\n", name, code)
+	return name
+}
+
+// instantiate emits code that clones the template for nodes, wires up its
+// dynamic parts and returns the JS expression for the result: an element,
+// or a fragment when there is more than one top-level node.
+func (e *emitter) instantiate(nodes []Node, svg bool) string {
+	if len(nodes) == 0 {
+		return "$frag()"
+	}
+	if len(nodes) == 1 {
+		if el, ok := nodes[0].(*Element); ok && el.IsComponent() {
+			return e.componentCall(el)
+		}
+	}
+	ts := e.tnodes(nodes, svg)
+	root := e.name("$e")
+	e.line("const %s = %s();", root, e.template(ts))
+	// Take every reference before any binding changes the tree.
+	if len(ts) == 1 && ts[0].kind == 'e' {
+		ts[0].v = root
+		e.walk(root, ts[0].children)
+	} else {
+		e.walk(root, ts)
+	}
+	e.bind(ts)
+	return root
+}
+
+func (e *emitter) walk(parent string, ts []*tnode) {
+	prev, prevIdx := "", -1
+	for i, t := range ts {
+		if !t.needed() {
+			continue
+		}
+		if prev == "" {
+			prev = parent + ".firstChild" + strings.Repeat(".nextSibling", i)
+		} else {
+			prev += strings.Repeat(".nextSibling", i-prevIdx)
+		}
+		t.v = e.name("$e")
+		e.line("const %s = %s;", t.v, prev)
+		prev, prevIdx = t.v, i
+		e.walk(t.v, t.children)
+	}
+}
+
+// bind emits the code for the dynamic parts of a cloned template.
+func (e *emitter) bind(ts []*tnode) {
+	for _, t := range ts {
+		switch n := t.src.(type) {
+		case *Interp:
+			pt := e.cc.parts[n]
+			if e.ck.reactive(pt.expr) {
+				e.line("$text(%s, () => %s);", t.v, e.expr(pt.expr))
+			} else {
+				e.line("%s.data = String(%s);", t.v, e.expr(pt.expr))
+			}
+		case *Element:
+			if n.IsComponent() {
+				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n))
+				continue
+			}
+			for _, a := range n.Attrs {
+				if a.Kind != AttrExpr {
+					continue
+				}
+				pt := e.cc.attrs[a]
+				if pt.kind == partHandler {
+					body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
+					e.line("$on(%s, %s, (e) => {\n%s%s});", t.v, jsString(a.Name[2:]), body, e.ind)
+					continue
+				}
+				x := e.expr(pt.expr)
+				if e.ck.reactive(pt.expr) {
+					e.line("$attr(%s, %s, () => %s);", t.v, jsString(a.Name), x)
+				} else {
+					e.line("$set(%s, %s, %s);", t.v, jsString(a.Name), x)
+				}
+			}
+			e.bind(t.children)
 		case *If:
-			e.ifNode(parent, ch, svg)
+			e.ifNode(t, n)
 		case *For:
-			e.forNode(parent, ch, svg)
+			e.forNode(t, n)
 		}
 	}
 }
 
-// block emits a function that builds nodes into a fresh fragment.
+func (e *emitter) componentCall(el *Element) string {
+	var args []string
+	for _, a := range e.cc.parts[el].args {
+		args = append(args, e.expr(a))
+	}
+	return jsIdent(el.Tag) + "(" + strings.Join(args, ", ") + ")"
+}
+
+// block emits a function that builds nodes and returns them.
 func (e *emitter) block(params string, nodes []Node, svg bool) string {
-	f := e.name("$f")
-	body := e.capture(e.ind+"  ", func() {
-		e.line("const %s = $frag();", f)
-		e.children(f, nodes, svg)
-		e.line("return %s;", f)
-	})
+	body := e.capture(e.ind+"  ", func() { e.line("return %s;", e.instantiate(nodes, svg)) })
 	return "(" + params + ") => {\n" + body + e.ind + "}"
 }
 
 // ifNode emits {if}. A condition that reads no signal can never change, so
-// it compiles to a plain JS if; otherwise $if swaps the branches.
-func (e *emitter) ifNode(parent string, n *If, svg bool) {
+// it compiles to a plain JS if that fills in its placeholder once;
+// otherwise $if swaps the branches between two anchors.
+func (e *emitter) ifNode(t *tnode, n *If) {
 	pt := e.cc.parts[n]
 	cond := e.expr(pt.expr)
-	if !e.ck.reactive(pt.expr) {
+	if t.end == nil {
+		branch := func(nodes []Node) {
+			if len(nodes) > 0 {
+				e.indented(func() { e.line("%s.replaceWith(%s);", t.v, e.instantiate(nodes, t.svg)) })
+			}
+		}
 		e.line("if (%s) {", cond)
-		e.indented(func() { e.children(parent, n.Then, svg) })
+		branch(n.Then)
 		if len(n.Else) > 0 {
 			e.line("} else {")
-			e.indented(func() { e.children(parent, n.Else, svg) })
+			branch(n.Else)
 		}
 		e.line("}")
 		return
 	}
 	els := "null"
 	if len(n.Else) > 0 {
-		els = e.block("", n.Else, svg)
+		els = e.block("", n.Else, t.svg)
 	}
-	e.line("$if(%s, () => %s, %s, %s);", parent, cond, e.block("", n.Then, svg), els)
+	e.line("$if(%s, %s, () => %s, %s, %s);", t.v, t.end.v, cond, e.block("", n.Then, t.svg), els)
 }
 
 // forNode emits {for}. A list that reads no signal compiles to a plain JS
-// loop; otherwise $for keeps the rows in sync by key.
-func (e *emitter) forNode(parent string, n *For, svg bool) {
+// loop; otherwise $for keeps the rows between its anchors in sync by key.
+func (e *emitter) forNode(t *tnode, n *For) {
 	pt := e.cc.parts[n]
 	rs := pt.rng
 	k, v := loopVar(rs.Key), loopVar(rs.Value)
@@ -336,7 +501,7 @@ func (e *emitter) forNode(parent string, n *For, svg bool) {
 	if isSlice(e.ck.info.TypeOf(rs.X)) {
 		list = "$arr(" + list + ")"
 	}
-	if !e.ck.reactive(rs.X) {
+	if t.end == nil {
 		l := e.name("$l")
 		e.line("const %s = %s;", l, list)
 		switch {
@@ -352,7 +517,7 @@ func (e *emitter) forNode(parent string, n *For, svg bool) {
 		default:
 			e.line("for (const %s of %s) {", or(v, e.name("$v")), l)
 		}
-		e.indented(func() { e.children(parent, n.Body, svg) })
+		e.indented(func() { e.line("%s.before(%s);", t.v, e.instantiate(n.Body, t.svg)) })
 		e.line("}")
 		return
 	}
@@ -372,7 +537,7 @@ func (e *emitter) forNode(parent string, n *For, svg bool) {
 			useIndex = true
 		}
 	}
-	e.line("$for(%s, () => %s, (%s) => %s, %s, %t);", parent, list, params, e.expr(pt.expr), e.block(params, n.Body, svg), useIndex)
+	e.line("$for(%s, %s, () => %s, (%s) => %s, %s, %t);", t.v, t.end.v, list, params, e.expr(pt.expr), e.block(params, n.Body, t.svg), useIndex)
 }
 
 // loopVar returns the JS name of a range variable, or "" if there is none.

@@ -3,7 +3,7 @@
 // strict CSP with Trusted Types enforced. The compiler ships only the
 // top-level declarations an app references, so keep one per line start.
 // Signals, computed values and effects form a push-pull graph. Writing a
-// signal marks its observers DIRTY and everything further down CHECK, and
+// signal marks the nodes that read it DIRTY and everything further down CHECK, and
 // queues the effects it reaches. A computed value recomputes only when it is
 // read and an input really changed, and queued effects run once per flush
 // after every write has landed, so they never see a half-updated graph.
@@ -17,23 +17,23 @@ class $Node {
     this.value = value;
     this.effect = effect;
     this.state = fn ? 2 : 0; // 0 clean, 1 check, 2 dirty
-    this.sources = null;
-    this.observers = null;
+    this.deps = null;
+    this.subs = null;
   }
   get() {
-    if ($listener) ($listener.sources ??= new Set()).add(this);
+    if ($listener) ($listener.deps ??= new Set()).add(this);
     if (this.fn) $fresh(this);
     return this.value;
   }
   set(v) {
     if (Object.is(v, this.value) && !$mutable(v)) return;
     this.value = v;
-    if (this.observers) for (const o of this.observers) $stale(o, 2);
+    if (this.subs) for (const o of this.subs) $stale(o, 2);
   }
   update(f) { this.set(f(this.value)); }
 }
 // Maps and slices change in place, so setting one always notifies.
-function $mutable(v) { return v instanceof Map || v instanceof $Slice; }
+function $mutable(v) { return v instanceof Map || v?.isSlice$ === true; }
 function $stale(n, state) {
   if (n.state >= state) return;
   if (n.state === 0 && n.effect) {
@@ -41,11 +41,11 @@ function $stale(n, state) {
     if (!$scheduled) { $scheduled = true; queueMicrotask($flush); }
   }
   n.state = state;
-  if (n.observers) for (const o of n.observers) $stale(o, 1);
+  if (n.subs) for (const o of n.subs) $stale(o, 1);
 }
 function $fresh(n) {
-  if (n.state === 1 && n.sources) {
-    for (const s of n.sources) {
+  if (n.state === 1 && n.deps) {
+    for (const s of n.deps) {
       if (s.fn) $fresh(s);
       if (n.state === 2) break;
     }
@@ -54,14 +54,14 @@ function $fresh(n) {
   else n.state = 0;
 }
 function $update(n) {
-  const old = n.sources, prev = $listener, before = n.value;
-  n.sources = null;
+  const old = n.deps, prev = $listener, before = n.value;
+  n.deps = null;
   $listener = n;
   try { n.value = n.fn(); } finally { $listener = prev; }
-  if (old) for (const s of old) if (!n.sources?.has(s)) s.observers?.delete(n);
-  if (n.sources && !n.dead) for (const s of n.sources) (s.observers ??= new Set()).add(n);
+  if (old) for (const s of old) if (!n.deps?.has(s)) s.subs?.delete(n);
+  if (n.deps && !n.dead) for (const s of n.deps) (s.subs ??= new Set()).add(n);
   n.state = 0;
-  if (!n.effect && n.observers && (!Object.is(before, n.value) || $mutable(n.value))) for (const o of n.observers) o.state = 2;
+  if (!n.effect && n.subs && (!Object.is(before, n.value) || $mutable(n.value))) for (const o of n.subs) o.state = 2;
 }
 function $flush() {
   for (let rounds = 0; $queue.length; rounds++) {
@@ -87,8 +87,8 @@ function $effect(fn) {
 }
 function $dispose(n) {
   n.dead = true;
-  if (n.sources) for (const s of n.sources) s.observers?.delete(n);
-  n.sources = null;
+  if (n.deps) for (const s of n.deps) s.subs?.delete(n);
+  n.deps = null;
 }
 function $cleanup(fn) { if ($owner) $owner.push(fn); }
 // $scope runs fn untracked in a new ownership scope: [result, dispose].
@@ -109,6 +109,9 @@ function $safeURL(v) {
 function $h(tag) { return document.createElement(tag); }
 function $hs(tag) { return document.createElementNS("http://www.w3.org/2000/svg", tag); }
 function $frag() { return document.createDocumentFragment(); }
+function $cm() { return document.createComment(""); }
+// $tpl builds a template once and returns a function that clones it.
+function $tpl(build) { let t; return () => (t ??= build()).cloneNode(true); }
 function $set(el, name, v) {
   if (name === "value") { const s = String(v ?? ""); if (el.value !== s) el.value = s; return; }
   if (name === "checked" || name === "selected") { el[name] = !!v; return; }
@@ -119,19 +122,13 @@ function $set(el, name, v) {
   el.setAttribute(name, v);
 }
 function $attr(el, name, fn) { $effect(() => $set(el, name, fn())); }
-function $text(parent, fn) {
-  const t = document.createTextNode("");
-  parent.append(t);
-  $effect(() => { const v = String(fn()); if (t.data !== v) t.data = v; });
-}
+function $text(t, fn) { $effect(() => { const v = String(fn()); if (t.data !== v) t.data = v; }); }
 function $on(el, type, fn) { el.addEventListener(type, fn); }
 // Control flow keeps its content between two comment anchors. Nested blocks
 // only ever change nodes between their own anchors, so a block's first and
 // last node stay put and the block can be moved or removed as one range.
-function $anchor(parent) { const c = document.createComment(""); parent.append(c); return c; }
 function $clear(start, end) { while (start.nextSibling !== end) start.nextSibling.remove(); }
-function $if(parent, cond, a, b) {
-  const start = $anchor(parent), end = $anchor(parent);
+function $if(start, end, cond, a, b) {
   let cur, dispose;
   $effect(() => {
     const v = !!cond();
@@ -147,8 +144,7 @@ function $if(parent, cond, a, b) {
 // same (and its index, when the row uses it); otherwise it is rebuilt. Rows
 // that stay are moved with a longest-increasing-subsequence diff, so only
 // rows that actually moved touch the DOM.
-function $for(parent, list, key, row, useIndex) {
-  const start = $anchor(parent), end = $anchor(parent);
+function $for(start, end, list, key, row, useIndex) {
   let rows = new Map();
   $effect(() => {
     const items = list();
@@ -170,8 +166,10 @@ function $reconcile(start, end, rows, items, key, row, useIndex) {
     }
     if (!r) {
       const [f, dispose] = $scope(() => row(it, i));
-      if (!f.firstChild) f.append(document.createComment(""));
-      r = { item: it, first: f.firstChild, last: f.lastChild, dispose, pos: -1 };
+      if (f.nodeType === 11 && !f.firstChild) f.append($cm());
+      r = f.nodeType === 11
+        ? { item: it, first: f.firstChild, last: f.lastChild, dispose, pos: -1 }
+        : { item: it, first: f, last: f, dispose, pos: -1 };
     }
     r.i = i;
     next.set(k, r);
@@ -223,6 +221,7 @@ function $lis(a) {
 // see each other's writes. nil is null.
 class $Slice {
   constructor(a, o, n, c) { this.a = a; this.o = o; this.n = n; this.c = c; }
+  get isSlice$() { return true; }
   toJSON() { return $arr(this); }
 }
 function $sl(a) { return new $Slice(a, 0, a.length, a.length); }

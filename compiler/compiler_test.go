@@ -23,7 +23,7 @@ component App() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`$signal(0)`, `$text($e0, () => count.get())`, `count.set((count.get() + 1))`} {
+	for _, want := range []string{`$signal(0)`, `$text($e1, () => count.get())`, `count.set((count.get() + 1))`, `a0.append("Clicked ", "", " times")`} {
 		if !strings.Contains(res.JS, want) {
 			t.Errorf("output missing %q", want)
 		}
@@ -184,7 +184,7 @@ component App() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.JS, `$e0.append("3")`) {
+	if !strings.Contains(res.JS, `a0.append("3 ", "")`) {
 		t.Error("constant 7/2 should fold to 3")
 	}
 	if !strings.Contains(res.JS, `Math.trunc(n.get() / 2)`) {
@@ -292,7 +292,13 @@ let seed = 7;
 const rand = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
 const parent = document.createElement("ul");
 const list = $signal([]);
-$scope(() => $for(parent, () => list.get(), (x) => x, (x) => { const f = $frag(), li = $h("li"); li.append(String(x)); f.append(li); return f; }, false));
+const start = document.createComment(""), end = document.createComment("");
+parent.append(start, end);
+$scope(() => $for(start, end, () => list.get(), (x) => x, (x) => {
+  const li = $h("li"); li.append(String(x));
+  if (x % 3) return li; // rows are single elements or fragments
+  const f = $frag(); f.append(li, document.createTextNode("")); return f;
+}, false));
 let next = 0, prevNodes = new Map();
 (async () => {
   for (let round = 0; round < 300; round++) {
@@ -328,6 +334,24 @@ let next = 0, prevNodes = new Map();
 	}
 }
 
+func gzipLen(s string) int {
+	var buf bytes.Buffer
+	w, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	w.Write([]byte(s))
+	w.Close()
+	return buf.Len()
+}
+
+// TestRuntimeBudget holds the whole runtime, every feature included, to the
+// budget in docs/PLAN.md: under 3 KB gzipped. Apps ship only what they use.
+func TestRuntimeBudget(t *testing.T) {
+	all := runtimeFor(runtimeJS)
+	t.Logf("full runtime: %d bytes, %d gzipped", len(all), gzipLen(all))
+	if n := gzipLen(all); n >= 3*1024 {
+		t.Errorf("runtime is %d bytes gzipped, over the 3 KB budget", n)
+	}
+}
+
 // TestExampleBudgets compiles every example and holds it to the size budget
 // in docs/PLAN.md: an app the size of TodoMVC ships under 10 KB gzipped.
 func TestExampleBudgets(t *testing.T) {
@@ -349,13 +373,10 @@ func TestExampleBudgets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", dir, err)
 		}
-		var buf bytes.Buffer
-		w, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-		w.Write([]byte(res.JS))
-		w.Close()
-		t.Logf("%s: %d bytes, %d gzipped", filepath.Base(dir), len(res.JS), buf.Len())
-		if buf.Len() > 10*1024 {
-			t.Errorf("%s is %d bytes gzipped, over the 10 KB budget", dir, buf.Len())
+		n := gzipLen(res.JS)
+		t.Logf("%s: %d bytes, %d gzipped", filepath.Base(dir), len(res.JS), n)
+		if n > 10*1024 {
+			t.Errorf("%s is %d bytes gzipped, over the 10 KB budget", dir, n)
 		}
 	}
 }
