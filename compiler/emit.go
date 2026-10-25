@@ -428,10 +428,17 @@ func (e *emitter) bind(ts []*tnode) {
 				pt := e.cc.attrs[a]
 				if pt.kind == partHandler {
 					body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
-					e.line("$on(%s, %s, (e) => {\n%s%s});", t.v, jsString(a.Name[2:]), body, e.ind)
+					if bubbles[a.Name[2:]] {
+						e.line("$on(%s, %s, (e) => {\n%s%s});", t.v, jsString(a.Name[2:]), body, e.ind)
+					} else {
+						e.line("%s.addEventListener(%s, (e) => {\n%s%s});", t.v, jsString(a.Name[2:]), body, e.ind)
+					}
 					continue
 				}
 				x := e.expr(pt.expr)
+				if urlAttrs[strings.ToLower(a.Name)] {
+					x = "$url(" + x + ")"
+				}
 				if e.ck.reactive(pt.expr) {
 					e.line("$attr(%s, %s, () => %s);", t.v, jsString(a.Name), x)
 				} else {
@@ -445,6 +452,19 @@ func (e *emitter) bind(ts []*tnode) {
 			e.forNode(t, n)
 		}
 	}
+}
+
+// bubbles lists the events that bubble and so can share one delegated
+// listener on the document. Other events get a listener on the element.
+var bubbles = map[string]bool{
+	"click": true, "dblclick": true, "auxclick": true, "contextmenu": true,
+	"input": true, "change": true, "beforeinput": true, "submit": true, "reset": true,
+	"keydown": true, "keyup": true,
+	"pointerdown": true, "pointerup": true, "pointermove": true, "pointerover": true, "pointerout": true,
+	"mousedown": true, "mouseup": true, "mousemove": true, "mouseover": true, "mouseout": true,
+	"touchstart": true, "touchend": true, "touchmove": true,
+	"focusin": true, "focusout": true, "wheel": true, "dragstart": true, "drag": true, "dragend": true,
+	"dragenter": true, "dragover": true, "dragleave": true, "drop": true, "copy": true, "cut": true, "paste": true,
 }
 
 func (e *emitter) componentCall(el *Element) string {
@@ -867,6 +887,11 @@ func (e *emitter) store(lhs ast.Expr, val string) {
 	}
 }
 
+func isNilIdent(x ast.Expr) bool {
+	id, ok := ast.Unparen(x).(*ast.Ident)
+	return ok && id.Name == "nil"
+}
+
 func isBlank(x ast.Expr) bool {
 	id, ok := x.(*ast.Ident)
 	return ok && id.Name == "_"
@@ -1116,6 +1141,9 @@ func (e *emitter) call(x *ast.CallExpr) string {
 	if tv, ok := e.ck.info.Types[x.Fun]; ok && tv.IsType() {
 		if len(x.Args) != 1 {
 			return "undefined"
+		}
+		if isNilIdent(x.Args[0]) {
+			return zeroValue(tv.Type) // []T(nil), map[K]V(nil)
 		}
 		arg := e.expr(x.Args[0])
 		from := e.ck.info.TypeOf(x.Args[0])

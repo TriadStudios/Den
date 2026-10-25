@@ -1,0 +1,11 @@
+/* Shared by the den and vanilla benchmark pages. */
+body { font: 14px/1.4 system-ui, sans-serif; margin: 0; }
+.container { max-width: 1000px; margin: 0 auto; padding: 1rem; }
+.jumbotron { padding: 1rem; background: #eee; border-radius: 6px; margin-bottom: 1rem; }
+.buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+button { padding: 0.4rem; }
+.table { width: 100%; border-collapse: collapse; }
+.table td { padding: 0.3rem; border-top: 1px solid #ddd; }
+.table tr.danger { background: #f2dede; }
+.col-md-1 { width: 8%; } .col-md-4 { width: 33%; } .col-md-6 { width: 50%; }
+a { cursor: pointer; color: #337ab7; }

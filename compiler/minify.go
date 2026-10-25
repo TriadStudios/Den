@@ -3,9 +3,9 @@ package compiler
 import "strings"
 
 // minifyJS removes comments and the whitespace that JS does not need from
-// den's own runtime: it keeps one space between identifier characters and
-// keeps line breaks, so automatic semicolon insertion is never affected. It
-// understands strings and regex literals, which is all the runtime uses.
+// den's own runtime. It keeps one space between identifier characters and
+// keeps the line breaks that automatic semicolon insertion could depend on.
+// It understands strings and regex literals, which is all the runtime uses.
 func minifyJS(src string) string {
 	var b strings.Builder
 	word := func(c byte) bool {
@@ -48,7 +48,8 @@ func minifyJS(src string) string {
 			b.WriteString(src[i : j+1])
 			i = j
 		case c == '\n' || c == '\r':
-			if last() != '\n' {
+			// A line break after these can never end a statement early.
+			if strings.IndexByte("\n;{},", last()) < 0 {
 				b.WriteByte('\n')
 			}
 		case c == ' ' || c == '\t':

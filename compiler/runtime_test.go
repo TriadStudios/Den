@@ -381,3 +381,17 @@ func TestGoConformance(t *testing.T) {
 		})
 	}
 }
+
+func TestRunDynamicURLs(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    u := signal("https://go.dev")
+    <a href={u.Get()} onclick={u.Set("java\tscript:alert(1)")}>x</a>
+}`, `
+log(html());
+click(find("a")); await tick();
+log(html());`)
+	expectLines(t, got,
+		`<a href="https://go.dev">x</a>`,
+		`<a href="about:blank#den-blocked-url">x</a>`)
+}

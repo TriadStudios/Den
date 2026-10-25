@@ -46,6 +46,8 @@ class Node {
     return c;
   }
   get textContent() { return this.childNodes.map((c) => c.textContent).join(""); }
+  set textContent(v) { for (const c of [...this.childNodes]) c.remove(); if (v) this.append(String(v)); }
+  get ownerDocument() { return document; }
 }
 class Text extends Node {
   constructor(s) { super(); this.data = String(s); }
@@ -80,13 +82,16 @@ class Element extends Node {
   removeAttribute(k) { this.attributes.delete(k); }
   addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }
   dispatch(type, extra = {}) {
-    const ev = { type, target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...extra };
-    for (const fn of this.listeners[type] ?? []) fn(ev);
+    const ev = { type, target: this, defaultPrevented: false, cancelBubble: false, preventDefault() { this.defaultPrevented = true; }, ...extra };
+    for (let n = this; n && !ev.cancelBubble; n = n.parentNode) for (const fn of n.listeners?.[type] ?? []) fn(ev);
+    if (!ev.cancelBubble) for (const fn of docListeners[type] ?? []) fn(ev);
     return ev;
   }
 }
 const root = new Element("div", "html");
+const docListeners = {};
 globalThis.document = {
+  addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
   createElement: (t) => new Element(t, "html"),
   createElementNS: (ns, t) => new Element(t, ns),
   createTextNode: (s) => new Text(s),
