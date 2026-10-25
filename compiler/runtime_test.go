@@ -219,3 +219,120 @@ log(html());`)
 		`<button aria-pressed="true" data-n="7">x</button>`,
 		`<button aria-pressed="false" data-n="7" disabled="">x</button>`)
 }
+
+// runRuntime runs script against the runtime declarations it names, with no
+// compiled app, and returns what it logged.
+func runRuntime(t *testing.T, names, script string) string {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	dom, err := os.ReadFile("testdata/dom.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog := string(dom) + runtimeFor(names) + "\n(async () => {\n" + script +
+		"\n})().catch((e) => { console.error(e); process.exit(1); });\n"
+	file := filepath.Join(t.TempDir(), "rt.js")
+	if err := os.WriteFile(file, []byte(prog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(node, file).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestSignalGraph(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $effect $scope", `
+let runs = 0;
+const a = $signal(1);
+const lazy = $computed(() => { runs++; return a.get() * 10; });
+log("not read yet:", runs);
+log(lazy.get(), lazy.get(), "computed once:", runs);
+
+// A diamond: d depends on a twice, through b and c. The effect must run once
+// per change and never see b and c out of step.
+const b = $computed(() => a.get() * 2);
+const c = $computed(() => a.get() + 1);
+const d = $computed(() => b.get() + "/" + c.get());
+const seen = [];
+const [, dispose] = $scope(() => $effect(() => seen.push(d.get())));
+a.set(2);
+a.set(3); // two writes in one tick: one effect run
+await tick();
+log("diamond:", seen.join(" "));
+
+// A computed whose value does not change stops the update there.
+let parityRuns = 0;
+const parity = $computed(() => a.get() % 2);
+$scope(() => $effect(() => { parity.get(); parityRuns++; }));
+a.set(5); await tick();
+log("parity effect ran", parityRuns, "time(s); lazy ran", runs, "times");
+a.set(6); await tick();
+log("after parity change:", parityRuns);
+
+dispose();
+a.set(7); await tick();
+log("disposed effect saw:", seen.join(" "));`)
+	expectLines(t, got,
+		`not read yet: 0`,
+		`10 10 computed once: 1`,
+		`diamond: 2/2 6/4`,
+		`parity effect ran 1 time(s); lazy ran 1 times`,
+		`after parity change: 2`,
+		`disposed effect saw: 2/2 6/4 10/6 12/7`)
+}
+
+func TestMaps(t *testing.T) {
+	got := runApp(t, `
+type Score struct {
+    Name  string
+    Total int
+}
+
+func tally(words []string) map[string]int {
+    counts := make(map[string]int)
+    for _, w := range words {
+        counts[w]++
+    }
+    return counts
+}
+
+func describe(m map[string]int, k string) string {
+    if n, ok := m[k]; ok {
+        return k + "=" + itoa(n)
+    } else if k == "" {
+        return "empty"
+    }
+    return k + " missing"
+}
+
+component App() {
+    scores := signal(map[string]int{"ann": 1, "bob": 2})
+    var none map[string]Score
+    <div>
+        <ul>
+            {for name, n := range scores.Get() key name {
+                <li>{name}:{n}</li>
+            }}
+        </ul>
+        <p>{describe(tally([]string{"a", "b", "a"}), "a")} {describe(scores.Get(), "zed")} {len(none)} {none["x"].Total}</p>
+        <button onclick={scores.Update(func(m map[string]int) map[string]int {
+            m["bob"] += 10
+            m["cat"] = 3
+            delete(m, "ann")
+            return m
+        })}>edit</button>
+    </div>
+}`, `
+const lis = findAll("li"); lis.forEach((li, i) => { li.mark = i; });
+log(html(find("ul")), find("p").textContent);
+click(find("button")); await tick();
+log(html(find("ul")), "kept:", findAll("li").map((li) => li.mark ?? "new").join(","));`)
+	expectLines(t, got,
+		`<ul><li>ann:1</li><li>bob:2</li></ul> a=2 zed missing 0 0`,
+		`<ul><li>bob:12</li><li>cat:3</li></ul> kept: new,new`)
+}

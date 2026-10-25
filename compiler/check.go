@@ -162,6 +162,18 @@ func check(files []*File) (*checked, error) {
 		},
 	}
 	conf.Check("app", fset, []*ast.File{file}, info)
+	// Map keys become JS Map keys, which compare like Go only for basic types.
+	badKey := map[token.Pos]bool{}
+	for x, tv := range info.Types {
+		if m, ok := tv.Type.(*types.Map); ok && tv.IsType() && !badKey[x.Pos()] {
+			if _, basic := m.Key().Underlying().(*types.Basic); !basic {
+				badKey[x.Pos()] = true
+				p := fset.Position(x.Pos())
+				errs = append(errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column},
+					Msg: errorf("map keys must be strings, numbers or bools, not %s", m.Key())})
+			}
+		}
+	}
 	if len(errs) > 0 {
 		return nil, errs.sorted()
 	}
@@ -436,7 +448,18 @@ type pairer struct {
 
 func (pr *pairer) errAt(n ast.Node, format string, args ...any) {
 	p := pr.ck.fset.Position(n.Pos())
-	pr.errs = append(pr.errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column}, Msg: fmt.Sprintf(format, args...)})
+	pr.errs = append(pr.errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column}, Msg: errorf(format, args...)})
+}
+
+// errorf is fmt.Sprintf that prints types the way the user wrote them,
+// without the generated package's name.
+func errorf(format string, args ...any) string {
+	for i, a := range args {
+		if t, ok := a.(types.Type); ok {
+			args[i] = types.TypeString(t, func(*types.Package) string { return "" })
+		}
+	}
+	return fmt.Sprintf(format, args...)
 }
 
 func callArgs(s ast.Stmt) []ast.Expr { return s.(*ast.ExprStmt).X.(*ast.CallExpr).Args }
@@ -464,20 +487,20 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 	case *For:
 		rs, ok := stmts[0].(*ast.RangeStmt)
 		if !ok {
-			pr.errAt(stmts[0], "for in markup must range over a slice, array or int: {for i, x := range xs key x.ID { ... }}")
+			pr.errAt(stmts[0], "for in markup must range over a slice, array, map or int: {for i, x := range xs key x.ID { ... }}")
 			return stmts[1:]
 		}
 		if rs.Tok == token.ASSIGN {
 			pr.errAt(rs, "for in markup must declare its variables with :=")
 		}
 		switch t := pr.ck.info.TypeOf(rs.X).Underlying().(type) {
-		case *types.Slice, *types.Array:
+		case *types.Slice, *types.Array, *types.Map:
 		case *types.Basic:
 			if t.Info()&types.IsInteger == 0 {
-				pr.errAt(rs.X, "for in markup can range over slices, arrays and ints, not %s", t)
+				pr.errAt(rs.X, "for in markup can range over slices, arrays, maps and ints, not %s", t)
 			}
 		default:
-			pr.errAt(rs.X, "for in markup can range over slices, arrays and ints, not %s", pr.ck.info.TypeOf(rs.X))
+			pr.errAt(rs.X, "for in markup can range over slices, arrays, maps and ints, not %s", pr.ck.info.TypeOf(rs.X))
 		}
 		key := callArgs(rs.Body.List[0])[0]
 		if _, ok := pr.ck.info.TypeOf(key).Underlying().(*types.Basic); !ok {

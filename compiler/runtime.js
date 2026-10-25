@@ -2,50 +2,92 @@
 // It never uses innerHTML, eval or inline handlers, so pages run under a
 // strict CSP with Trusted Types enforced. The compiler ships only the
 // top-level declarations an app references, so keep one per line start.
+// Signals, computed values and effects form a push-pull graph. Writing a
+// signal marks its observers DIRTY and everything further down CHECK, and
+// queues the effects it reaches. A computed value recomputes only when it is
+// read and an input really changed, and queued effects run once per flush
+// after every write has landed, so they never see a half-updated graph.
 let $listener = null;
 let $owner = null;
-const $pending = new Set();
+let $queue = [];
 let $scheduled = false;
-function $schedule(e) {
-  $pending.add(e);
-  if (!$scheduled) { $scheduled = true; queueMicrotask($flush); }
+class $Node {
+  constructor(fn, value, effect) {
+    this.fn = fn;
+    this.value = value;
+    this.effect = effect;
+    this.state = fn ? 2 : 0; // 0 clean, 1 check, 2 dirty
+    this.sources = null;
+    this.observers = null;
+  }
+  get() {
+    if ($listener) ($listener.sources ??= new Set()).add(this);
+    if (this.fn) $fresh(this);
+    return this.value;
+  }
+  set(v) {
+    if (Object.is(v, this.value) && !(v instanceof Map)) return; // maps change in place
+    this.value = v;
+    if (this.observers) for (const o of this.observers) $stale(o, 2);
+  }
+  update(f) { this.set(f(this.value)); }
+}
+function $stale(n, state) {
+  if (n.state >= state) return;
+  if (n.state === 0 && n.effect) {
+    $queue.push(n);
+    if (!$scheduled) { $scheduled = true; queueMicrotask($flush); }
+  }
+  n.state = state;
+  if (n.observers) for (const o of n.observers) $stale(o, 1);
+}
+function $fresh(n) {
+  if (n.state === 1 && n.sources) {
+    for (const s of n.sources) {
+      if (s.fn) $fresh(s);
+      if (n.state === 2) break;
+    }
+  }
+  if (n.state === 2) $update(n);
+  else n.state = 0;
+}
+function $update(n) {
+  const old = n.sources, prev = $listener, before = n.value;
+  n.sources = null;
+  $listener = n;
+  try { n.value = n.fn(); } finally { $listener = prev; }
+  if (old) for (const s of old) if (!n.sources?.has(s)) s.observers?.delete(n);
+  if (n.sources && !n.dead) for (const s of n.sources) (s.observers ??= new Set()).add(n);
+  n.state = 0;
+  if (!n.effect && n.observers && (!Object.is(before, n.value) || n.value instanceof Map)) for (const o of n.observers) o.state = 2;
 }
 function $flush() {
-  let rounds = 0;
-  while ($pending.size) {
-    if (++rounds > 1000) { $pending.clear(); console.error("den: update loop did not settle"); break; }
-    const batch = [...$pending];
-    $pending.clear();
-    for (const e of batch) e.run();
+  for (let rounds = 0; $queue.length; rounds++) {
+    if (rounds > 1000) { $queue = []; console.error("den: update loop did not settle"); break; }
+    const q = $queue;
+    $queue = [];
+    for (const e of q) if (!e.dead) $fresh(e);
   }
   $scheduled = false;
 }
-function $signal(value) {
-  const subs = new Set();
-  const s = {
-    get() { if ($listener) { subs.add($listener); $listener.deps.add(subs); } return value; },
-    set(v) { if (Object.is(v, value)) return; value = v; for (const e of [...subs]) $schedule(e); },
-    update(f) { s.set(f(value)); },
-  };
-  return s;
+function $signal(value) { return new $Node(null, value, false); }
+function $computed(fn) {
+  const c = new $Node(fn, undefined, false);
+  $cleanup(() => $dispose(c));
+  return c;
 }
 // Effects belong to the scope that created them and stop when it is disposed.
 function $effect(fn) {
-  const e = {
-    deps: new Set(),
-    run() {
-      if (e.dead) return;
-      $unsub(e);
-      const prev = $listener;
-      $listener = e;
-      try { fn(); } finally { $listener = prev; }
-    },
-  };
-  $cleanup(() => { e.dead = true; $unsub(e); });
-  e.run();
+  const e = new $Node(fn, undefined, true);
+  $cleanup(() => $dispose(e));
+  $update(e);
   return e;
 }
-function $unsub(e) { for (const d of e.deps) d.delete(e); e.deps.clear(); }
+function $dispose(n) {
+  n.dead = true;
+  if (n.sources) for (const s of n.sources) s.observers?.delete(n);
+  n.sources = null;
+}
 function $cleanup(fn) { if ($owner) $owner.push(fn); }
 // $scope runs fn untracked in a new ownership scope: [result, dispose].
 function $scope(fn) {
@@ -53,11 +95,6 @@ function $scope(fn) {
   $owner = own;
   $listener = null;
   try { return [fn(), () => { for (const d of own.splice(0)) d(); }]; } finally { $owner = o; $listener = l; }
-}
-function $computed(fn) {
-  const s = $signal(undefined);
-  $effect(() => s.set(fn()));
-  return { get: s.get };
 }
 const $URL_ATTRS = new Set(["href", "src", "action", "formaction", "poster", "cite", "xlink:href"]);
 function $safeURL(v) {
@@ -120,9 +157,9 @@ function $for(parent, list, key, row, useIndex) {
   $cleanup(() => { for (const r of rows.values()) r.dispose(); });
 }
 function $reconcile(start, end, rows, items, key, row, useIndex) {
-  const next = new Map(), order = [];
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i], k = key(it, i);
+  const next = new Map(), order = [], ix = items.$k;
+  for (let n = 0; n < items.length; n++) {
+    const it = items[n], i = ix ? ix[n] : n, k = key(it, i);
     if (next.has(k)) { console.error("den: duplicate key in list, row skipped:", k); continue; }
     let r = rows.get(k);
     if (r) {
@@ -179,6 +216,7 @@ function $lis(a) {
   for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) keep.add(i);
   return keep;
 }
+function $entries(m) { const a = [...m.values()]; a.$k = [...m.keys()]; return a; }
 function $seq(n) { return Array.from({ length: n }, (_, i) => i); }
 // $eq is Go == for structs and arrays.
 function $eq(a, b) {

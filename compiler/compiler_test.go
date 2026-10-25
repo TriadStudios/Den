@@ -109,7 +109,7 @@ component App() {
 		{"range over string in markup", `
 component App() {
     <ul>{for _, r := range "abc" key r { <li>{r}</li> }}</ul>
-}`, `app.den:3:28: for in markup can range over slices, arrays and ints`},
+}`, `app.den:3:28: for in markup can range over slices, arrays, maps and ints`},
 		{"three-clause for in markup", `
 component App() {
     <ul>{for i := 0; i < 3; i++ key i { <li>{i}</li> }}</ul>
@@ -148,6 +148,17 @@ import "strings"
 component App() {
     <p>x</p>
 }`, `app.den:2:1: imports are not supported yet`},
+		{"struct map key", `
+type P struct{ A int }
+func f(m map[P]int) int { return len(m) }
+component App() {
+    <p>{f(nil)}</p>
+}`, `app.den:3:10: map keys must be strings, numbers or bools, not P`},
+		{"map compared with nil", `
+func f(m map[string]int) bool { return m == nil }
+component App() {
+    <p>{f(nil)}</p>
+}`, `app.den:2:40: comparing a map[string]int with nil is not supported`},
 		{"script tag in a block", `
 component App() {
     <div>{if true { <script>alert(1)</script> }}</div>
