@@ -27,7 +27,9 @@ also what js-framework-benchmark reports. The CPU is throttled 4x, as
 js-framework-benchmark does for its slower cases, to steady the numbers. Each
 result is the median of the runs, and the summary is the unweighted geometric
 mean of den's time over vanilla's. The script column stops once the click's
-microtasks (den's update flush) have run.
+microtasks (den's update flush) have run. Memory is the JS heap
+(`Runtime.getHeapUsage`) after creating 1,000 rows and forcing a garbage
+collection, which is what js-framework-benchmark's memory results report.
 
 This is a local reimplementation of the js-framework-benchmark keyed
 operations, not the official harness, which needs npm and its own server.
@@ -38,19 +40,27 @@ Chromium (Playwright's build), Linux container, 15 runs per operation:
 
 | Operation | Vanilla ms | den ms | den / vanilla | Vanilla script | den script |
 | --- | --- | --- | --- | --- | --- |
-| Create 1,000 rows | 279.8 | 305.9 | 1.09 | 37.9 | 33.6 |
-| Replace 1,000 rows | 357.3 | 376.3 | 1.05 | 58.5 | 63.1 |
-| Update every 10th row | 47.7 | 52.8 | 1.11 | 1.2 | 2.3 |
-| Select row | 15.8 | 16.6 | 1.05 | 0.1 | 1.4 |
-| Swap rows | 36.7 | 56.9 | 1.55 | 0.1 | 2.5 |
-| Remove row | 83.2 | 76.6 | 0.92 | 0.1 | 1.4 |
-| Create 10,000 rows | 2702.0 | 3023.8 | 1.12 | 305.4 | 467.8 |
-| Append 1,000 rows | 314.4 | 354.2 | 1.13 | 29.4 | 56.9 |
-| Clear 1,000 rows | 27.0 | 29.2 | 1.08 | 23.6 | 26.0 |
+| Create 1,000 rows | 284.6 | 312.6 | 1.10 | 29.0 | 32.6 |
+| Replace 1,000 rows | 347.0 | 375.8 | 1.08 | 54.4 | 59.1 |
+| Update every 10th row | 54.3 | 47.3 | 0.87 | 1.4 | 1.1 |
+| Select row | 16.8 | 16.2 | 0.96 | 0.2 | 0.6 |
+| Swap rows | 39.4 | 35.1 | 0.89 | 0.1 | 1.7 |
+| Remove row | 63.9 | 61.6 | 0.96 | 0.1 | 1.3 |
+| Create 10,000 rows | 2888.1 | 3107.6 | 1.08 | 312.5 | 470.3 |
+| Append 1,000 rows | 314.4 | 355.1 | 1.13 | 27.4 | 49.5 |
+| Clear 1,000 rows | 23.4 | 24.8 | 1.06 | 21.1 | 22.3 |
 
-**Geometric mean: 1.11x vanilla** (gate: 1.30). Single operations vary
-between runs by more than the differences shown; swap rows has measured
-anywhere from 1.00x to 1.55x. On script time alone den is slower on the small
-updates (select, swap, remove), where vanilla touches two rows directly and
-den runs its keyed diff or re-evaluates each row's binding. Those are the
-first places to optimize.
+**Speed: 1.01x vanilla** (geometric mean; gate 1.30). Single operations vary
+between runs by more than some of the differences shown. On script time
+alone den is slower on the small updates (select, swap, remove), where
+vanilla touches two rows directly and den runs its keyed diff or
+re-evaluates each row's binding, and on create 10,000 rows.
+
+**Memory: 1.26x vanilla** (JS heap after creating 1,000 rows and a full
+GC: 2.45 MB against 1.94 MB; budget 1.20). This budget is **not met yet**.
+Each den row holds about 360 bytes of reactive state that vanilla keeps
+nowhere: the label signal and two binding effects (graph nodes), their
+closures, the row record and the row's scope. Counting the DOM and layout
+memory Chromium holds for the rows, den uses 1.07x vanilla. The next steps
+are linking scopes through their nodes instead of arrays, and binding a
+bare signal read (`{r.Label.Get()}`) without a closure.

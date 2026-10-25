@@ -1,6 +1,9 @@
 package compiler
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // minifyJS removes comments and the whitespace that JS does not need from
 // den's own runtime. It keeps one space between identifier characters and
@@ -61,9 +64,31 @@ func minifyJS(src string) string {
 				b.WriteByte(' ')
 			}
 			i = j - 1
+		case c == '}' && last() == ';':
+			// "a;}" is "a}".
+			out := b.String()
+			b.Reset()
+			b.WriteString(out[:len(out)-1])
+			b.WriteByte(c)
 		default:
 			b.WriteByte(c)
 		}
 	}
-	return strings.TrimSpace(b.String()) + "\n"
+	// "(x)=>" is "x=>": a call cannot be followed by "=>", so outside strings
+	// (where the runtime never has one) this only matches arrows. And true
+	// and false are !0 and !1, which the runtime never uses as names.
+	out := arrowParen.ReplaceAllString(strings.TrimSpace(b.String()), "$1=>")
+	out = boolWord.ReplaceAllStringFunc(out, func(m string) string {
+		i := strings.IndexAny(m, "tf") // where the word starts
+		if m[i] == 't' {
+			return strings.TrimSuffix(m[:i], " ") + "!0"
+		}
+		return strings.TrimSuffix(m[:i], " ") + "!1"
+	})
+	return out + "\n"
 }
+
+var (
+	arrowParen = regexp.MustCompile(`\(([A-Za-z_$][\w$]*)\)=>`)
+	boolWord   = regexp.MustCompile(`(?:^|[ ;(,=:?!&|{}\[\]])(?:true|false)\b`)
+)

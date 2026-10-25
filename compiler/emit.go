@@ -1343,7 +1343,8 @@ func (e *emitter) builtin(name string, x *ast.CallExpr) string {
 		case *types.Map:
 			return arg(0) + ".clear()"
 		case *types.Slice:
-			return "$fill(" + arg(0) + ", " + zeroValue(t.Elem()) + ")"
+			s := e.name("$s")
+			return "((" + s + ") => " + s + "?.a.fill(" + zeroValue(t.Elem()) + ", " + s + ".o, " + s + ".o + " + s + ".n))(" + arg(0) + ")"
 		}
 	case "append":
 		if x.Ellipsis.IsValid() {

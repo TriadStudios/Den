@@ -252,7 +252,7 @@ func runRuntime(t *testing.T, names, script string) string {
 }
 
 func TestSignalGraph(t *testing.T) {
-	got := runRuntime(t, "$signal $computed $effect $scope", `
+	got := runRuntime(t, "$signal $computed $effect $scope $free", `
 let runs = 0;
 const a = $signal(1);
 const lazy = $computed(() => { runs++; return a.get() * 10; });
@@ -265,7 +265,7 @@ const b = $computed(() => a.get() * 2);
 const c = $computed(() => a.get() + 1);
 const d = $computed(() => b.get() + "/" + c.get());
 const seen = [];
-const [, dispose] = $scope(() => $effect(() => seen.push(d.get())));
+const [, scope] = $scope(() => $effect(() => seen.push(d.get())));
 a.set(2);
 a.set(3); // two writes in one tick: one effect run
 await tick();
@@ -280,7 +280,7 @@ log("parity effect ran", parityRuns, "time(s); lazy ran", runs, "times");
 a.set(6); await tick();
 log("after parity change:", parityRuns);
 
-dispose();
+$free(scope);
 a.set(7); await tick();
 log("disposed effect saw:", seen.join(" "));`)
 	expectLines(t, got,
@@ -400,7 +400,7 @@ click(find("a")); await tick();
 log(html());`)
 	expectLines(t, got,
 		`<a href="https://go.dev">x</a>`,
-		`<a href="about:blank#den-blocked-url">x</a>`)
+		`<a href="about:blank#blocked">x</a>`)
 }
 
 const storedSrc = `

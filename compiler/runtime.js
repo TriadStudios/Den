@@ -14,33 +14,42 @@
 let $listener = null;
 let $owner = null;
 let $queue = [];
-// A node: f its function (none for a signal), v its value, e whether it is
-// an effect, s its state (0 clean, 1 check, 2 dirty), d the nodes it read,
-// o the nodes that read it, x set once it is disposed.
+// A node: f its function (none for a signal), v its value, s its state (0
+// clean, 1 check, 2 dirty), d the nodes it read (one node, or an array once
+// there are several), o the nodes that read it (one node, or a Set), x set
+// once it is disposed. An effect also has e, a sink called with the node
+// when its value changes, and t and k for the sink to write to. Most nodes
+// have one reader and read one node, so storing those directly saves
+// allocating a collection for each, which is most of a binding's memory.
 class $Node {
-  constructor(f, v, e) { this.f = f; this.v = v; this.e = e; this.s = f ? 2 : 0; this.d = this.o = null; }
+  constructor(f, v, e, t, k) { this.f = f; this.v = v; this.e = e; this.t = t; this.k = k; this.s = f ? 2 : 0; this.d = this.o = null; }
   get() {
-    if ($listener) ($listener.d ??= new Set()).add(this);
+    const l = $listener;
+    if (l && !$has(l.d, this)) l.d = !l.d ? this : l.d.push ? (l.d.push(this), l.d) : [l.d, this];
     if (this.f) $fresh(this);
     return this.v;
   }
   set(v) {
     if (Object.is(v, this.v) && !$mutable(v)) return;
     this.v = v;
-    this.o?.forEach((n) => $stale(n, 2));
+    $each(this.o, (n) => $stale(n, 2));
   }
   update(f) { this.set(f(this.v)); }
 }
+function $each(o, f) { o?.forEach ? o.forEach(f) : o && f(o); }
+function $has(o, n) { return o === n || !!o?.includes?.(n); }
+function $link(d, n) { const o = d.o; d.o = !o || o === n ? n : o instanceof Set ? o.add(n) : new Set([o, n]); }
+function $unlink(d, n) { if (d.o === n) d.o = null; else if (d.o instanceof Set) d.o.delete(n); }
 // Maps and slices change in place, so setting one always notifies.
 function $mutable(v) { return v instanceof Map || v?.m$ === 1; }
 function $stale(n, s) {
   if (n.s >= s) return;
   if (!n.s && n.e && $queue.push(n) === 1) queueMicrotask($flush);
   n.s = s;
-  n.o?.forEach((m) => $stale(m, 1));
+  $each(n.o, (m) => $stale(m, 1));
 }
 function $fresh(n) {
-  if (n.s === 1 && n.d) for (const d of n.d) { if (d.f) $fresh(d); if (n.s === 2) break; }
+  if (n.s === 1) $each(n.d, (d) => n.s === 1 && d.f && $fresh(d));
   if (n.s === 2) $update(n);
   n.s = 0;
 }
@@ -49,39 +58,42 @@ function $update(n) {
   n.d = null;
   $listener = n;
   try { n.v = n.f(); } finally { $listener = l; }
-  old?.forEach((d) => n.d?.has(d) || d.o?.delete(n));
-  if (!n.x) n.d?.forEach((d) => (d.o ??= new Set()).add(n));
+  $each(old, (d) => $has(n.d, d) || $unlink(d, n));
+  if (!n.x) $each(n.d, (d) => $has(old, d) || $link(d, n));
   n.s = 0;
-  if (!n.e && (!Object.is(v, n.v) || $mutable(n.v))) n.o?.forEach((m) => { m.s = 2; });
+  if (!Object.is(v, n.v) || $mutable(n.v)) n.e ? n.e(n) : $each(n.o, (m) => { m.s = 2; });
 }
 function $flush() {
   for (let i = 0; $queue.length; i++) {
-    if (i > 1000) { $queue = []; console.error("den: update loop did not settle"); break; }
+    if (i > 1000) { $queue = []; console.error("den: update loop"); break; }
     const q = $queue;
     $queue = [];
     for (const e of q) if (!e.x) $fresh(e);
   }
 }
-function $signal(v) { return new $Node(null, v, false); }
-function $computed(f) { const c = new $Node(f, undefined, false); $cleanup(c); return c; }
-// Effects belong to the scope that created them and stop when it is disposed.
-function $effect(f) { const e = new $Node(f, undefined, true); $cleanup(e); $update(e); return e; }
-function $dispose(n) { n.x = true; n.d?.forEach((d) => d.o?.delete(n)); n.d = null; }
-// A scope holds cleanup functions and the nodes to dispose.
+function $signal(v) { return new $Node(null, v); }
+function $computed(f) { const c = new $Node(f); $cleanup(c); return c; }
+// Effects belong to the scope that created them and stop when it is
+// disposed. The default sink, Boolean, does nothing.
+function $effect(f, e = Boolean, t, k) { const n = new $Node(f, $Node, e, t, k); $cleanup(n); $update(n); return n; }
+function $dispose(n) { n.x = true; $each(n.d, (d) => $unlink(d, n)); n.d = null; }
+// A scope is an array of cleanup functions and nodes to dispose.
 function $cleanup(f) { $owner?.push(f); }
-// $scope runs f untracked in a new ownership scope: [result, dispose].
+function $free(own) { for (const d of own.splice(0)) d.f ? $dispose(d) : d(); }
+// $scope runs f untracked in a new scope: [result, scope]. The scope is
+// copied to its exact size, since nothing more is added once f returns.
 function $scope(f) {
   const o = $owner, l = $listener, own = [];
   $owner = own;
   $listener = null;
-  try { return [f(), () => { for (const d of own.splice(0)) d.f ? $dispose(d) : d(); }]; } finally { $owner = o; $listener = l; }
+  try { return [f(), own.slice()]; } finally { $owner = o; $listener = l; }
 }
 // $url lets through only http, https, mailto, tel and relative URLs. The
 // compiler wraps every dynamic URL attribute (href, src, ...) in it.
 function $url(v) {
   const s = String(v).replace(/[\t\n\r]/g, "").replace(/^[\u0000- ]+/, "");
   const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(s);
-  return !m || /^(https?|mailto|tel)$/i.test(m[1]) ? s : "about:blank#den-blocked-url";
+  return !m || /^(https?|mailto|tel)$/i.test(m[1]) ? s : "about:blank#blocked";
 }
 function $h(tag) { return document.createElement(tag); }
 function $hs(tag) { return document.createElementNS("http://www.w3.org/2000/svg", tag); }
@@ -96,8 +108,11 @@ function $set(el, name, v) {
   if (v === false || v == null) el.removeAttribute(name);
   else el.setAttribute(name, v === true ? "" : v);
 }
-function $attr(el, name, f) { let last = $attr; $effect(() => { const v = f(); if (v !== last) $set(el, name, (last = v)); }); }
-function $text(t, f) { $effect(() => { const v = String(f()); if (t.data !== v) t.data = v; }); }
+// Bindings are effects whose sink writes the DOM when the value changes.
+function $attr(el, name, f) { $effect(f, $attrSink, el, name); }
+function $attrSink(n) { $set(n.t, n.k, n.v); }
+function $text(t, f) { $effect(f, $textSink, t); }
+function $textSink(n) { n.t.data = String(n.v); }
 // Bubbling events (the compiler decides which) use one listener per type on
 // the document, and the handler is stored on the element.
 const $delegated = new Set();
@@ -116,44 +131,46 @@ function $clear(a, b) {
   if (p.firstChild === a && p.lastChild === b) { p.textContent = ""; p.append(a, b); }
   else while (a.nextSibling !== b) a.nextSibling.remove();
 }
+// own is the scope of the branch being shown.
 function $if(a, b, cond, yes, no) {
-  let cur, dispose;
+  let cur, own;
   $effect(() => {
     const v = !!cond();
     if (v === cur) return;
     cur = v;
-    if (dispose) { dispose(); $clear(a, b); }
+    if (own) { $free(own); $clear(a, b); }
     const f = v ? yes : no;
-    dispose = null;
-    if (f) { let n; [n, dispose] = $scope(f); b.before(n); }
+    own = null;
+    if (f) { let n; [n, own] = $scope(f); b.before(n); }
   });
-  $cleanup(() => dispose?.());
+  $cleanup(() => own && $free(own));
 }
 // $for renders a keyed list. A row is kept while its key and item are the
 // same (and its index, when the row uses it); otherwise it is rebuilt. The
 // diff skips the common prefix and suffix, then moves the rows in between
 // with a longest-increasing-subsequence diff, so only rows that actually
 // moved touch the DOM.
-function $for(a, b, list, key, row, useIndex) {
+function $for(a, b, list, key, row, ui) {
   let rows = [];
   $effect(() => {
     const items = list(), l = $listener;
     $listener = null;
-    try { rows = $reconcile(a, b, rows, items, key, row, useIndex); } finally { $listener = l; }
+    try { rows = $reconcile(a, b, rows, items, key, row, ui); } finally { $listener = l; }
   });
-  $cleanup(() => rows.forEach((r) => r.d()));
+  $cleanup(() => rows.forEach((r) => $free(r.d)));
 }
 // A row: k its key, v its item, i its index, a and b its first and last
-// node, d its dispose function, p its position in the previous list.
-function $reconcile(start, end, old, items, key, row, useIndex) {
+// node, d its scope, p its position in the previous list. ui says whether
+// rows use their index, so a row whose index changed must be rebuilt.
+function $reconcile(start, end, old, items, key, row, ui) {
   const ix = items.$k, seen = new Set(), its = [], idx = [], keys = [];
   items.forEach((v, n) => {
     const i = ix ? ix[n] : n, k = key(v, i);
-    if (seen.has(k)) return console.error("den: duplicate key in list, row skipped:", k);
+    if (seen.has(k)) return console.error("den: duplicate key", k);
     seen.add(k); its.push(v); idx.push(i); keys.push(k);
   });
   const n = its.length, out = Array(n), byKey = new Map();
-  const same = (r, j) => r.k === keys[j] && Object.is(r.v, its[j]) && (!useIndex || r.i === idx[j]);
+  const same = (r, j) => r.k === keys[j] && Object.is(r.v, its[j]) && (!ui || r.i === idx[j]);
   let s = 0, oe = old.length, ne = n, reused = 0;
   while (s < oe && s < ne && same(old[s], s)) out[s] = old[s++];
   while (oe > s && ne > s && same(old[oe - 1], ne - 1)) out[--ne] = old[--oe];
@@ -170,8 +187,8 @@ function $reconcile(start, end, old, items, key, row, useIndex) {
     }
     out[j] = r;
   }
-  if (!reused && !s && oe && oe === old.length) { old.forEach((r) => r.d()); $clear(start, end); }
-  else byKey.forEach((r) => { r.d(); $nodes(r).forEach((m) => m.remove()); });
+  if (!reused && !s && oe && oe === old.length) { old.forEach((r) => $free(r.d)); $clear(start, end); }
+  else byKey.forEach((r) => { $free(r.d); $nodes(r).forEach((m) => m.remove()); });
   const keep = $lis(out.slice(s, ne).map((r) => r.p));
   if (!keep.size) {
     const f = $frag();
@@ -209,7 +226,6 @@ function $lis(a) {
 class $Slice {
   constructor(a, o, n, c) { this.a = a; this.o = o; this.n = n; this.c = c; }
   get m$() { return 1; }
-  toJSON() { return $arr(this); }
 }
 function $sl(a) { return new $Slice(a, 0, a.length, a.length); }
 function $arr(s) { return !s ? [] : !s.o && s.n === s.a.length ? s.a : s.a.slice(s.o, s.o + s.n); }
@@ -229,7 +245,6 @@ function $append(s, vs) {
 }
 function $make(n, c, zero) { return new $Slice(Array(n).fill(zero), 0, n, c); }
 function $copy(d, s) { const t = $arr(s).slice(0, $slen(d)); t.forEach((v, i) => { d.a[d.o + i] = v; }); return t.length; }
-function $fill(s, zero) { for (let i = 0; i < $slen(s); i++) s.a[s.o + i] = zero; }
 function $entries(m) { const a = [...m.values()]; a.$k = [...m.keys()]; return a; }
 function $seq(n) { return Array.from({ length: n }, (_, i) => i); }
 // $eq is Go == for structs and arrays.
@@ -240,4 +255,4 @@ function $eq(a, b) {
 }
 // $len is Go len for strings: the length in UTF-8 bytes.
 function $len(s) { let n = 0; for (const c of s) { const p = c.codePointAt(0); n += p < 0x80 ? 1 : p < 0x800 ? 2 : p < 0x10000 ? 3 : 4; } return n; }
-function $mount(component, root) { root.replaceChildren($scope(component)[0]); }
+function $mount(app, root) { root.replaceChildren($scope(app)[0]); }

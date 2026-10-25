@@ -1,87 +1,90 @@
 # Den — Go-syntax UI, compiled to tiny JavaScript
 
-Den is an early prototype of a frontend framework where you write components in
-Go syntax and the compiler emits small, fast, safe JavaScript. There is no
-virtual DOM, no WebAssembly runtime and no npm.
+> **Experimental.** Den is a young project. The language and APIs will change
+> before 1.0, and it is not ready for production use. See the
+> [plan](docs/PLAN.md) for where it is going.
+
+Den lets Go developers build web apps in Go syntax. You write components in
+`.den` files, Go's own type checker checks them, and the compiler emits small,
+fast JavaScript: no virtual DOM, no WebAssembly runtime and no npm.
 
 ```go
-component Counter(label string, start int, step int) {
-    count := signal(start)
-    double := computed(count.Get() * 2)
-    <section class="card">
-        <h2>{label}</h2>
-        <p class="value">{count.Get()}</p>
-        <p class="hint">Double: {double.Get()}</p>
-        <button onclick={count.Set(count.Get() - step)} disabled={count.Get() - step < 0}>−</button>
-        <button onclick={count.Update(func(n int) int { return n + step })}>+</button>
+type Todo struct {
+    ID    int
+    Title string
+    Done  bool
+}
+
+component TodoList(todos *Signal[[]Todo]) {
+    left := computed(countLeft(todos.Get()))
+    <section>
+        <ul>
+            {for _, t := range todos.Get() key t.ID {
+                <li class={doneClass(t.Done)}>{t.Title}</li>
+            }}
+        </ul>
+        {if left.Get() > 0 {
+            <p>{left.Get()} left</p>
+        } else {
+            <p>All done!</p>
+        }}
     </section>
 }
 ```
 
-The demo app (two counters, a computed value, a bound text input) builds to
-**5.2 KB, or 1.9 KB gzipped, runtime included**.
+Every expression in the markup is ordinary Go. Change `t.Title` to `t.Titel`
+and the build stops with `app.den:12:50: t.Titel undefined (type Todo has no
+field or method Titel)` before any JavaScript is written.
 
-Lists and conditionals use Go's own `for` and `if`. Lists need a key, so
-updates move rows instead of rebuilding them:
+| | JS shipped, gzipped |
+| --- | --- |
+| `examples/counter` (two counters, a computed value, a bound input) | 2.1 KB |
+| `examples/todos` (add, toggle, remove, filter) | 3.8 KB |
+| `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.2 KB |
+| The whole runtime, every feature included | 3.0 KB |
 
-```go
-type Todo struct {
-    ID   int
-    Text string
-    Done bool
-}
-
-component TodoList(todos *Signal[[]Todo]) {
-    <ul>
-        {for _, t := range todos.Get() key t.ID {
-            <li>{t.Text}{if t.Done { ✓ }}</li>
-        }}
-    </ul>
-}
-```
-
-`examples/todos` (add, toggle, remove, filter) builds to **3.3 KB gzipped**.
+On the js-framework-benchmark operations den runs at **1.01x the time of
+hand-written vanilla JS** ([details](bench/README.md)).
 
 ## Quick start
 
 ```sh
-go build -o bin/den ./cmd/den
-./bin/den dev examples/todos            # http://localhost:8080, rebuilds on save
-./bin/den build examples/counter        # writes examples/counter/dist/
-./bin/den check examples/counter        # type-check only
-go test ./...                           # runtime tests need node on PATH
+go install github.com/TriadStudios/Den/cmd/den@latest
+den dev examples/todomvc       # http://localhost:8080, rebuilds and reloads on save
+den build examples/todomvc     # writes examples/todomvc/dist/
+den check examples/todomvc     # type-check only
 ```
 
-Requires Go 1.24+. The only dependency is the Go standard library. To install the
-CLI: `go install github.com/TriadStudios/Den/cmd/den@latest`.
+Den needs Go 1.24 or later and has no dependencies beyond the Go standard
+library. An app is a directory of `.den` files with a component named `App`,
+plus an optional `style.css`.
 
 ## How it works
 
-1. **Parse.** `compiler/parse.go` reads `component Name(props) { ... }` blocks
-   and the plain Go declarations (types, constants, functions) between them.
-   The Go statements at the top of the body are kept as Go; the markup below is
-   parsed into an element tree. Props are parsed with `go/parser`, so they are
-   real Go parameter lists.
-2. **Type-check with Go itself.** `compiler/check.go` writes the whole app out
-   as one Go file: statements stay as-is, every `{expr}` becomes a typed call,
-   every handler becomes a `func(e Event)`, every `<Card title={x}/>`
-   becomes `Card(x)`, and `{if}` and `{for}` blocks become real Go `if` and
-   `for` statements, so their scopes and types are Go's own. A small prelude declares `Signal[T]`, `Computed[T]` and
-   `Event`. `go/types` then checks everything, and `/*line app.den:L:C*/`
-   directives map each error back to the exact spot in your `.den` file.
-3. **Emit JavaScript from the typed AST.** `compiler/emit.go` walks the checked
-   AST and writes direct DOM calls. Types drive the output:
-   - Only expressions that read a signal get a reactive binding. The decision
-     happens at compile time, so static parts cost nothing at runtime. An
-     `{if}` or `{for}` whose condition or list reads no signal compiles to a
-     plain JS `if` or loop.
-   - Constants fold (`{7 / 2}` becomes the text `3`).
-   - Integer division truncates as in Go.
-4. **Runtime.** `compiler/runtime.js` holds signals, effects, computed
-   values, microtask batching, ownership scopes (effects stop when the `if`
-   branch or list row that created them goes away), keyed list reconciliation
-   with a longest-increasing-subsequence diff, and safe DOM helpers. Apps ship
-   only the runtime functions they use.
+1. **Parse.** `compiler/parse.go` reads `component Name(props) { ... }`
+   blocks and the plain Go declarations (types, constants, functions,
+   imports) between them. Inside a component, the Go statements at the top
+   stay Go and the markup below becomes an element tree.
+2. **Type-check with Go itself.** `compiler/check.go` writes the whole app
+   out as one Go file: every `{expr}` becomes a typed call, every handler a
+   `func(e Event)`, every `<Card title={x}/>` a call `Card(x)`, and `{if}`
+   and `{for}` blocks real Go `if` and `for` statements. A small prelude
+   declares `Signal[T]`, `Computed[T]` and `Event`. `go/types` checks it all,
+   and line directives map every error back to its place in the `.den` file.
+3. **Emit JavaScript from the typed AST.** `compiler/emit.go` decides as much
+   as it can at compile time:
+   - Each component's static DOM is built once and copied with `cloneNode`;
+     the code then fills in only the dynamic parts.
+   - Only expressions that read a signal get a reactive binding. An `{if}`
+     or `{for}` whose condition or list reads no signal compiles to a plain
+     JS `if` or loop.
+   - Constants fold, integer division truncates as in Go, and bubbling events
+     share one delegated listener per type.
+4. **Runtime.** `compiler/runtime.js` is a push-pull signal graph (computed
+   values are lazy and effects are glitch-free), ownership scopes (effects
+   stop when the branch or row that created them goes away), keyed list
+   reconciliation with a longest-increasing-subsequence diff, and safe DOM
+   helpers. The compiler ships only the runtime functions an app uses.
 
 ## Type safety
 
@@ -91,79 +94,118 @@ All of these fail at build time, reported as `file:line:col`:
 app.den:5:36: cannot use "hi" (untyped string constant) as int value in argument to count.Set
 app.den:6:13: cannot render struct{A int}: only strings, numbers and bools can be shown in markup
 app.den:7:15: <Card> has no prop "titel"
+app.den:4:10: for in markup needs a key so rows can move instead of being rebuilt: {for _, x := range xs key x.ID { ... }}
+app.den:2:8: package "fmt" is not available in den; you can import strconv, strings
 ```
 
-Other checks: missing props, wrong prop types, unknown names, unused variables,
-mismatched tags, and calling a component as a function.
+Other checks: missing props, wrong prop types, unknown names, unused
+variables and imports, mismatched tags, list keys that are not strings,
+numbers or bools, and calling a component as a function.
 
 ## Security by default
 
 - **No raw HTML.** `innerHTML`, `outerHTML`, `srcdoc` and `dangerously*` are
-  compile errors. Text is always inserted as text nodes.
+  compile errors. Text is always inserted as text nodes, and templates are
+  built with DOM calls, never by parsing HTML.
 - **No inline JS.** `onclick="..."` strings are rejected; handlers must be Go.
   `<script>`, `<iframe>`, `<object>` and `<embed>` are rejected.
 - **Safe URLs.** Static `href`/`src` values with dangerous schemes (including
-  obfuscated ones like `java\tscript:`) fail the build. Dynamic URLs are
-  sanitised at runtime, and only http, https, mailto, tel and relative URLs
-  pass.
+  obfuscated ones like `java\tscript:`) fail the build. Dynamic URL
+  attributes are sanitized at runtime: only http, https, mailto, tel and
+  relative URLs pass.
 - **Strict CSP.** Generated pages ship with `script-src 'self'`, no
   `unsafe-inline`, no `unsafe-eval`, and Trusted Types enforced with zero
   policies allowed. The runtime never needs one.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
-## Language subset (v0)
+## The language
 
-Supported:
-- `signal`, `computed`, `.Get()`, `.Set()`, `.Update(func)`
-- `{if cond { ... } else if ... { ... } else { ... }}` in markup
-- `{for i, x := range xs key x.ID { ... }}` in markup, over slices, arrays
-  and ints; the key (a string, number or bool) is required
-- `type`, `const` and `func` declarations between components
-- structs (including embedded fields), arrays and slices; composite
-  literals, field access, indexing, slicing, `append`, `make`, `len`, `cap`,
-  `min`, `max`
-- local variables, `if`/`else`, `for` (all three forms and `range`),
-  `break`, `continue`, `return` (one value, named results allowed),
-  `+= -= *= /= %=`, `++`/`--`
-- arithmetic, comparison and logic operators; `==` on structs and arrays
-- function literals, variadic functions, generic functions, `itoa`, numeric
-  and string conversions
-- `e.Value()`, `e.Checked()`, `e.Key()`, `e.PreventDefault()` in handlers
-- SVG elements
+A `.den` file holds components and plain Go declarations. Den supports a
+subset of Go; anything outside it is a compile error, never silently
+different behavior.
 
-How Go values map to JavaScript, and where den is stricter than Go:
-- Structs and arrays keep Go's value semantics. Den never changes one in
-  place: `t.Done = true` builds a new struct and assigns it to `t`, so a
-  copy (`u := t`) never sees the change.
-- Slice elements are read-only (`xs[i] = v` is a compile error); build a new
-  slice instead. `append` always copies, so it never writes into another
-  slice's backing array. That is the one place den can differ from Go: code
-  that relies on two slices sharing spare capacity after `append`.
-- A nil slice behaves like an empty one, and comparing a slice with `nil` is
-  a compile error (use `len(xs) == 0`).
-- `len` of a string counts UTF-8 bytes, as in Go.
+**Components and markup**
+- `component Name(props) { statements; <markup> }` with exactly one root
+  element; props are a Go parameter list, checked at every use.
+- `{expr}` in text and attributes; `onevent={statements}` handlers, with
+  `e.Value()`, `e.Checked()`, `e.Key()` and `e.PreventDefault()`.
+- `{if cond { ... } else if ... { ... } else { ... }}`.
+- `{for i, x := range xs key x.ID { ... }}` over slices, arrays, maps and
+  ints. The key is required and must be a string, number or bool.
+- SVG elements, and `autofocus` on elements added after the page loads.
 
-Not yet supported (all on the roadmap):
-- maps, pointers (other than `*Signal[T]`), methods, interfaces,
-  package-level variables, `switch`, multiple return values
-- children and slots for components
-- scoped styles
-- imports and server functions
-- SSR and resumability
-- template cloning (a performance pass)
+**State**
+- `signal(v)`, `computed(expr)`, `.Get()`, `.Set(v)`, `.Update(func)`.
+- `stored(key, initial)`: a signal kept in localStorage as JSON and decoded
+  back into Go types.
+- `hash()`: a signal holding `location.hash`, for simple routing.
+
+**Go**
+- `type`, `const` and `func` declarations, including generic and variadic
+  functions, named results and multiple return values.
+- Structs (with embedded fields), arrays, slices and maps, with Go's
+  semantics: structs and arrays are values, slices share backing arrays and
+  `append` grows them as Go does, maps change in place, and nil slices and
+  maps work. Indexing and slicing are bounds-checked and panic like Go.
+- `if` (with init statements), `for` in all its forms, `range`, `break`,
+  `continue`, parallel assignment, closures.
+- `len`, `cap`, `append`, `copy`, `make`, `delete`, `clear`, `min`, `max`,
+  conversions, and `itoa(n)`.
+- `import "strings"`: `Contains`, `HasPrefix`, `HasSuffix`, `TrimSpace`,
+  `TrimPrefix`, `TrimSuffix`, `ToLower`, `ToUpper`, `Split`, `Join`,
+  `Repeat`, `ReplaceAll`, `Fields`. `import "strconv"`: `Itoa`, `Atoi`,
+  `FormatBool`. Errors support `err != nil` and `err.Error()`.
+
+`compiler/testdata/conform/` holds Go programs that the tests run with both Go
+and den and require to print the same thing.
+
+**Where den still differs from Go.** These are known and planned:
+- `int` is a JS number, exact up to ±2^53, and does not wrap around on
+  overflow. (The plan is BigInt for explicit `int64` and `uint64`.)
+- Floats are printed the JavaScript way (`1000000`, where Go prints `1e+06`).
+- Strings are JS strings: `len` counts UTF-8 bytes as in Go, but indexing
+  and slicing strings are not supported yet. `strings.ToLower` and `ToUpper`
+  follow JavaScript's rules for a few special characters.
+- Ranging over a map visits keys in insertion order (one of the orders Go
+  allows).
+
+**Not supported yet:** pointers (other than `*Signal[T]`), methods,
+interfaces (other than `error`), package-level variables, `switch`,
+`defer`, goroutines and channels, children and slots for components, scoped
+styles, server functions, and server-side rendering. All are on the
+[roadmap](docs/PLAN.md).
+
+## Developing den
+
+```sh
+go test ./...          # needs node on PATH for the runtime tests
+go vet ./...
+```
+
+The tests compile apps and run them under node against a small fake DOM
+(`compiler/testdata/dom.js`), fuzz the keyed list diff, run the conformance
+programs against Go, and hold the runtime to 3 KB and every example to
+10 KB gzipped. `examples/todomvc/e2e.js` and `bench/run.js` drive Chromium
+with Playwright; they are optional development tools.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
+[SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Roadmap
 
 The full plan, with phases, budgets and gates, is in [docs/PLAN.md](docs/PLAN.md).
 
-1. **Markup control flow (done):** keyed `for` lists and `if` blocks.
-   Next: a full TodoMVC (target under 10 KB gzipped) and js-framework-benchmark.
-2. **Data:** structs and slices are done; maps, methods and fine-grained
-   stores are next.
-3. **Server functions:** typed RPC, a required auth annotation, CSRF
-   protection, and a `Secret[T]` type that can never reach the client.
-4. **SSR plus resumability:** render on the server and attach without
-   re-running components.
-5. **Motion:** springs, layout and exit animations, and view transitions.
-6. **Tooling:** a language server built on gopls, a formatter and source maps.
+1. **Core language (Phase 1, done):** markup control flow, structs, slices
+   and maps, template cloning, lazy computed values, ownership scopes,
+   TodoMVC under 10 KB, and the benchmark gate.
+2. **Components, styling and motion:** children and slots, a typed router,
+   scoped styles and design tokens, animations, `den fmt` and a VS Code
+   extension.
+3. **Server and security:** typed server functions with required `auth=`,
+   `Secret[T]`, CSRF protection, SSR, source maps and `den test`.
+4. **Scale:** `<VirtualList>`, data windows, live streams, and the
+   million-row log viewer.
+5. **Tooling and launch:** a language server, tree-sitter grammar and
+   playground.
+6. **Desktop:** `den desktop` on native webviews.

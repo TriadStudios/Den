@@ -18,6 +18,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4 # the runtime tests run compiled apps under node
+        with:
+          node-version: 22
       - name: gofmt
         run: |
           out=$(gofmt -l .)
@@ -32,3 +35,33 @@ jobs:
           for d in examples/*/; do ./bin/den build "$d"; done
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+  # Drives Chromium with Playwright. Playwright is installed for CI only; den
+  # itself has no npm dependencies.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install Playwright
+        run: |
+          npm install --no-save --prefix "$RUNNER_TEMP/pw" playwright@1.48.2
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+      - name: TodoMVC end-to-end
+        run: |
+          go build -o bin/den ./cmd/den
+          ./bin/den dev examples/todomvc -addr localhost:8080 &
+          sleep 2
+          node examples/todomvc/e2e.js http://localhost:8080/
+      - name: benchmark against vanilla JS
+        # Shared CI machines are noisy, so the numbers are reported, not enforced.
+        continue-on-error: true
+        run: |
+          ./bin/den build bench/den
+          node bench/run.js 5

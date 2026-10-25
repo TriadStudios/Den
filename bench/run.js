@@ -99,6 +99,22 @@ const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.lengt
       results[fw][b.name + " script"] = median(scripts);
     }
   }
+  // Memory: the JS heap after creating 1,000 rows, after a full GC.
+  for (const fw of ["vanilla", "den"]) {
+    const heaps = [];
+    for (let i = 0; i < Math.max(3, ITER >> 2); i++) {
+      const page = await browser.newPage();
+      await page.goto(`${base}/${fw}/`);
+      await page.waitForSelector("#run");
+      await page.click("#run");
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))));
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("HeapProfiler.collectGarbage");
+      heaps.push((await cdp.send("Runtime.getHeapUsage")).usedSize / 1024 / 1024);
+      await page.close();
+    }
+    results[fw].memory = median(heaps);
+  }
   await browser.close();
   server.close();
 
@@ -115,5 +131,7 @@ const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.lengt
   }
   const gm = Math.exp(logSum / benches.length);
   console.log(`\ngeometric mean den/vanilla: ${gm.toFixed(2)} total (gate: within 1.30), ${Math.exp(logScript / benches.length).toFixed(2)} script only`);
-  process.exitCode = gm <= 1.3 ? 0 : 1;
+  const mem = results.den.memory / results.vanilla.memory;
+  console.log(`JS heap after 1,000 rows: vanilla ${results.vanilla.memory.toFixed(2)} MB, den ${results.den.memory.toFixed(2)} MB, ratio ${mem.toFixed(2)} (budget: within 1.20)`);
+  process.exitCode = gm <= 1.3 && mem <= 1.2 ? 0 : 1;
 })().catch((e) => { console.error(e); process.exit(1); });

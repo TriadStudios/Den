@@ -27,7 +27,7 @@ function $stored(key, init, dec) {
   $effect(() => { const v = s.get(); try { localStorage.setItem(key, JSON.stringify(v, $json)); } catch {} });
   return s;
 }
-function $json(k, v) { return v instanceof Map ? Object.fromEntries(v) : v; }
+function $json(k, v) { return v instanceof Map ? Object.fromEntries(v) : v?.m$ ? $arr(v) : v; }
 function $want(v, t) { if (typeof v !== t) throw 0; return v; }
 function $list(v) { if (!Array.isArray(v)) throw 0; return v; }
 function $obj(v) { if (typeof v !== "object" || !v || Array.isArray(v)) throw 0; return v; }
