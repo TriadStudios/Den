@@ -1,3 +1,5 @@
+# Move this file to .github/workflows/ci.yml to enable CI. (The Claude GitHub
+# App cannot write workflow files, so it lives here until a maintainer moves it.)
 name: CI
 
 on:

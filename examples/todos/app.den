@@ -1,0 +1,113 @@
+// A todo list: structs and slices in signals, keyed lists and conditionals.
+
+type Todo struct {
+    ID   int
+    Text string
+    Done bool
+}
+
+const (
+    showAll = iota
+    showActive
+    showDone
+)
+
+func visible(ts []Todo, filter int) []Todo {
+    out := []Todo{}
+    for _, t := range ts {
+        if filter == showAll || (filter == showDone) == t.Done {
+            out = append(out, t)
+        }
+    }
+    return out
+}
+
+func toggle(ts []Todo, id int) []Todo {
+    out := []Todo{}
+    for _, t := range ts {
+        if t.ID == id {
+            t.Done = !t.Done
+        }
+        out = append(out, t)
+    }
+    return out
+}
+
+func without(ts []Todo, id int) []Todo {
+    out := []Todo{}
+    for _, t := range ts {
+        if t.ID != id {
+            out = append(out, t)
+        }
+    }
+    return out
+}
+
+func doneClass(done bool) string {
+    if done {
+        return "done"
+    }
+    return ""
+}
+
+func countDone(ts []Todo) int {
+    n := 0
+    for _, t := range ts {
+        if t.Done {
+            n++
+        }
+    }
+    return n
+}
+
+component App() {
+    todos := signal([]Todo{
+        {ID: 1, Text: "Write a .den component", Done: true},
+        {ID: 2, Text: "Add a keyed list"},
+        {ID: 3, Text: "Ship it"},
+    })
+    nextID := signal(4)
+    draft := signal("")
+    filter := signal(showAll)
+    done := computed(countDone(todos.Get()))
+    <main class="app">
+        <h1>todos</h1>
+        <input class="new" placeholder="What needs doing?" value={draft.Get()}
+            oninput={draft.Set(e.Value())}
+            onkeydown={
+                if e.Key() == "Enter" && draft.Get() != "" {
+                    todos.Set(append(todos.Get(), Todo{ID: nextID.Get(), Text: draft.Get()}))
+                    nextID.Set(nextID.Get() + 1)
+                    draft.Set("")
+                }
+            } />
+        {if len(todos.Get()) == 0 {
+            <p class="empty">Nothing to do.</p>
+        } else {
+            <ul class="list">
+                {for _, t := range visible(todos.Get(), filter.Get()) key t.ID {
+                    <li class={doneClass(t.Done)}>
+                        <input type="checkbox" checked={t.Done} onchange={todos.Set(toggle(todos.Get(), t.ID))} />
+                        <span>{t.Text}</span>
+                        <button class="remove" aria-label="Remove" onclick={todos.Set(without(todos.Get(), t.ID))}>×</button>
+                    </li>
+                }}
+            </ul>
+            <footer>
+                <span>{len(todos.Get()) - done.Get()} left</span>
+                <nav>
+                    <FilterButton label="All" value={showAll} filter={filter} />
+                    <FilterButton label="Active" value={showActive} filter={filter} />
+                    <FilterButton label="Done" value={showDone} filter={filter} />
+                </nav>
+                {if done.Get() > 0 {
+                    <button class="clear" onclick={todos.Set(visible(todos.Get(), showActive))}>Clear done</button>
+                }}
+            </footer>
+        }}
+    </main>
+}
+
+component FilterButton(label string, value int, filter *Signal[int]) {
+    <button aria-pressed={filter.Get() == value} onclick={filter.Set(value)}>{label}</button>
+}
