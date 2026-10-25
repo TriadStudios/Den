@@ -1,0 +1,54 @@
+:root {
+  --bg: #f6f5f1;
+  --card: #ffffff;
+  --ink: #1d1d1b;
+  --muted: #6b6a64;
+  --line: #e4e2da;
+  --accent: #00758f;
+  --accent-ink: #ffffff;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413;
+    --card: #1f1f1d;
+    --ink: #f1efe8;
+    --muted: #a3a199;
+    --line: #34332f;
+    --accent: #2fb8d6;
+    --accent-ink: #0b1d22;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.app { max-width: 720px; margin: 0 auto; padding: 40px 16px 56px; }
+h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.1; margin: 0 0 6px; letter-spacing: -0.02em; }
+.sub { color: var(--muted); margin: 0 0 28px; }
+.field { display: grid; gap: 6px; margin-bottom: 24px; font-size: 14px; color: var(--muted); }
+input {
+  font: inherit; color: var(--ink); background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.card h2 { font-size: 15px; margin: 0; color: var(--muted); font-weight: 600; }
+.value { font-size: 44px; font-weight: 700; margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+.hint { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+.row { display: flex; gap: 8px; }
+button {
+  font: inherit; font-weight: 600; min-width: 44px; height: 40px; padding: 0 14px;
+  border-radius: 10px; border: 1px solid transparent; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink);
+  transition: transform .12s ease, opacity .12s ease;
+}
+button:active { transform: scale(0.96); }
+button:disabled { opacity: .35; cursor: not-allowed; }
+button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+footer { margin-top: 32px; color: var(--muted); font-size: 14px; }
+footer a { color: var(--accent); }
