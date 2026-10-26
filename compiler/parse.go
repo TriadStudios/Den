@@ -91,12 +91,14 @@ type Component struct {
 	Root      *Element
 }
 
-// Param is one component parameter (prop). Children is set when its type
-// is written den.Children: the parameter named children takes the
+// Param is one component parameter (prop). Children is set by the checker
+// when its type is den.Children: the parameter named children takes the
 // element's default content, and any other is a slot filled by <:name>.
 type Param struct {
 	Name, Type string
 	Children   bool
+	typ        ast.Expr
+	hidden     bool // its type is den.Children, but the program has its own den
 }
 
 // Node is a markup node: *Element, *Text, *Interp, *If or *For.
@@ -485,14 +487,8 @@ func (p *parser_) parseParams(c *Component) []Param {
 		if len(field.Names) == 0 {
 			p.failAt(c.ParamsPos, "every parameter of %s needs a name", c.Name)
 		}
-		sel, _ := field.Type.(*ast.SelectorExpr)
-		children := sel != nil && sel.Sel.Name == "Children"
-		if children {
-			pkg, _ := sel.X.(*ast.Ident)
-			children = pkg != nil && pkg.Name == "den"
-		}
 		for _, n := range field.Names {
-			out = append(out, Param{Name: n.Name, Type: typ, Children: children})
+			out = append(out, Param{Name: n.Name, Type: typ, typ: field.Type})
 		}
 	}
 	return out

@@ -290,6 +290,61 @@ component Card(children den.Children) {
 component App() {
     <Card>x</Card>
 }`, `app.den:3:10: cannot store []den.Children in localStorage`},
+		{"den.Children in a program with its own den", `
+func den() int { return 1 }
+component Card(children den.Children) {
+    <div>{children}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:25: den.Children is not available because this program declares its own den at app.den:2:6; rename that declaration`},
+		{"using a component whose den.Children prop is hidden", `
+func den() int { return 1 }
+component Card(children den.Children) {
+    <div>{children}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:7:5: <Card> cannot be used: its prop "children" is den.Children, which this program's own den hides`},
+		{"den.Children in a program that imports a package as den", `
+import den "strings"
+component Card(children den.Children) {
+    <div>{children}{den.ToUpper("a")}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:25: den.Children is not available because this program imports "strings" as den at app.den:2:8; rename that import`},
+		{"alias of den.Children passed as an attribute", `
+type Kids = den.Children
+component Card(children Kids) {
+    <div>{children}</div>
+}
+component Outer(children den.Children) {
+    <Card children={children} />
+}
+component App() {
+    <Outer>x</Outer>
+}`, `app.den:7:11: children of <Card> go between <Card> and </Card>, not in an attribute`},
+		{"new type based on den.Children", `
+type Kids den.Children
+component App() {
+    <p>x</p>
+}`, `app.den:2:6: type Kids is based on den.Children, which den does not support; declare an alias instead: type Kids = den.Children`},
+		{"den.Children through a generic alias", `
+type Id[T any] = den.Children
+component Card(children Id[int]) {
+    <div>{children}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:16: den cannot tell whether children is a den.Children prop; write its type as den.Children or as a plain alias of it (type X = den.Children)`},
+		{"undefined type in a prop", `
+component App() {
+    <Card title="x" />
+}
+component Card(title strin) {
+    <h2>{title}</h2>
+}`, `app.den:5:22: undefined: strin`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

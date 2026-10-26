@@ -260,7 +260,7 @@ func (e *emitter) component(cc *checkedComponent) {
 	}
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
 	e.stmts(cc.stmts)
-	e.line("return %s;", e.instantiate([]Node{cc.c.Root}, false))
+	e.line("return %s;", e.instantiate([]Node{cc.c.Root}, nsHTML))
 	e.w.WriteString("}\n")
 }
 
@@ -312,7 +312,7 @@ func (e *emitter) funcBody(ft *ast.FuncType, body *ast.BlockStmt) {
 type tnode struct {
 	kind     byte // 'e' element, 't' text, 'c' comment
 	tag      string
-	svg      bool // element is SVG, or (for anchors) content goes inside SVG
+	svg      ns // the element's namespace, or (for anchors and {children}) its content's
 	text     string
 	attrs    []*Attr // static attributes
 	children []*tnode
@@ -334,7 +334,40 @@ func (t *tnode) needed() bool {
 	return false
 }
 
-func (e *emitter) tnodes(nodes []Node, svg bool) []*tnode {
+// ns is the namespace markup is built in. Markup passed to a den.Children
+// prop is built in the namespace of each place it is rendered: the
+// component rendering it passes $svg, and the markup picks its template.
+type ns byte
+
+const (
+	nsHTML ns = iota
+	nsSVG
+	nsDyn // whichever $svg says
+)
+
+// elem returns the namespace of an element with tag inside n.
+func (n ns) elem(tag string) ns {
+	if tag == "svg" {
+		return nsSVG
+	}
+	return n
+}
+
+// inner returns the namespace of the children of an element with tag
+// whose own namespace is n.
+func (n ns) inner(tag string) ns {
+	if tag == "foreignObject" {
+		return nsHTML
+	}
+	return n
+}
+
+// arg is the argument that renders den.Children in namespace n.
+func (n ns) arg() string {
+	return [...]string{"", "1", "$svg"}[n]
+}
+
+func (e *emitter) tnodes(nodes []Node, svg ns) []*tnode {
 	var out []*tnode
 	for _, n := range nodes {
 		switch n := n.(type) {
@@ -345,16 +378,16 @@ func (e *emitter) tnodes(nodes []Node, svg bool) []*tnode {
 			if tv := e.ck.info.Types[x]; tv.Value != nil {
 				out = append(out, &tnode{kind: 't', text: constString(tv.Value)})
 			} else if isChildren(e.ck.info.TypeOf(x)) {
-				out = append(out, &tnode{kind: 'c', src: n, need: true})
+				out = append(out, &tnode{kind: 'c', svg: svg, src: n, need: true})
 			} else {
 				out = append(out, &tnode{kind: 't', src: n, need: true})
 			}
 		case *Element:
 			if n.IsComponent() {
-				out = append(out, &tnode{kind: 'c', svg: svg, src: n, need: true})
+				out = append(out, &tnode{kind: 'c', src: n, need: true})
 				continue
 			}
-			t := &tnode{kind: 'e', tag: n.Tag, svg: svg || n.Tag == "svg", src: n}
+			t := &tnode{kind: 'e', tag: n.Tag, svg: svg.elem(n.Tag), src: n}
 			for _, a := range n.Attrs {
 				if a.Kind == AttrExpr {
 					if i, ok := e.delegate(a); ok {
@@ -369,7 +402,7 @@ func (e *emitter) tnodes(nodes []Node, svg bool) []*tnode {
 					t.attrs = append(t.attrs, a)
 				}
 			}
-			t.children = e.tnodes(n.Children, t.svg && n.Tag != "foreignObject")
+			t.children = e.tnodes(n.Children, t.svg.inner(n.Tag))
 			out = append(out, t)
 		case *If, *For:
 			start := &tnode{kind: 'c', svg: svg, src: n, need: true}
@@ -397,8 +430,9 @@ func (e *emitter) reactiveNode(n Node) bool {
 }
 
 // template returns the name of a function that clones the static DOM for
-// ts. Identical templates are shared.
-func (e *emitter) template(ts []*tnode) string {
+// ts, building nsDyn elements as SVG when asSVG is set. Identical templates
+// are shared.
+func (e *emitter) template(ts []*tnode, asSVG bool) string {
 	var b strings.Builder
 	n := 0
 	var build func(t *tnode) string
@@ -412,7 +446,7 @@ func (e *emitter) template(ts []*tnode) string {
 		v := fmt.Sprintf("a%d", n)
 		n++
 		maker := "$h"
-		if t.svg {
+		if t.svg == nsSVG || (t.svg == nsDyn && asSVG) {
 			maker = "$hs"
 		}
 		fmt.Fprintf(&b, "  const %s = %s(%s);\n", v, maker, jsString(t.tag))
@@ -452,7 +486,7 @@ func (e *emitter) template(ts []*tnode) string {
 // instantiate emits code that clones the template for nodes, wires up its
 // dynamic parts and returns the JS expression for the result: an element,
 // or a fragment when there is more than one top-level node.
-func (e *emitter) instantiate(nodes []Node, svg bool) string {
+func (e *emitter) instantiate(nodes []Node, svg ns) string {
 	if len(nodes) == 0 {
 		return "$cm()" // a placeholder, so a list row is never empty
 	}
@@ -460,17 +494,21 @@ func (e *emitter) instantiate(nodes []Node, svg bool) string {
 		switch n := nodes[0].(type) {
 		case *Element:
 			if n.IsComponent() {
-				return e.componentCall(n, svg)
+				return e.componentCall(n)
 			}
 		case *Interp:
 			if x := e.cc.parts[n].expr; isChildren(e.ck.info.TypeOf(x)) {
-				return e.expr(x) + "()"
+				return e.expr(x) + "(" + svg.arg() + ")"
 			}
 		}
 	}
 	ts := e.tnodes(nodes, svg)
 	root := e.name("$e")
-	e.line("const %s = %s();", root, e.template(ts))
+	tpl := e.template(ts, false)
+	if alt := e.template(ts, true); alt != tpl {
+		tpl = "($svg ? " + alt + " : " + tpl + ")"
+	}
+	e.line("const %s = %s();", root, tpl)
 	// Take every reference before any binding changes the tree.
 	if len(ts) == 1 && ts[0].kind == 'e' {
 		ts[0].v = root
@@ -507,9 +545,9 @@ func (e *emitter) bind(ts []*tnode) {
 		case *Interp:
 			pt := e.cc.parts[n]
 			if isChildren(e.ck.info.TypeOf(pt.expr)) {
-				// The markup is built here, so the nodes it makes belong to
-				// the scope rendering it.
-				e.line("%s.replaceWith(%s());", t.v, e.expr(pt.expr))
+				// The markup is built here, in this place's namespace, so the
+				// nodes it makes belong to the scope rendering it.
+				e.line("%s.replaceWith(%s(%s));", t.v, e.expr(pt.expr), t.svg.arg())
 				continue
 			}
 			if e.ck.reactive(pt.expr) {
@@ -523,7 +561,7 @@ func (e *emitter) bind(ts []*tnode) {
 			}
 		case *Element:
 			if n.IsComponent() {
-				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n, t.svg))
+				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n))
 				continue
 			}
 			for _, a := range n.Attrs {
@@ -583,10 +621,11 @@ var bubbles = map[string]bool{
 }
 
 // componentCall emits a component use. Markup passed to a den.Children
-// parameter becomes a function that builds it: it runs in the caller's
-// scope, and the nodes it makes belong to whichever scope calls it. An
-// unfilled one is $cm, which makes an empty placeholder.
-func (e *emitter) componentCall(el *Element, svg bool) string {
+// parameter becomes a function ($svg) => node that builds it in the
+// namespace $svg names: it runs in the caller's scope, and the nodes it
+// makes belong to whichever scope calls it. An unfilled one is $cm, which
+// makes an empty placeholder.
+func (e *emitter) componentCall(el *Element) string {
 	// The callee may render the markup inside one of its own list rows, so
 	// handlers in it cannot be found through the caller's row.
 	if r := e.row; r != nil {
@@ -602,14 +641,21 @@ func (e *emitter) componentCall(el *Element, svg bool) string {
 		case len(pt.slots[i]) == 0:
 			args = append(args, "$cm")
 		default:
-			args = append(args, e.block("", pt.slots[i], svg || e.ck.svgSlots[el.Tag+"."+p.Name]))
+			body := e.capture(e.ind+"  ", func() { e.line("return %s;", e.instantiate(pt.slots[i], nsDyn)) })
+			param := ""
+			if usesSVG.MatchString(body) {
+				param = "$svg"
+			}
+			args = append(args, "("+param+") => {\n"+body+e.ind+"}")
 		}
 	}
 	return jsIdent(el.Tag) + "(" + strings.Join(args, ", ") + ")"
 }
 
+var usesSVG = regexp.MustCompile(`\$svg\b`)
+
 // block emits a function that builds nodes and returns them.
-func (e *emitter) block(params string, nodes []Node, svg bool) string {
+func (e *emitter) block(params string, nodes []Node, svg ns) string {
 	body := e.capture(e.ind+"  ", func() { e.line("return %s;", e.instantiate(nodes, svg)) })
 	return "(" + params + ") => {\n" + body + e.ind + "}"
 }

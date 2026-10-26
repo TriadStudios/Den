@@ -754,12 +754,31 @@ log(html(find("div")));`)
 		`<div>hidden<em>1</em><em>2</em><em>3</em></div>`)
 }
 
-// Markup passed to a component that renders it inside <svg>, directly or by
-// passing it on, is built as SVG.
+// Each copy of passed markup is built in the namespace of the place that
+// renders it: through a local variable, a function's result or another
+// component, and as HTML and SVG at once. Inside it, <svg> and
+// <foreignObject> switch namespace as usual, blocks follow the copy they
+// are in, and markup passed on to a component follows that component.
 func TestRunChildrenSVG(t *testing.T) {
 	got := runApp(t, `
+func pick(a den.Children, b den.Children, first bool) den.Children {
+    if first {
+        return a
+    }
+    return b
+}
+
 component Icon(children den.Children) {
-    <svg viewBox="0 0 10 10">{children}</svg>
+    c := children
+    <svg viewBox="0 0 10 10">{c}</svg>
+}
+
+component Both(children den.Children) {
+    <div><p>{children}</p><svg>{children}</svg></div>
+}
+
+component Picked(a den.Children, b den.Children) {
+    <svg>{pick(a, b, false)}</svg>
 }
 
 component Frame(children den.Children) {
@@ -771,11 +790,76 @@ component Box(children den.Children) {
 }
 
 component App() {
+    on := signal(false)
     <main>
         <Icon><circle r="5" /></Icon>
-        <Frame><rect width="2" /></Frame>
-        <Box><p>html</p></Box>
+        <Both>
+            <g>{if on.Get() { <rect /> }}{for i := range 2 key i { <line /> }}</g>
+            <foreignObject><em>html</em></foreignObject>
+            <svg><path /></svg>
+            <Box><ellipse /></Box>
+        </Both>
+        <Picked><:a><polygon /></:a><:b><polyline /></:b></Picked>
+        <Frame><text>t</text></Frame>
+        <button onclick={on.Set(!on.Get())}>on</button>
     </main>
-}`, `log(["circle", "rect", "p"].map((t) => t + ":" + find(t).namespaceURI).join(" "));`)
-	expectLines(t, got, `circle:http://www.w3.org/2000/svg rect:http://www.w3.org/2000/svg p:html`)
+}`, `
+const ns = (t) => findAll(t).map((e) => (e.namespaceURI === "html" ? "h" : "s")).join("");
+const all = () => ["circle", "g", "rect", "line", "foreignObject", "em", "path", "ellipse", "polygon", "polyline", "text"].map((t) => t + ":" + ns(t)).join(" ");
+log(all());
+click(find("button")); await tick();
+log(all());`)
+	expectLines(t, got,
+		`circle:s g:hs rect: line:hhss foreignObject:hs em:hh path:ss ellipse:hh polygon: polyline:s text:s`,
+		`circle:s g:hs rect:hs line:hhss foreignObject:hs em:hh path:ss ellipse:hh polygon: polyline:s text:s`)
+}
+
+// A prop whose type is an alias of den.Children is one.
+func TestRunChildrenAliases(t *testing.T) {
+	got := runApp(t, `
+type Kids = den.Children
+type More = Kids
+
+component Card(head Kids, children More) {
+    <section><h1>{head}</h1>{children}</section>
+}
+
+component App() {
+    <Card><:head>top</:head><p>body</p></Card>
+}`, `log(html());`)
+	expectLines(t, got, `<section><h1>top</h1><p>body</p></section>`)
+}
+
+// A program may still declare or import its own den, as on main; it then
+// keeps meaning what it means in Go.
+func TestRunOwnDen(t *testing.T) {
+	for _, c := range []struct{ src, want string }{{`
+func den() int { return 1 }
+
+component App() {
+    <p>{den()}</p>
+}`, `<p>1</p>`}, {`
+type den struct{ X int }
+
+component App() {
+    d := den{X: 2}
+    <p>{d.X}</p>
+}`, `<p>2</p>`}, {`
+import den "strconv"
+
+component App() {
+    <p>{den.Itoa(3)}</p>
+}`, `<p>3</p>`}, {`
+type P struct{ Children int }
+
+component Card(children den.Children) {
+    den := P{4}
+    <p>{den.Children}{children}</p>
+}
+
+component App() {
+    <Card>!</Card>
+}`, `<p>4!</p>`}} {
+		expectLines(t, runApp(t, c.src, `log(html());`), c.want)
+	}
 }

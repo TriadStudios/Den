@@ -163,10 +163,13 @@ component App() {
 
 - `den.Children` is built in; no import is needed. The prop named
   `children` gets the markup between the component's tags, and every other
-  `den.Children` prop is a named slot, filled by `<:name>...</:name>`
-  directly inside them.
+  `den.Children` prop (or alias of it) is a named slot, filled by
+  `<:name>...</:name>` directly inside them.
 - `{children}` renders it, as often as you like, and `<Inner>{children}</Inner>`
-  passes it on. Children and slots that are not given render nothing.
+  passes it on. Each copy is built as HTML or SVG to match where it is
+  rendered. Children and slots that are not given render nothing.
+- `den` is still an ordinary name: a program that declares its own `den`
+  keeps it, and then cannot use `den.Children`.
 - The markup belongs to the caller: it reads the caller's signals, variables
   and list items. The nodes it makes belong to where the callee renders it,
   so a callee `{if}` that hides it also stops its bindings.

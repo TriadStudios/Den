@@ -41,15 +41,10 @@ type renderable interface {
 	~string | ~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~float32 | ~float64 | ~bool
 }
 
-func denText[T renderable | den.Children](v T) {}
-func denAttr[T renderable](v T)                {}
-func denHandler(f func(e Event))               {}
-func denKey[T comparable](v T)                 {}
-func denMark()                                 {}
-
-// denSlot stands in for the markup a component use passes to a
-// den.Children parameter; f holds it, checked in the caller's scope.
-func denSlot(f func()) den.Children { return den.Children{} }
+func denAttr[T renderable](v T)  {}
+func denHandler(f func(e Event)) {}
+func denKey[T comparable](v T)   {}
+func denMark()                   {}
 
 // stored is a signal kept in localStorage under key, as JSON.
 func stored[T any](key string, initial T) *Signal[T] { return &Signal[T]{v: initial} }
@@ -58,12 +53,27 @@ func stored[T any](key string, initial T) *Signal[T] { return &Signal[T]{v: init
 func hash() *Signal[string] { return nil }
 `
 
+// preludeDen ends the prelude of a program that imports the built-in
+// package den, which is every program that does not declare its own den.
+const preludeDen = `
+func denText[T renderable | den.Children](v T) {}
+
+// denSlot stands in for the markup a component use passes to a
+// den.Children parameter; f holds it, checked in the caller's scope.
+func denSlot(f func()) den.Children { return den.Children{} }
+`
+
+// preludePlain ends the prelude of a program that declares or imports its
+// own den. Such a program cannot use den.Children.
+const preludePlain = `
+func denText[T renderable](v T) {}
+`
+
 const preludeFile = "den_prelude.go"
 
-// denPackage is the built-in package den, imported into every program.
-// Children is a struct that holds a func, so Go rejects calling it,
-// comparing it (even with nil) and converting to it; outside den only its
-// zero value can be written.
+// denPackage is the built-in package den. Children is a struct that holds
+// a func, so Go rejects calling it, comparing it (even with nil) and
+// converting to it; outside den only its zero value can be written.
 const denPackage = `package den
 
 // Children is markup passed to a component: its default content, or a
@@ -75,6 +85,62 @@ type Children struct{ _ func() }
 func isChildren(t types.Type) bool {
 	n, ok := types.Unalias(t).(*types.Named)
 	return ok && n.Obj().Name() == "Children" && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "den"
+}
+
+// basedOnChildren reports whether t has den.Children's underlying type.
+func basedOnChildren(t types.Type) bool {
+	s, ok := t.Underlying().(*types.Struct)
+	return ok && s.NumFields() == 1 && s.Field(0).Pkg() != nil && s.Field(0).Pkg().Path() == "den"
+}
+
+// topLevel returns the names the program's Go declarations declare at the
+// top level, and the right-hand sides of its plain (non-generic) aliases.
+func topLevel(src string) (map[string]bool, map[string]ast.Expr) {
+	names, aliases := map[string]bool{}, map[string]ast.Expr{}
+	f, _ := parser.ParseFile(token.NewFileSet(), "", "package app\n"+src, parser.SkipObjectResolution)
+	if f == nil {
+		return names, aliases // the full parse reports the syntax error
+	}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil {
+				names[d.Name.Name] = true
+			}
+		case *ast.GenDecl:
+			for _, s := range d.Specs {
+				switch s := s.(type) {
+				case *ast.TypeSpec:
+					names[s.Name.Name] = true
+					if s.Assign.IsValid() && s.TypeParams == nil {
+						aliases[s.Name.Name] = s.Type
+					}
+				case *ast.ValueSpec:
+					for _, n := range s.Names {
+						names[n.Name] = true
+					}
+				}
+			}
+		}
+	}
+	return names, aliases
+}
+
+// childrenType reports whether the type expression x is den.Children,
+// directly or through the plain aliases. go/types confirms it afterwards.
+func childrenType(x ast.Expr, aliases map[string]ast.Expr, depth int) bool {
+	switch x := x.(type) {
+	case *ast.ParenExpr:
+		return childrenType(x.X, aliases, depth)
+	case *ast.SelectorExpr:
+		pkg, ok := x.X.(*ast.Ident)
+		return ok && pkg.Name == "den" && x.Sel.Name == "Children"
+	case *ast.Ident:
+		if a := aliases[x.Name]; a != nil && depth < len(aliases) {
+			return childrenType(a, aliases, depth+1)
+		}
+	}
+	return false
 }
 
 // partKind identifies a dynamic piece of markup.
@@ -108,7 +174,6 @@ type checked struct {
 	components  map[string]*Component
 	readsSignal map[types.Object]bool // functions that may read a signal
 	nilTypes    map[*ast.Ident]types.Type
-	svgSlots    map[string]bool // "Comp.param": the den.Children param is rendered inside SVG
 }
 
 type checkedComponent struct {
@@ -160,16 +225,43 @@ func check(files []*File) (*checked, error) {
 			declSrc.WriteString("\n" + lineDirective(f.Name, d.Pos) + code + "\n")
 		}
 	}
+	// The built-in package den is imported unless the program declares or
+	// imports its own den, which then means what it means in Go.
+	top, aliases := topLevel(declSrc.String())
+	denTaken := top["den"]
+	for spec := range imports {
+		denTaken = denTaken || strings.HasPrefix(spec, "den ")
+	}
+	// A prop is den.Children when its type is, directly or through aliases,
+	// so gen knows which props take markup before the types are checked.
+	for _, f := range files {
+		for _, c := range f.Components {
+			for i := range c.Params {
+				p := &c.Params[i]
+				p.Children = !denTaken && childrenType(p.typ, aliases, 0)
+				p.hidden = denTaken && childrenType(p.typ, aliases, 0)
+			}
+		}
+	}
 	var src strings.Builder
-	src.WriteString("package app\n\nimport /*line " + preludeFile + ":1:1*/\"den\"\n" + importSrc.String())
+	src.WriteString("package app\n\n")
+	if !denTaken {
+		src.WriteString("import /*line " + preludeFile + ":1:1*/\"den\"\n")
+	}
+	src.WriteString(importSrc.String())
 	// The import directives would otherwise carry on into the prelude.
 	src.WriteString("/*line " + preludeFile + ":2:1*/" + strings.TrimPrefix(prelude, "package app\n"))
+	if denTaken {
+		src.WriteString(preludePlain)
+	} else {
+		src.WriteString(preludeDen)
+	}
 	src.WriteString(declSrc.String())
 	g := &gen{src: &src, byName: byName, errs: &errs}
 	for _, f := range files {
 		for _, c := range f.Components {
 			g.file = c.File
-			fmt.Fprintf(&src, "\nfunc %s%s(%s) {", c.Name, lineDirective(c.File, c.ParamsPos), c.ParamsSrc)
+			fmt.Fprintf(&src, "\nfunc %s(%s%s) {", c.Name, lineDirective(c.File, c.ParamsPos), c.ParamsSrc)
 			src.WriteString(lineDirective(c.File, c.StmtsPos))
 			src.WriteString(c.StmtsSrc)
 			src.WriteString("\n\tdenMark()\n")
@@ -196,19 +288,86 @@ func check(files []*File) (*checked, error) {
 		Uses:       map[*ast.Ident]types.Object{},
 		Selections: map[*ast.SelectorExpr]*types.Selection{},
 	}
+	var typeErrs []types.Error
 	conf := types.Config{
 		Importer: stdImporter{fset: fset, pkgs: map[string]*types.Package{}},
-		Error: func(err error) {
-			te := err.(types.Error)
-			p := fset.Position(te.Pos)
-			msg := te.Msg
-			if i := strings.Index(msg, " does not satisfy renderable"); i >= 0 {
-				msg = "cannot render " + msg[:i] + ": only strings, numbers and bools can be shown in markup"
-			}
-			errs = append(errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column}, Msg: msg})
-		},
+		Error:    func(err error) { typeErrs = append(typeErrs, err.(types.Error)) },
 	}
-	conf.Check("app", fset, []*ast.File{file}, info)
+	pkg, _ := conf.Check("app", fset, []*ast.File{file}, info)
+	errAt := func(pos token.Pos, msg string) {
+		p := fset.Position(pos)
+		errs = append(errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column}, Msg: msg})
+	}
+	where := func(pos token.Pos) string {
+		p := fset.Position(pos)
+		return fmt.Sprintf("%s:%d:%d", p.Filename, p.Line, p.Column)
+	}
+	// In a program with its own den, den.Children names that den. Say so
+	// instead of Go's error about it.
+	var replaced [][2]token.Pos
+	if denTaken && len(typeErrs) > 0 {
+		ast.Inspect(file, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Children" {
+				return true
+			}
+			id, ok := sel.X.(*ast.Ident)
+			if !ok || id.Name != "den" {
+				return true
+			}
+			switch o := info.Uses[id].(type) {
+			case *types.PkgName:
+				errAt(sel.Pos(), fmt.Sprintf("den.Children is not available because this program imports %q as den at %s; rename that import", o.Imported().Path(), where(o.Pos())))
+			case types.Object:
+				if o.Parent() != pkg.Scope() {
+					return true // a local den
+				}
+				errAt(sel.Pos(), fmt.Sprintf("den.Children is not available because this program declares its own den at %s; rename that declaration", where(o.Pos())))
+			default:
+				return true
+			}
+			replaced = append(replaced, [2]token.Pos{sel.Pos(), sel.End()})
+			return true
+		})
+	}
+next:
+	for _, te := range typeErrs {
+		for _, r := range replaced {
+			if te.Pos >= r[0] && te.Pos < r[1] {
+				continue next
+			}
+		}
+		msg := te.Msg
+		if i := strings.Index(msg, " does not satisfy renderable"); i >= 0 {
+			msg = "cannot render " + msg[:i] + ": only strings, numbers and bools can be shown in markup"
+		}
+		errAt(te.Pos, msg)
+	}
+	// gen took a prop for den.Children by reading its type; go/types must
+	// agree, or the markup passed to it would be handled the wrong way.
+	for _, d := range file.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Recv != nil || byName[fd.Name.Name] == nil {
+			continue
+		}
+		params := byName[fd.Name.Name].Params
+		i := 0
+		for _, field := range fd.Type.Params.List {
+			for _, n := range field.Names {
+				obj := info.Defs[n]
+				if obj != nil && i < len(params) && isChildren(obj.Type()) != params[i].Children && obj.Type() != types.Typ[types.Invalid] {
+					errAt(n.Pos(), fmt.Sprintf("den cannot tell whether %s is a den.Children prop; write its type as den.Children or as a plain alias of it (type X = den.Children)", n.Name))
+				}
+				i++
+			}
+		}
+	}
+	// A new type made from den.Children would be neither markup nor data.
+	for id, obj := range info.Defs {
+		if tn, ok := obj.(*types.TypeName); ok && !tn.IsAlias() && basedOnChildren(tn.Type()) {
+			errAt(id.Pos(), fmt.Sprintf("type %s is based on den.Children, which den does not support; declare an alias instead: type %s = den.Children", id.Name, id.Name))
+		}
+	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
 	for x, tv := range info.Types {
@@ -271,59 +430,7 @@ func check(files []*File) (*checked, error) {
 	if len(errs) > 0 {
 		return nil, errs.sorted()
 	}
-	out.findSVGSlots()
 	return out, nil
-}
-
-// findSVGSlots works out which den.Children parameters each component
-// renders inside SVG, directly or by passing them on to another component,
-// so that callers build the markup they pass there as SVG elements.
-func (ck *checked) findSVGSlots() {
-	ck.svgSlots = map[string]bool{}
-	for changed := true; changed; {
-		changed = false
-		for _, cc := range ck.comps {
-			params := map[types.Object]string{}
-			for _, f := range cc.decl.Type.Params.List {
-				for _, n := range f.Names {
-					params[ck.info.Defs[n]] = n.Name
-				}
-			}
-			var walk func(ns []Node, svg bool)
-			walk = func(ns []Node, svg bool) {
-				for _, n := range ns {
-					switch n := n.(type) {
-					case *Interp:
-						id, ok := ast.Unparen(cc.parts[n].expr).(*ast.Ident)
-						if !ok || !svg || !isChildren(ck.info.TypeOf(id)) {
-							continue
-						}
-						if name, ok := params[ck.info.Uses[id]]; ok && !ck.svgSlots[cc.c.Name+"."+name] {
-							ck.svgSlots[cc.c.Name+"."+name] = true
-							changed = true
-						}
-					case *If:
-						walk(n.Then, svg)
-						walk(n.Else, svg)
-					case *For:
-						walk(n.Body, svg)
-					case *Element:
-						if n.IsComponent() {
-							for i, p := range ck.components[n.Tag].Params {
-								if p.Children {
-									walk(cc.parts[n].slots[i], svg || ck.svgSlots[n.Tag+"."+p.Name])
-								}
-							}
-							continue
-						}
-						svg := svg || n.Tag == "svg"
-						walk(n.Children, svg && n.Tag != "foreignObject")
-					}
-				}
-			}
-			walk([]Node{cc.c.Root}, false)
-		}
-	}
 }
 
 // nilTargets finds the type each nil is converted to. go/types records nil
@@ -859,6 +966,11 @@ func (g *gen) component(el *Element) *Error {
 			}
 		}
 		return Param{}, false
+	}
+	for _, p := range target.Params {
+		if p.hidden {
+			return bad(el.Pos, "<%s> cannot be used: its prop %q is den.Children, which this program's own den hides", el.Tag, p.Name)
+		}
 	}
 	if p, ok := param("children"); len(el.Children) > 0 && !(ok && p.Children) {
 		return bad(el.Pos, "<%s> does not take children: it has no children den.Children parameter", el.Tag)
