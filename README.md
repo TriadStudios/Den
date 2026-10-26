@@ -2,7 +2,7 @@
 
 > **Experimental.** Den is a young project. The language and APIs will change
 > before 1.0, and it is not ready for production use. See the
-> [plan](docs/PLAN.md) for where it is going.
+> [roadmap](#roadmap) for where it is going.
 
 Den lets Go developers build web apps in Go syntax. You write components in
 `.den` files, Go's own type checker checks them, and the compiler emits small,
@@ -212,7 +212,7 @@ and den and require to print the same thing.
 **Not supported yet:** pointers (other than `*Signal[T]`), methods,
 interfaces (other than `error`), package-level variables, `switch`,
 `defer`, goroutines and channels, scoped styles, server functions, and
-server-side rendering. All are on the [roadmap](docs/PLAN.md).
+server-side rendering. The larger ones are on the [roadmap](#roadmap).
 
 ## Developing den
 
@@ -232,7 +232,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
 
 ## Roadmap
 
-The full plan, with phases, budgets and gates, is in [docs/PLAN.md](docs/PLAN.md).
+Each phase ends at a gate with measurable exit criteria. Every release must
+hold these budgets: the runtime under 3 KB gzipped, TodoMVC under 10 KB
+gzipped, the js-framework-benchmark operations within 1.3x of vanilla JS's
+time, memory after creating 1,000 rows within 1.2x of vanilla JS, and a
+rebuild of 100 components under 50 ms.
 
 1. **Core language (Phase 1, done):** markup control flow, structs, slices
    and maps, template cloning, lazy computed values, ownership scopes,

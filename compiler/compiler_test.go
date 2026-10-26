@@ -526,8 +526,8 @@ func gzipLen(s string) int {
 	return buf.Len()
 }
 
-// TestRuntimeBudget holds the whole runtime, every feature included, to the
-// budget in docs/PLAN.md: under 3 KB gzipped. Apps ship only what they use.
+// TestRuntimeBudget holds the whole runtime, every feature included, to its
+// size budget: under 3 KB gzipped. Apps ship only what they use.
 func TestRuntimeBudget(t *testing.T) {
 	all := runtimeFor(runtimeJS)
 	t.Logf("full runtime: %d bytes, %d gzipped", len(all), gzipLen(all))
@@ -536,8 +536,8 @@ func TestRuntimeBudget(t *testing.T) {
 	}
 }
 
-// TestExampleBudgets compiles every example and holds it to the size budget
-// in docs/PLAN.md: an app the size of TodoMVC ships under 10 KB gzipped.
+// TestExampleBudgets compiles every example and holds it to the size budget:
+// an app the size of TodoMVC ships under 10 KB gzipped.
 func TestExampleBudgets(t *testing.T) {
 	dirs, _ := filepath.Glob("../examples/*")
 	if len(dirs) == 0 {

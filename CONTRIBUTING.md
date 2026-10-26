@@ -6,12 +6,11 @@ anything bigger than a bug fix or a small, clearly scoped improvement.
 
 ## Scope
 
-Den's scope is written down in [docs/PLAN.md](docs/PLAN.md), and changes are
-judged against its five principles: simple, type safe end to end, fast by
-construction, secure by default, and beautiful by default. Requests outside
-that scope, such as running npm packages or full Go compatibility, will be
-declined even when they are good ideas, so that the language stays small and
-consistent. Language decisions are recorded in [docs/DECISIONS.md](docs/DECISIONS.md).
+Den's scope is the [roadmap](README.md#roadmap), and changes are judged
+against five principles: simple, type safe end to end, fast by construction,
+secure by default, and beautiful by default. Requests outside that scope, such
+as running npm packages or full Go compatibility, will be declined even when
+they are good ideas, so that the language stays small and consistent.
 
 Good places to start are issues labelled `good first issue`: docs, examples
 and components.

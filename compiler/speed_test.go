@@ -43,7 +43,7 @@ component C%d(title string, start int) {
 	return []Source{{Name: "app.den", Code: b.String()}}
 }
 
-// TestRebuildBudget checks the plan's budget: a dev rebuild of a
+// TestRebuildBudget checks the rebuild budget: a dev rebuild of a
 // 100-component app takes under 50 ms. It allows 2x for slow machines, and
 // skips under the race detector, which makes timings meaningless.
 func TestRebuildBudget(t *testing.T) {

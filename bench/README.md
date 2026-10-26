@@ -1,7 +1,7 @@
 # Benchmarks
 
-The Phase 1 gate in [docs/PLAN.md](../docs/PLAN.md) is: den within 1.3x of
-vanilla JS on the js-framework-benchmark operations.
+The Phase 1 gate on the [roadmap](../README.md#roadmap) is: den within 1.3x
+of vanilla JS on the js-framework-benchmark operations.
 
 - `den/` is the js-framework-benchmark keyed app written in den. Each row's
   label is its own signal, the idiomatic fine-grained style.
