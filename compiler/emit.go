@@ -9,6 +9,8 @@ import (
 	"go/token"
 	"go/types"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -139,6 +141,82 @@ type emitter struct {
 	n       int // counter for generated names
 	cc      *checkedComponent
 	results []string // named results of the function being emitted
+
+	loopVars  map[types.Object]bool // variables of the markup loops being emitted
+	row       *rowCtx               // the innermost keyed list row, if any
+	delegated map[*Attr]bool        // handlers found through the row's table
+}
+
+// rowCtx is a keyed list being emitted. Handlers and bindings in its rows
+// that use no loop variable but the row's own item are hoisted out of the
+// row: written once, before the list, as functions of the item, so each row
+// stores the item instead of a closure.
+//
+// When a row is a single element, hoisted bubbling handlers go further: they
+// are kept in a table on the list, and the element gets a static attribute,
+// den-click="0", naming its handler. The dispatcher finds the row through
+// the row's element, so rows hold no handler state at all.
+type rowCtx struct {
+	obj      types.Object // the row's item variable
+	name     string       // its JS name
+	hoist    strings.Builder
+	rootEl   bool     // each row is a single element
+	handlers []string // the table of delegated handlers
+	types    []string // the events they handle
+}
+
+// delegate reports whether handler a can go in the row's handler table,
+// and if so puts it there and returns its index.
+func (e *emitter) delegate(a *Attr) (int, bool) {
+	pt := e.cc.attrs[a]
+	if pt.kind != partHandler || e.row == nil || !e.row.rootEl || !bubbles[a.Name[2:]] || e.row.name == "e" {
+		return 0, false
+	}
+	var stmts []ast.Node
+	for _, st := range pt.stmts {
+		stmts = append(stmts, st)
+	}
+	if !e.hoistable(stmts...) {
+		return 0, false
+	}
+	body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
+	e.row.handlers = append(e.row.handlers, e.hoisted("(e, "+e.row.name+") => {\n"+body+e.ind+"}"))
+	if !slices.Contains(e.row.types, a.Name[2:]) {
+		e.row.types = append(e.row.types, a.Name[2:])
+	}
+	if e.delegated == nil {
+		e.delegated = map[*Attr]bool{}
+	}
+	e.delegated[a] = true
+	return len(e.row.handlers) - 1, true
+}
+
+// hoistable reports whether the code in nodes can be hoisted out of the
+// current row.
+func (e *emitter) hoistable(nodes ...ast.Node) bool {
+	if e.row == nil {
+		return false
+	}
+	ok := true
+	for _, n := range nodes {
+		ast.Inspect(n, func(x ast.Node) bool {
+			if id, isID := x.(*ast.Ident); isID {
+				if obj := e.ck.info.Uses[id]; obj != nil && e.loopVars[obj] && obj != e.row.obj {
+					ok = false
+				}
+			}
+			return ok
+		})
+	}
+	return ok
+}
+
+// hoisted writes def (a function taking the row's item) before the list
+// and returns its name.
+func (e *emitter) hoisted(def string) string {
+	name := e.name("$b")
+	fmt.Fprintf(&e.row.hoist, "%sconst %s = %s;\n", e.ind, name, def)
+	return name
 }
 
 func (e *emitter) errAt(n ast.Node, format string, args ...any) {
@@ -275,6 +353,12 @@ func (e *emitter) tnodes(nodes []Node, svg bool) []*tnode {
 			}
 			t := &tnode{kind: 'e', tag: n.Tag, svg: svg || n.Tag == "svg", src: n}
 			for _, a := range n.Attrs {
+				if a.Kind == AttrExpr {
+					if i, ok := e.delegate(a); ok {
+						t.attrs = append(t.attrs, &Attr{Name: "den-" + a.Name[2:], Kind: AttrStatic, Value: strconv.Itoa(i)})
+						continue
+					}
+				}
 				if a.Kind == AttrExpr || a.Name == "autofocus" {
 					t.need = true
 				}
@@ -367,7 +451,7 @@ func (e *emitter) template(ts []*tnode) string {
 // or a fragment when there is more than one top-level node.
 func (e *emitter) instantiate(nodes []Node, svg bool) string {
 	if len(nodes) == 0 {
-		return "$frag()"
+		return "$cm()" // a placeholder, so a list row is never empty
 	}
 	if len(nodes) == 1 {
 		if el, ok := nodes[0].(*Element); ok && el.IsComponent() {
@@ -413,7 +497,11 @@ func (e *emitter) bind(ts []*tnode) {
 		case *Interp:
 			pt := e.cc.parts[n]
 			if e.ck.reactive(pt.expr) {
-				e.line("$text(%s, () => %s);", t.v, e.expr(pt.expr))
+				if e.hoistable(pt.expr) {
+					e.line("$text(%s, %s, %s);", t.v, e.hoisted("("+e.row.name+") => "+e.expr(pt.expr)), e.row.name)
+				} else {
+					e.line("$text(%s, () => %s);", t.v, e.expr(pt.expr))
+				}
 			} else {
 				e.line("%s.data = String(%s);", t.v, e.expr(pt.expr))
 			}
@@ -428,15 +516,16 @@ func (e *emitter) bind(ts []*tnode) {
 					// elements it adds later, once they are in the document.
 					e.line("queueMicrotask(() => %s.focus());", t.v)
 				}
-				if a.Kind != AttrExpr {
+				if a.Kind != AttrExpr || e.delegated[a] {
 					continue
 				}
 				pt := e.cc.attrs[a]
 				if pt.kind == partHandler {
 					body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
-					if bubbles[a.Name[2:]] {
+					switch {
+					case bubbles[a.Name[2:]]:
 						e.line("$on(%s, %s, (e) => {\n%s%s});", t.v, jsString(a.Name[2:]), body, e.ind)
-					} else {
+					default:
 						e.line("%s.addEventListener(%s, (e) => {\n%s%s});", t.v, jsString(a.Name[2:]), body, e.ind)
 					}
 					continue
@@ -446,7 +535,11 @@ func (e *emitter) bind(ts []*tnode) {
 					x = "$url(" + x + ")"
 				}
 				if e.ck.reactive(pt.expr) {
-					e.line("$attr(%s, %s, () => %s);", t.v, jsString(a.Name), x)
+					if e.hoistable(pt.expr) {
+						e.line("$attr(%s, %s, %s, %s);", t.v, jsString(a.Name), e.hoisted("("+e.row.name+") => "+x), e.row.name)
+					} else {
+						e.line("$attr(%s, %s, () => %s);", t.v, jsString(a.Name), x)
+					}
 				} else {
 					e.line("$set(%s, %s, %s);", t.v, jsString(a.Name), x)
 				}
@@ -527,6 +620,22 @@ func (e *emitter) forNode(t *tnode, n *For) {
 	if isSlice(e.ck.info.TypeOf(rs.X)) {
 		list = "$arr(" + list + ")"
 	}
+	var keyObj, valObj types.Object
+	if id, ok := rs.Key.(*ast.Ident); ok {
+		keyObj = e.ck.info.Defs[id]
+	}
+	if id, ok := rs.Value.(*ast.Ident); ok {
+		valObj = e.ck.info.Defs[id]
+	}
+	if e.loopVars == nil {
+		e.loopVars = map[types.Object]bool{}
+	}
+	for _, o := range []types.Object{keyObj, valObj} {
+		if o != nil {
+			e.loopVars[o] = true
+			defer delete(e.loopVars, o)
+		}
+	}
 	if t.end == nil {
 		l := e.name("$l")
 		e.line("const %s = %s;", l, list)
@@ -550,7 +659,7 @@ func (e *emitter) forNode(t *tnode, n *For) {
 	var params string
 	useIndex := false
 	if isInt {
-		list = "$seq(" + list + ")"
+		list = "Array.from({ length: " + list + " }, (_, i) => i)"
 		params = or(k, "$i")
 	} else if isMap(e.ck.info.TypeOf(rs.X)) {
 		list = "$entries(" + list + ")" // values, with the map keys as indexes
@@ -563,7 +672,32 @@ func (e *emitter) forNode(t *tnode, n *For) {
 			useIndex = true
 		}
 	}
-	e.line("$for(%s, %s, () => %s, (%s) => %s, %s, %t);", t.v, t.end.v, list, params, e.expr(pt.expr), e.block(params, n.Body, t.svg), useIndex)
+	// The row's item: the int itself when ranging over an int, otherwise the
+	// element or map value.
+	outer := e.row
+	e.row = nil
+	if isInt && keyObj != nil {
+		e.row = &rowCtx{obj: keyObj, name: k}
+	} else if !isInt && valObj != nil {
+		e.row = &rowCtx{obj: valObj, name: v}
+	}
+	if e.row != nil && len(n.Body) == 1 {
+		el, ok := n.Body[0].(*Element)
+		e.row.rootEl = ok && !el.IsComponent()
+	}
+	block := e.block(params, n.Body, t.svg)
+	table := ""
+	if e.row != nil {
+		e.w.WriteString(e.row.hoist.String())
+		if len(e.row.handlers) > 0 {
+			table = ", [" + strings.Join(e.row.handlers, ", ") + "]"
+		}
+		for _, typ := range e.row.types {
+			e.line("$listen(%s);", jsString(typ))
+		}
+	}
+	e.row = outer
+	e.line("$for(%s, %s, () => %s, (%s) => %s, %s, %t%s);", t.v, t.end.v, list, params, e.expr(pt.expr), block, useIndex, table)
 }
 
 // loopVar returns the JS name of a range variable, or "" if there is none.

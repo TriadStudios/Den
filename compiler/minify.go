@@ -75,9 +75,11 @@ func minifyJS(src string) string {
 		}
 	}
 	// "(x)=>" is "x=>": a call cannot be followed by "=>", so outside strings
-	// (where the runtime never has one) this only matches arrows. And true
-	// and false are !0 and !1, which the runtime never uses as names.
+	// (where the runtime never has one) this only matches arrows. true and
+	// false are !0 and !1, which the runtime never uses as names.
 	out := arrowParen.ReplaceAllString(strings.TrimSpace(b.String()), "$1=>")
+	// const is let: the runtime never assigns to a constant.
+	out = constWord.ReplaceAllString(out, "${1}let ")
 	out = boolWord.ReplaceAllStringFunc(out, func(m string) string {
 		i := strings.IndexAny(m, "tf") // where the word starts
 		if m[i] == 't' {
@@ -90,5 +92,6 @@ func minifyJS(src string) string {
 
 var (
 	arrowParen = regexp.MustCompile(`\(([A-Za-z_$][\w$]*)\)=>`)
+	constWord  = regexp.MustCompile(`(^|[;{}(\n])const `)
 	boolWord   = regexp.MustCompile(`(?:^|[ ;(,=:?!&|{}\[\]])(?:true|false)\b`)
 )

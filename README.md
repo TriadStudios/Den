@@ -38,13 +38,13 @@ field or method Titel)` before any JavaScript is written.
 
 | | JS shipped, gzipped |
 | --- | --- |
-| `examples/counter` (two counters, a computed value, a bound input) | 2.1 KB |
-| `examples/todos` (add, toggle, remove, filter) | 3.8 KB |
-| `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.2 KB |
+| `examples/counter` (two counters, a computed value, a bound input) | 2.3 KB |
+| `examples/todos` (add, toggle, remove, filter) | 3.9 KB |
+| `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.3 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
-On the js-framework-benchmark operations den runs at **1.01x the time of
-hand-written vanilla JS** ([details](bench/README.md)).
+On the js-framework-benchmark operations den runs at **1.00x the time of
+hand-written vanilla JS, using 1.15x its memory** ([details](bench/README.md)).
 
 ## Quick start
 
@@ -80,6 +80,10 @@ plus an optional `style.css`.
      JS `if` or loop.
    - Constants fold, integer division truncates as in Go, and bubbling events
      share one delegated listener per type.
+   - Handlers and bindings inside list rows are compiled once per list, as
+     functions of the row's item, so a row costs almost nothing beyond its
+     DOM. Their elements carry a small `den-click="0"`-style attribute that
+     names the handler.
 4. **Runtime.** `compiler/runtime.js` is a push-pull signal graph (computed
    values are lazy and effects are glitch-free), ownership scopes (effects
    stop when the branch or row that created them goes away), keyed list

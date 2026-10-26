@@ -203,13 +203,13 @@ click(find("button", "add")); await tick();
 log(html(find("ul")));`)
 	expectLines(t, got,
 		`abcd 4 left`,
-		`<ul><li>a</li><li class="">b</li><li>c</li><li>d</li></ul> 3 left`,
+		`<ul><li den-click="0">a</li><li den-click="0" class="">b</li><li den-click="0">c</li><li den-click="0">d</li></ul> 3 left`,
 		`b rebuilt, others kept: 0,new,2,3`,
 		// Reversing 4 rows keeps the longest run in place and moves the other 3.
 		`dcba ops 3 kept 3,2,new,0`,
 		`cbaz 3 left`,
 		`<ul></ul> 0 left`,
-		`<ul><li>z</li></ul>`)
+		`<ul><li den-click="0">z</li></ul>`)
 }
 
 func TestRunAttributes(t *testing.T) {
