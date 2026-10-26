@@ -19,12 +19,15 @@ chat) and when representing the project elsewhere.
 
 ## Reporting
 
-Report unacceptable behavior privately to the maintainers. **Before the
-repository goes public, the maintainers will publish a reporting address
-here.** Every report will be reviewed and investigated promptly and fairly,
-and the privacy of the reporter will be respected. Maintainers who do not
-follow the code of conduct may face consequences determined by other members
-of the project's leadership.
+Report unacceptable behavior privately to the maintainers through GitHub:
+use the repository's private reporting form (the **Security** tab, then
+[**Report a vulnerability**](https://github.com/TriadStudios/Den/security/advisories/new))
+and start the title with "Code of conduct". Only you and the maintainers can
+see the report. To flag a specific comment or user to GitHub itself, use
+GitHub's **Report content** option. Every report will be reviewed and
+investigated promptly and fairly, and the privacy of the reporter will be
+respected. Maintainers who do not follow the code of conduct may face
+consequences determined by other members of the project's leadership.
 
 Enforcement follows the Contributor Covenant's
 [enforcement guidelines](https://www.contributor-covenant.org/version/2/1/code_of_conduct/#enforcement-guidelines):

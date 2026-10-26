@@ -209,3 +209,7 @@ The full plan, with phases, budgets and gates, is in [docs/PLAN.md](docs/PLAN.md
 5. **Tooling and launch:** a language server, tree-sitter grammar and
    playground.
 6. **Desktop:** `den desktop` on native webviews.
+
+## License
+
+Den is licensed under the [Apache License 2.0](LICENSE).
