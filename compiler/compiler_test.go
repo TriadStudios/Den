@@ -243,13 +243,14 @@ component App() {
 component Card(head den.Children) {
     <h2>{head}</h2>
 }`, `app.den:3:18: slot <:head> takes no attributes`},
+		// go/types words the rest differently from one Go release to the next.
 		{"calling children", `
 component Card(children den.Children) {
     <div>{children()}</div>
 }
 component App() {
     <Card>x</Card>
-}`, `app.den:3:11: invalid operation: cannot call children`},
+}`, `app.den:3:11: invalid operation: cannot call`},
 		{"comparing children with nil", `
 component Card(children den.Children) {
     <div>{if children == nil { x }}</div>
