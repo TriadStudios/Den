@@ -13,9 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # go.mod states the minimum Go version; CI uses the latest patched Go so govulncheck checks the toolchain people should use.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - uses: actions/setup-node@v4 # the runtime tests run compiled apps under node
         with:
           node-version: 22
@@ -42,9 +44,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Same Go as the test job: the latest patched release, not go.mod's minimum.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
