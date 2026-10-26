@@ -51,6 +51,9 @@ func (im stdImporter) Import(path string) (*types.Package, error) {
 		return p, nil
 	}
 	src, ok := stdPackages[path]
+	if path == "den" {
+		src, ok = denPackage, true
+	}
 	if !ok {
 		return nil, fmt.Errorf("package %q is not available in den", path)
 	}

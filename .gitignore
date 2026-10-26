@@ -2,3 +2,7 @@ dist/
 bin/
 node_modules/
 *.png
+
+# Maintainer notes kept out of the public repo.
+/CLAUDE.md
+/docs/

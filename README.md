@@ -2,7 +2,7 @@
 
 > **Experimental.** Den is a young project. The language and APIs will change
 > before 1.0, and it is not ready for production use. See the
-> [plan](docs/PLAN.md) for where it is going.
+> [roadmap](#roadmap) for where it is going.
 
 Den lets Go developers build web apps in Go syntax. You write components in
 `.den` files, Go's own type checker checks them, and the compiler emits small,
@@ -104,7 +104,8 @@ app.den:2:8: package "fmt" is not available in den; you can import strconv, stri
 
 Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list keys that are not strings,
-numbers or bools, and calling a component as a function.
+numbers or bools, calling a component as a function, and children or slots
+a component does not take.
 
 ## Security by default
 
@@ -138,6 +139,40 @@ different behavior.
 - `{for i, x := range xs key x.ID { ... }}` over slices, arrays, maps and
   ints. The key is required and must be a string, number or bool.
 - SVG elements, and `autofocus` on elements added after the page loads.
+
+**Children and slots**
+
+```go
+component Card(title string, header den.Children, children den.Children) {
+    <section class="card">
+        <header>{header}</header>
+        <h2>{title}</h2>
+        {children}
+    </section>
+}
+
+component App() {
+    n := signal(0)
+    <Card title="Hi">
+        <:header><b>Top {n.Get()}</b></:header>
+        <p>Body</p>
+        <button onclick={n.Set(n.Get() + 1)}>+</button>
+    </Card>
+}
+```
+
+- `den.Children` is built in; no import is needed. The prop named
+  `children` gets the markup between the component's tags, and every other
+  `den.Children` prop (or alias of it) is a named slot, filled by
+  `<:name>...</:name>` directly inside them.
+- `{children}` renders it, as often as you like, and `<Inner>{children}</Inner>`
+  passes it on. Each copy is built as HTML or SVG to match where it is
+  rendered. Children and slots that are not given render nothing.
+- `den` is still an ordinary name: a program that declares its own `den`
+  keeps it, and then cannot use `den.Children`.
+- The markup belongs to the caller: it reads the caller's signals, variables
+  and list items. The nodes it makes belong to where the callee renders it,
+  so a callee `{if}` that hides it also stops its bindings.
 
 **State**
 - `signal(v)`, `computed(expr)`, `.Get()`, `.Set(v)`, `.Update(func)`.
@@ -176,9 +211,8 @@ and den and require to print the same thing.
 
 **Not supported yet:** pointers (other than `*Signal[T]`), methods,
 interfaces (other than `error`), package-level variables, `switch`,
-`defer`, goroutines and channels, children and slots for components, scoped
-styles, server functions, and server-side rendering. All are on the
-[roadmap](docs/PLAN.md).
+`defer`, goroutines and channels, scoped styles, server functions, and
+server-side rendering. The larger ones are on the [roadmap](#roadmap).
 
 ## Developing den
 
@@ -198,14 +232,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
 
 ## Roadmap
 
-The full plan, with phases, budgets and gates, is in [docs/PLAN.md](docs/PLAN.md).
+Each phase ends at a gate with measurable exit criteria. Every release must
+hold these budgets: the runtime under 3 KB gzipped, TodoMVC under 10 KB
+gzipped, the js-framework-benchmark operations within 1.3x of vanilla JS's
+time, memory after creating 1,000 rows within 1.2x of vanilla JS, and a
+rebuild of 100 components under 50 ms.
 
 1. **Core language (Phase 1, done):** markup control flow, structs, slices
    and maps, template cloning, lazy computed values, ownership scopes,
    TodoMVC under 10 KB, and the benchmark gate.
-2. **Components, styling and motion:** children and slots, a typed router,
-   scoped styles and design tokens, animations, `den fmt` and a VS Code
-   extension.
+2. **Components, styling and motion:** children and slots (done), a typed
+   router, scoped styles and design tokens, animations, `den fmt` and a VS
+   Code extension.
 3. **Server and security:** typed server functions with required `auth=`,
    `Secret[T]`, CSRF protection, SSR, source maps and `den test`.
 4. **Scale:** `<VirtualList>`, data windows, live streams, and the

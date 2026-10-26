@@ -173,6 +173,179 @@ component App() {
 component Home() {
     <p>x</p>
 }`, `no App component`},
+		{"children for a component without a children param", `
+component App() {
+    <Card title="a"><p>x</p></Card>
+}
+component Card(title string) {
+    <h2>{title}</h2>
+}`, `app.den:3:5: <Card> does not take children: it has no children den.Children parameter`},
+		{"unknown slot", `
+component App() {
+    <Card><:foot>x</:foot></Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:11: <Card> has no slot "foot"`},
+		{"slot that is not den.Children", `
+component App() {
+    <Card title="a"><:title>x</:title></Card>
+}
+component Card(title string) {
+    <h2>{title}</h2>
+}`, `app.den:3:21: <Card> has no slot "title"`},
+		{"slot given twice", `
+component App() {
+    <Card><:head>a</:head><:head>b</:head></Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:27: <Card> slot "head" given twice`},
+		{"slot outside a component", `
+component App() {
+    <div><:head>x</:head></div>
+}`, `app.den:3:10: <:head> must be directly inside a component element`},
+		{"slot in a block inside a component", `
+component App() {
+    <Card>{if true { <:head>x</:head> }}</Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:22: <:head> must be directly inside a component element`},
+		{"children slot", `
+component App() {
+    <Card><:children>x</:children></Card>
+}
+component Card(children den.Children) {
+    <div>{children}</div>
+}`, `app.den:3:11: <:children> is not a slot: put default content directly between <Card> and </Card>`},
+		{"children passed as an attribute", `
+component App() {
+    <Card children={1} />
+}
+component Card(children den.Children) {
+    <div>{children}</div>
+}`, `app.den:3:11: children of <Card> go between <Card> and </Card>, not in an attribute`},
+		{"slot passed as an attribute", `
+component Outer(head den.Children) {
+    <Card head={head} />
+}
+component App() {
+    <Outer />
+}
+component Card(head den.Children) {
+    <div>{head}</div>
+}`, `app.den:3:11: slot "head" of <Card> is filled with <:head>...</:head> between the tags, not with an attribute`},
+		{"attribute on a slot", `
+component App() {
+    <Card><:head class="x">a</:head></Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:18: slot <:head> takes no attributes`},
+		// go/types words the rest differently from one Go release to the next.
+		{"calling children", `
+component Card(children den.Children) {
+    <div>{children()}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:11: invalid operation: cannot call`},
+		{"comparing children with nil", `
+component Card(children den.Children) {
+    <div>{if children == nil { x }}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:26: invalid operation: children == nil (mismatched types den.Children and untyped nil)`},
+		{"comparing children", `
+func same(a, b den.Children) bool { return a == b }
+component App() {
+    <p>x</p>
+}`, `app.den:2:44: invalid operation: a == b (struct containing func() cannot be compared)`},
+		{"children in an attribute", `
+component Card(children den.Children) {
+    <div title={children}>x</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:17: cannot render den.Children: only strings, numbers and bools can be shown in markup`},
+		{"children from a signal", `
+component Card(children den.Children) {
+    s := signal(children)
+    <div>{s.Get()}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:4:11: den.Children shown in markup cannot depend on a signal; choose between them with {if} instead`},
+		{"children converted from another type", `
+func f() den.Children { return den.Children(func() {}) }
+component App() {
+    <p>x</p>
+}`, `app.den:2:45: cannot convert (func() literal) (value of type func()) to type den.Children`},
+		{"children stored", `
+component Card(children den.Children) {
+    s := stored("k", []den.Children{children})
+    <div>{len(s.Get())}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:10: cannot store []den.Children in localStorage`},
+		{"den.Children in a program with its own den", `
+func den() int { return 1 }
+component Card(children den.Children) {
+    <div>{children}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:25: den.Children is not available because this program declares its own den at app.den:2:6; rename that declaration`},
+		{"using a component whose den.Children prop is hidden", `
+func den() int { return 1 }
+component Card(children den.Children) {
+    <div>{children}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:7:5: <Card> cannot be used: its prop "children" is den.Children, which this program's own den hides`},
+		{"den.Children in a program that imports a package as den", `
+import den "strings"
+component Card(children den.Children) {
+    <div>{children}{den.ToUpper("a")}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:25: den.Children is not available because this program imports "strings" as den at app.den:2:8; rename that import`},
+		{"alias of den.Children passed as an attribute", `
+type Kids = den.Children
+component Card(children Kids) {
+    <div>{children}</div>
+}
+component Outer(children den.Children) {
+    <Card children={children} />
+}
+component App() {
+    <Outer>x</Outer>
+}`, `app.den:7:11: children of <Card> go between <Card> and </Card>, not in an attribute`},
+		{"new type based on den.Children", `
+type Kids den.Children
+component App() {
+    <p>x</p>
+}`, `app.den:2:6: type Kids is based on den.Children, which den does not support; declare an alias instead: type Kids = den.Children`},
+		{"den.Children through a generic alias", `
+type Id[T any] = den.Children
+component Card(children Id[int]) {
+    <div>{children}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:16: den cannot tell whether children is a den.Children prop; write its type as den.Children or as a plain alias of it (type X = den.Children)`},
+		{"undefined type in a prop", `
+component App() {
+    <Card title="x" />
+}
+component Card(title strin) {
+    <h2>{title}</h2>
+}`, `app.den:5:22: undefined: strin`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -354,8 +527,8 @@ func gzipLen(s string) int {
 	return buf.Len()
 }
 
-// TestRuntimeBudget holds the whole runtime, every feature included, to the
-// budget in docs/PLAN.md: under 3 KB gzipped. Apps ship only what they use.
+// TestRuntimeBudget holds the whole runtime, every feature included, to its
+// size budget: under 3 KB gzipped. Apps ship only what they use.
 func TestRuntimeBudget(t *testing.T) {
 	all := runtimeFor(runtimeJS)
 	t.Logf("full runtime: %d bytes, %d gzipped", len(all), gzipLen(all))
@@ -364,8 +537,8 @@ func TestRuntimeBudget(t *testing.T) {
 	}
 }
 
-// TestExampleBudgets compiles every example and holds it to the size budget
-// in docs/PLAN.md: an app the size of TodoMVC ships under 10 KB gzipped.
+// TestExampleBudgets compiles every example and holds it to the size budget:
+// an app the size of TodoMVC ships under 10 KB gzipped.
 func TestExampleBudgets(t *testing.T) {
 	dirs, _ := filepath.Glob("../examples/*")
 	if len(dirs) == 0 {

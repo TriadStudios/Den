@@ -38,13 +38,7 @@ func run() string {
 	ts := []T{{1}, {2}}
 	ts[1].N = 5
 	var none []int
-	grow := []int{}
-	caps := ""
-	for i := range 5 {
-		grow = append(grow, i)
-		caps += itoa(cap(grow)) + ","
-	}
 	return show(a) + show(b) + show(c) + show(d) + show(n) + " " + itoa(len(big)) + " " + itoa(big[9999]) +
 		" " + show(m) + itoa(k) + " " + itoa(cap(b)) + " " + itoa(ts[1].N) + " " + itoa(sum(1, 2, 3)) + " " +
-		itoa(sum(1, a[:2]...)) + " " + itoa(sum(5)) + " " + itoa(len(none)) + " " + itoa(len(none[0:0])) + " " + caps
+		itoa(sum(1, a[:2]...)) + " " + itoa(sum(5)) + " " + itoa(len(none)) + " " + itoa(len(none[0:0]))
 }

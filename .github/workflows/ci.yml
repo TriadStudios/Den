@@ -1,5 +1,3 @@
-# Move this file to .github/workflows/ci.yml to enable CI. (The Claude GitHub
-# App cannot write workflow files, so it lives here until a maintainer moves it.)
 name: CI
 
 on:
@@ -15,9 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # go.mod states the minimum Go version; CI uses the latest patched Go so govulncheck checks the toolchain people should use.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - uses: actions/setup-node@v4 # the runtime tests run compiled apps under node
         with:
           node-version: 22
@@ -36,7 +36,7 @@ jobs:
           go build -o bin/den ./cmd/den
           for d in examples/*/; do ./bin/den build "$d"; done
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   # Drives Chromium with Playwright. Playwright is installed for CI only; den
   # itself has no npm dependencies.
@@ -44,9 +44,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Same Go as the test job: the latest patched release, not go.mod's minimum.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
