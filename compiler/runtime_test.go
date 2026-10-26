@@ -389,6 +389,27 @@ func TestGoConformance(t *testing.T) {
 	}
 }
 
+// TestSliceGrowth pins den's own capacity growth for append: at least
+// double, as in GopherJS. Go leaves growth to the implementation, so this
+// is not part of the conformance suite.
+func TestSliceGrowth(t *testing.T) {
+	got := runApp(t, `
+func caps() string {
+    grow := []int{}
+    out := ""
+    for i := range 5 {
+        grow = append(grow, i)
+        out += itoa(cap(grow)) + ","
+    }
+    return out
+}
+
+component App() {
+    <p>{caps()}</p>
+}`, `log(find("p").textContent);`)
+	expectLines(t, got, `1,2,4,4,8,`)
+}
+
 func TestRunDynamicURLs(t *testing.T) {
 	got := runApp(t, `
 component App() {
