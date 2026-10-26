@@ -36,7 +36,7 @@ jobs:
           go build -o bin/den ./cmd/den
           for d in examples/*/; do ./bin/den build "$d"; done
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   # Drives Chromium with Playwright. Playwright is installed for CI only; den
   # itself has no npm dependencies.
