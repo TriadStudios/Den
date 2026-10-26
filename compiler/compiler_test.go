@@ -173,6 +173,123 @@ component App() {
 component Home() {
     <p>x</p>
 }`, `no App component`},
+		{"children for a component without a children param", `
+component App() {
+    <Card title="a"><p>x</p></Card>
+}
+component Card(title string) {
+    <h2>{title}</h2>
+}`, `app.den:3:5: <Card> does not take children: it has no children den.Children parameter`},
+		{"unknown slot", `
+component App() {
+    <Card><:foot>x</:foot></Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:11: <Card> has no slot "foot"`},
+		{"slot that is not den.Children", `
+component App() {
+    <Card title="a"><:title>x</:title></Card>
+}
+component Card(title string) {
+    <h2>{title}</h2>
+}`, `app.den:3:21: <Card> has no slot "title"`},
+		{"slot given twice", `
+component App() {
+    <Card><:head>a</:head><:head>b</:head></Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:27: <Card> slot "head" given twice`},
+		{"slot outside a component", `
+component App() {
+    <div><:head>x</:head></div>
+}`, `app.den:3:10: <:head> must be directly inside a component element`},
+		{"slot in a block inside a component", `
+component App() {
+    <Card>{if true { <:head>x</:head> }}</Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:22: <:head> must be directly inside a component element`},
+		{"children slot", `
+component App() {
+    <Card><:children>x</:children></Card>
+}
+component Card(children den.Children) {
+    <div>{children}</div>
+}`, `app.den:3:11: <:children> is not a slot: put default content directly between <Card> and </Card>`},
+		{"children passed as an attribute", `
+component App() {
+    <Card children={1} />
+}
+component Card(children den.Children) {
+    <div>{children}</div>
+}`, `app.den:3:11: children of <Card> go between <Card> and </Card>, not in an attribute`},
+		{"slot passed as an attribute", `
+component Outer(head den.Children) {
+    <Card head={head} />
+}
+component App() {
+    <Outer />
+}
+component Card(head den.Children) {
+    <div>{head}</div>
+}`, `app.den:3:11: slot "head" of <Card> is filled with <:head>...</:head> between the tags, not with an attribute`},
+		{"attribute on a slot", `
+component App() {
+    <Card><:head class="x">a</:head></Card>
+}
+component Card(head den.Children) {
+    <h2>{head}</h2>
+}`, `app.den:3:18: slot <:head> takes no attributes`},
+		{"calling children", `
+component Card(children den.Children) {
+    <div>{children()}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:11: invalid operation: cannot call children`},
+		{"comparing children with nil", `
+component Card(children den.Children) {
+    <div>{if children == nil { x }}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:26: invalid operation: children == nil (mismatched types den.Children and untyped nil)`},
+		{"comparing children", `
+func same(a, b den.Children) bool { return a == b }
+component App() {
+    <p>x</p>
+}`, `app.den:2:44: invalid operation: a == b (struct containing func() cannot be compared)`},
+		{"children in an attribute", `
+component Card(children den.Children) {
+    <div title={children}>x</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:17: cannot render den.Children: only strings, numbers and bools can be shown in markup`},
+		{"children from a signal", `
+component Card(children den.Children) {
+    s := signal(children)
+    <div>{s.Get()}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:4:11: den.Children shown in markup cannot depend on a signal; choose between them with {if} instead`},
+		{"children converted from another type", `
+func f() den.Children { return den.Children(func() {}) }
+component App() {
+    <p>x</p>
+}`, `app.den:2:45: cannot convert (func() literal) (value of type func()) to type den.Children`},
+		{"children stored", `
+component Card(children den.Children) {
+    s := stored("k", []den.Children{children})
+    <div>{len(s.Get())}</div>
+}
+component App() {
+    <Card>x</Card>
+}`, `app.den:3:10: cannot store []den.Children in localStorage`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -91,18 +91,26 @@ type Component struct {
 	Root      *Element
 }
 
-// Param is one component parameter (prop).
-type Param struct{ Name, Type string }
+// Param is one component parameter (prop). Children is set when its type
+// is written den.Children: the parameter named children takes the
+// element's default content, and any other is a slot filled by <:name>.
+type Param struct {
+	Name, Type string
+	Children   bool
+}
 
 // Node is a markup node: *Element, *Text, *Interp, *If or *For.
 type Node interface{ pos() Pos }
 
-// Element is an HTML element or a component use (capitalised tag).
+// Element is an HTML element, a component use (capitalised tag) or a
+// <:name> slot. For a component use, Children is the default content and
+// Slots holds the <:name> elements given directly inside it.
 type Element struct {
 	Tag      string
 	Pos      Pos
 	Attrs    []*Attr
 	Children []Node
+	Slots    []*Element
 }
 
 // AttrKind says how an attribute's value was written.
@@ -165,6 +173,23 @@ func (n *For) pos() Pos     { return n.Pos_ }
 func (e *Element) IsComponent() bool {
 	r := []rune(e.Tag)
 	return len(r) > 0 && unicode.IsUpper(r[0])
+}
+
+// IsSlot reports whether the element is a <:name> slot.
+func (e *Element) IsSlot() bool { return strings.HasPrefix(e.Tag, ":") }
+
+// slotContent returns the markup a component use gives for its den.Children
+// parameter p, and whether it gives any.
+func slotContent(el *Element, p Param) ([]Node, bool) {
+	if p.Name == "children" {
+		return el.Children, len(el.Children) > 0
+	}
+	for _, s := range el.Slots {
+		if s.Tag[1:] == p.Name {
+			return s.Children, true
+		}
+	}
+	return nil, false
 }
 
 type parser_ struct {
@@ -460,8 +485,14 @@ func (p *parser_) parseParams(c *Component) []Param {
 		if len(field.Names) == 0 {
 			p.failAt(c.ParamsPos, "every parameter of %s needs a name", c.Name)
 		}
+		sel, _ := field.Type.(*ast.SelectorExpr)
+		children := sel != nil && sel.Sel.Name == "Children"
+		if children {
+			pkg, _ := sel.X.(*ast.Ident)
+			children = pkg != nil && pkg.Name == "den"
+		}
 		for _, n := range field.Names {
-			out = append(out, Param{Name: n.Name, Type: typ})
+			out = append(out, Param{Name: n.Name, Type: typ, Children: children})
 		}
 	}
 	return out
@@ -537,11 +568,80 @@ func (p *parser_) parseElement(inSVG bool) *Element {
 		case p.peek() == '>':
 			p.off++
 			p.parseChildren(el)
+			if el.IsComponent() {
+				p.splitSlots(el)
+			}
 			return el
 		default:
 			el.Attrs = append(el.Attrs, p.parseAttr(el))
 		}
 	}
+}
+
+// parseSlot parses <:name>...</:name>, which fills the slot parameter name
+// of the component element parent.
+func (p *parser_) parseSlot(parent *Element) *Element {
+	el := &Element{Pos: p.posAt(p.off)}
+	p.off += 2
+	name := p.readIdent()
+	if name == "" {
+		p.fail("expected a slot name after <:")
+	}
+	el.Tag = ":" + name
+	if parent == nil || !parent.IsComponent() {
+		p.failAt(el.Pos, "<:%s> must be directly inside a component element", name)
+	}
+	if name == "children" {
+		p.failAt(el.Pos, "<:children> is not a slot: put default content directly between <%s> and </%s>", parent.Tag, parent.Tag)
+	}
+	p.skipSpace()
+	switch {
+	case p.eof():
+		p.failAt(el.Pos, "unclosed <%s>", el.Tag)
+	case strings.HasPrefix(p.src[p.off:], "/>"):
+		p.off += 2
+	case p.peek() == '>':
+		p.off++
+		p.parseChildren(el)
+		el.Children = trimBlank(el.Children)
+	default:
+		p.fail("slot <%s> takes no attributes", el.Tag)
+	}
+	return el
+}
+
+// splitSlots moves the <:name> slots of a component element out of its
+// default content. Blank text at the edges of the content is layout.
+func (p *parser_) splitSlots(el *Element) {
+	var kids []Node
+	for _, n := range el.Children {
+		s, ok := n.(*Element)
+		if !ok || !s.IsSlot() {
+			kids = append(kids, n)
+			continue
+		}
+		for _, prev := range el.Slots {
+			if prev.Tag == s.Tag {
+				p.failAt(s.Pos, "<%s> slot %q given twice", el.Tag, s.Tag[1:])
+			}
+		}
+		el.Slots = append(el.Slots, s)
+	}
+	el.Children = trimBlank(kids)
+}
+
+func trimBlank(ns []Node) []Node {
+	blank := func(n Node) bool {
+		t, ok := n.(*Text)
+		return ok && strings.Trim(t.Value, " \t\r\n") == ""
+	}
+	for len(ns) > 0 && blank(ns[0]) {
+		ns = ns[1:]
+	}
+	for len(ns) > 0 && blank(ns[len(ns)-1]) {
+		ns = ns[:len(ns)-1]
+	}
+	return ns
 }
 
 func (p *parser_) parseAttr(el *Element) *Attr {
@@ -608,7 +708,13 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 		case strings.HasPrefix(rest, "</"):
 			closePos := p.posAt(p.off)
 			p.off += 2
-			name := p.readName()
+			var name string
+			if p.peek() == ':' {
+				p.off++
+				name = ":" + p.readIdent()
+			} else {
+				name = p.readName()
+			}
 			if el == nil {
 				p.failAt(closePos, "</%s> has no matching open tag inside this block", name)
 			}
@@ -624,6 +730,8 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 				p.fail("unterminated <!-- comment")
 			}
 			p.off += end + 3
+		case strings.HasPrefix(rest, "<:"):
+			nodes = append(nodes, p.parseSlot(el))
 		case rest[0] == '<':
 			nodes = append(nodes, p.parseElement(false))
 		case rest[0] == '{' && p.controlWord() != "":

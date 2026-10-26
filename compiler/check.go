@@ -41,11 +41,15 @@ type renderable interface {
 	~string | ~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~float32 | ~float64 | ~bool
 }
 
-func denText[T renderable](v T)  {}
-func denAttr[T renderable](v T)  {}
-func denHandler(f func(e Event)) {}
-func denKey[T comparable](v T)   {}
-func denMark()                   {}
+func denText[T renderable | den.Children](v T) {}
+func denAttr[T renderable](v T)                {}
+func denHandler(f func(e Event))               {}
+func denKey[T comparable](v T)                 {}
+func denMark()                                 {}
+
+// denSlot stands in for the markup a component use passes to a
+// den.Children parameter; f holds it, checked in the caller's scope.
+func denSlot(f func()) den.Children { return den.Children{} }
 
 // stored is a signal kept in localStorage under key, as JSON.
 func stored[T any](key string, initial T) *Signal[T] { return &Signal[T]{v: initial} }
@@ -55,6 +59,23 @@ func hash() *Signal[string] { return nil }
 `
 
 const preludeFile = "den_prelude.go"
+
+// denPackage is the built-in package den, imported into every program.
+// Children is a struct that holds a func, so Go rejects calling it,
+// comparing it (even with nil) and converting to it; outside den only its
+// zero value can be written.
+const denPackage = `package den
+
+// Children is markup passed to a component: its default content, or a
+// named slot. Markup renders it with {x}.
+type Children struct{ _ func() }
+`
+
+// isChildren reports whether t is den.Children.
+func isChildren(t types.Type) bool {
+	n, ok := types.Unalias(t).(*types.Named)
+	return ok && n.Obj().Name() == "Children" && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "den"
+}
 
 // partKind identifies a dynamic piece of markup.
 type partKind int
@@ -74,6 +95,7 @@ type part struct {
 	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor (key)
 	stmts []ast.Stmt     // partHandler
 	args  []ast.Expr     // partComponent, in param order
+	slots [][]Node       // partComponent: markup for each den.Children param
 	rng   *ast.RangeStmt // partFor
 }
 
@@ -86,6 +108,7 @@ type checked struct {
 	components  map[string]*Component
 	readsSignal map[types.Object]bool // functions that may read a signal
 	nilTypes    map[*ast.Ident]types.Type
+	svgSlots    map[string]bool // "Comp.param": the den.Children param is rendered inside SVG
 }
 
 type checkedComponent struct {
@@ -138,7 +161,7 @@ func check(files []*File) (*checked, error) {
 		}
 	}
 	var src strings.Builder
-	src.WriteString("package app\n\n" + importSrc.String())
+	src.WriteString("package app\n\nimport /*line " + preludeFile + ":1:1*/\"den\"\n" + importSrc.String())
 	// The import directives would otherwise carry on into the prelude.
 	src.WriteString("/*line " + preludeFile + ":2:1*/" + strings.TrimPrefix(prelude, "package app\n"))
 	src.WriteString(declSrc.String())
@@ -248,7 +271,59 @@ func check(files []*File) (*checked, error) {
 	if len(errs) > 0 {
 		return nil, errs.sorted()
 	}
+	out.findSVGSlots()
 	return out, nil
+}
+
+// findSVGSlots works out which den.Children parameters each component
+// renders inside SVG, directly or by passing them on to another component,
+// so that callers build the markup they pass there as SVG elements.
+func (ck *checked) findSVGSlots() {
+	ck.svgSlots = map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for _, cc := range ck.comps {
+			params := map[types.Object]string{}
+			for _, f := range cc.decl.Type.Params.List {
+				for _, n := range f.Names {
+					params[ck.info.Defs[n]] = n.Name
+				}
+			}
+			var walk func(ns []Node, svg bool)
+			walk = func(ns []Node, svg bool) {
+				for _, n := range ns {
+					switch n := n.(type) {
+					case *Interp:
+						id, ok := ast.Unparen(cc.parts[n].expr).(*ast.Ident)
+						if !ok || !svg || !isChildren(ck.info.TypeOf(id)) {
+							continue
+						}
+						if name, ok := params[ck.info.Uses[id]]; ok && !ck.svgSlots[cc.c.Name+"."+name] {
+							ck.svgSlots[cc.c.Name+"."+name] = true
+							changed = true
+						}
+					case *If:
+						walk(n.Then, svg)
+						walk(n.Else, svg)
+					case *For:
+						walk(n.Body, svg)
+					case *Element:
+						if n.IsComponent() {
+							for i, p := range ck.components[n.Tag].Params {
+								if p.Children {
+									walk(cc.parts[n].slots[i], svg || ck.svgSlots[n.Tag+"."+p.Name])
+								}
+							}
+							continue
+						}
+						svg := svg || n.Tag == "svg"
+						walk(n.Children, svg && n.Tag != "foreignObject")
+					}
+				}
+			}
+			walk([]Node{cc.c.Root}, false)
+		}
+	}
 }
 
 // nilTargets finds the type each nil is converted to. go/types records nil
@@ -502,12 +577,9 @@ func (g *gen) node(n Node) {
 		g.src.WriteString("\t}\n")
 	case *Element:
 		if n.IsComponent() {
-			call, err := componentCall(g.file, n, g.byName)
-			if err != nil {
+			if err := g.component(n); err != nil {
 				*g.errs = append(*g.errs, err)
-				return
 			}
-			g.src.WriteString("\t" + call + "\n")
 			return
 		}
 		switch n.Tag {
@@ -552,7 +624,12 @@ func (pr *pairer) errAt(n ast.Node, format string, args ...any) {
 func errorf(format string, args ...any) string {
 	for i, a := range args {
 		if t, ok := a.(types.Type); ok {
-			args[i] = types.TypeString(t, func(*types.Package) string { return "" })
+			args[i] = types.TypeString(t, func(p *types.Package) string {
+				if p.Path() == "den" {
+					return "den"
+				}
+				return ""
+			})
 		}
 	}
 	return fmt.Sprintf(format, args...)
@@ -570,7 +647,11 @@ func (pr *pairer) nodes(ns []Node, stmts []ast.Stmt) []ast.Stmt {
 func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 	switch n := n.(type) {
 	case *Interp:
-		pr.cc.parts[n] = &part{kind: partText, expr: callArgs(stmts[0])[0]}
+		x := callArgs(stmts[0])[0]
+		if isChildren(pr.ck.info.TypeOf(x)) && pr.ck.reactive(x) {
+			pr.errAt(x, "den.Children shown in markup cannot depend on a signal; choose between them with {if} instead")
+		}
+		pr.cc.parts[n] = &part{kind: partText, expr: x}
 		return stmts[1:]
 	case *If:
 		is := stmts[0].(*ast.IfStmt)
@@ -607,7 +688,20 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 		return stmts[1:]
 	case *Element:
 		if n.IsComponent() {
-			pr.cc.parts[n] = &part{kind: partComponent, args: callArgs(stmts[0])}
+			pt := &part{kind: partComponent, args: callArgs(stmts[0])}
+			for i, p := range pr.ck.components[n.Tag].Params {
+				pt.slots = append(pt.slots, nil)
+				if !p.Children {
+					continue
+				}
+				if nodes, ok := slotContent(n, p); ok {
+					// gen wrote denSlot(func() { ... }) around the markup.
+					pt.slots[i] = nodes
+					fn := pt.args[i].(*ast.CallExpr).Args[0].(*ast.FuncLit)
+					pr.nodes(nodes, fn.Body.List)
+				}
+			}
+			pr.cc.parts[n] = pt
 			return stmts[1:]
 		}
 		for _, a := range n.Attrs {
@@ -746,44 +840,78 @@ func safeStaticURL(u string) bool {
 	return false
 }
 
-// componentCall turns <Counter label="x" start={1} /> into Counter("x", 1)
-// with arguments in parameter order, so go/types checks every prop.
-func componentCall(file string, el *Element, byName map[string]*Component) (string, *Error) {
-	target, ok := byName[el.Tag]
-	if !ok {
-		return "", &Error{File: file, Pos: el.Pos, Msg: fmt.Sprintf("unknown component <%s>", el.Tag)}
+// component turns <Counter label="x" start={1} /> into Counter("x", 1)
+// with arguments in parameter order, so go/types checks every prop. The
+// markup for a den.Children parameter becomes denSlot(func() { ... }), so
+// it is checked in the caller's scope; an unfilled one is denSlot(nil).
+func (g *gen) component(el *Element) *Error {
+	bad := func(p Pos, format string, args ...any) *Error {
+		return &Error{File: g.file, Pos: p, Msg: fmt.Sprintf(format, args...)}
 	}
-	if len(el.Children) > 0 {
-		return "", &Error{File: file, Pos: el.Pos, Msg: fmt.Sprintf("<%s> does not take children yet", el.Tag)}
+	target, ok := g.byName[el.Tag]
+	if !ok {
+		return bad(el.Pos, "unknown component <%s>", el.Tag)
+	}
+	param := func(name string) (Param, bool) {
+		for _, p := range target.Params {
+			if p.Name == name {
+				return p, true
+			}
+		}
+		return Param{}, false
+	}
+	if p, ok := param("children"); len(el.Children) > 0 && !(ok && p.Children) {
+		return bad(el.Pos, "<%s> does not take children: it has no children den.Children parameter", el.Tag)
+	}
+	for _, s := range el.Slots {
+		if p, ok := param(s.Tag[1:]); !ok || !p.Children {
+			return bad(s.Pos, "<%s> has no slot %q", el.Tag, s.Tag[1:])
+		}
 	}
 	given := map[string]*Attr{}
 	for _, a := range el.Attrs {
-		found := false
-		for _, p := range target.Params {
-			if p.Name == a.Name {
-				found = true
-			}
-		}
-		if !found {
-			return "", &Error{File: file, Pos: a.Pos, Msg: fmt.Sprintf("<%s> has no prop %q", el.Tag, a.Name)}
+		p, ok := param(a.Name)
+		switch {
+		case !ok:
+			return bad(a.Pos, "<%s> has no prop %q", el.Tag, a.Name)
+		case p.Children && p.Name == "children":
+			return bad(a.Pos, "children of <%s> go between <%s> and </%s>, not in an attribute", el.Tag, el.Tag, el.Tag)
+		case p.Children:
+			return bad(a.Pos, "slot %q of <%s> is filled with <:%s>...</:%s> between the tags, not with an attribute", a.Name, el.Tag, a.Name, a.Name)
 		}
 		given[a.Name] = a
 	}
-	var args []string
 	for _, p := range target.Params {
-		a, ok := given[p.Name]
-		if !ok {
-			return "", &Error{File: file, Pos: el.Pos, Msg: fmt.Sprintf("<%s> is missing prop %q (%s)", el.Tag, p.Name, p.Type)}
-		}
-		d := lineDirective(file, a.ValuePos)
-		switch a.Kind {
-		case AttrStatic:
-			args = append(args, d+strconv.Quote(a.Value))
-		case AttrBool:
-			args = append(args, lineDirective(file, a.Pos)+"true")
-		case AttrExpr:
-			args = append(args, d+a.Value)
+		if _, ok := given[p.Name]; !ok && !p.Children {
+			return bad(el.Pos, "<%s> is missing prop %q (%s)", el.Tag, p.Name, p.Type)
 		}
 	}
-	return lineDirective(file, el.Pos) + el.Tag + "(" + strings.Join(args, ", ") + ")", nil
+	fmt.Fprintf(g.src, "\t%s%s(", g.d(el.Pos), el.Tag)
+	for i, p := range target.Params {
+		if i > 0 {
+			g.src.WriteString(", ")
+		}
+		if p.Children {
+			nodes, ok := slotContent(el, p)
+			if !ok {
+				g.src.WriteString("denSlot(nil)")
+				continue
+			}
+			g.src.WriteString("denSlot(func() {\n")
+			g.nodes(nodes)
+			g.src.WriteString("\t})")
+			continue
+		}
+		a := given[p.Name]
+		switch a.Kind {
+		case AttrStatic:
+			g.src.WriteString(g.d(a.ValuePos) + strconv.Quote(a.Value))
+		case AttrBool:
+			g.src.WriteString(g.d(a.Pos) + "true")
+		case AttrExpr:
+			g.src.WriteString(g.d(a.ValuePos) + a.Value)
+		}
+	}
+	g.src.WriteString(")\n")
+	return nil
 }

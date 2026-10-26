@@ -519,3 +519,263 @@ log(titles(), "|", count(), "|", localStorage.getItem("todos-den"));`)
 		`completed: c`,
 		`a,bee | 2 items left | [{"ID":1,"Title":"a","Completed":false},{"ID":2,"Title":"bee","Completed":false}]`)
 }
+
+// Children are markup written by the caller, reading the caller's state,
+// and rendered by the callee where it puts {children}.
+func TestRunChildren(t *testing.T) {
+	got := runApp(t, `
+component Box(children den.Children) {
+    <div class="box">{children}</div>
+}
+
+component App() {
+    n := signal(0)
+    <main>
+        <Box>Count: {n.Get()} <i>static</i> <button onclick={n.Set(n.Get() + 1)}>inc</button></Box>
+    </main>
+}`, `
+log(html());
+click(find("button")); await tick();
+log(html());`)
+	expectLines(t, got,
+		`<main><div class="box">Count: 0 <i>static</i> <button>inc</button></div></main>`,
+		`<main><div class="box">Count: 1 <i>static</i> <button>inc</button></div></main>`)
+}
+
+func TestRunSlots(t *testing.T) {
+	got := runApp(t, `
+component Card(title string, header den.Children, footer den.Children, children den.Children) {
+    <section>
+        <header>{header}</header>
+        <h2>{title}</h2>
+        {children}
+        <footer>{footer}</footer>
+    </section>
+}
+
+component App() {
+    on := signal(false)
+    <div>
+        <Card title="A">
+            <:header><b onclick={on.Set(!on.Get())}>top {on.Get()}</b></:header>
+            <p>body</p>
+        </Card>
+        <Card title="B" />
+        <Card title="C"><:footer>end</:footer></Card>
+    </div>
+}`, `
+log(html());
+click(find("b")); await tick();
+log(html(find("header")));`)
+	expectLines(t, got,
+		`<div>`+
+			`<section><header><b>top false</b></header><h2>A</h2><p>body</p><footer></footer></section>`+
+			`<section><header></header><h2>B</h2><footer></footer></section>`+
+			`<section><header></header><h2>C</h2><footer>end</footer></section>`+
+			`</div>`,
+		`<header><b>top true</b></header>`)
+}
+
+// The nodes children make belong to the scope that renders them: when the
+// callee's {if} removes them, their bindings stop.
+func TestRunChildrenInIf(t *testing.T) {
+	got := runApp(t, `
+component Toggle(open *Signal[bool], children den.Children) {
+    <div>{if open.Get() { {children} }}</div>
+}
+
+component App() {
+    open := signal(true)
+    n := signal(0)
+    <main>
+        <Toggle open={open}><span>{n.Get()}</span></Toggle>
+        <button onclick={open.Set(!open.Get())}>toggle</button>
+        <button onclick={n.Set(n.Get() + 1)}>inc</button>
+    </main>
+}`, `
+const div = () => html(find("div"));
+const first = find("span");
+log(div());
+click(find("button", "toggle")); await tick();
+log(div());
+click(find("button", "inc")); await tick();
+log(div(), first.textContent);
+click(find("button", "toggle")); await tick();
+log(div(), findAll("span").length, find("span") !== first);
+click(find("button", "inc")); await tick();
+log(div(), "removed copy:", first.textContent);`)
+	expectLines(t, got,
+		`<div><span>0</span></div>`,
+		`<div></div>`,
+		`<div></div> 0`,
+		`<div><span>1</span></div> 1 true`,
+		`<div><span>2</span></div> removed copy: 0`)
+}
+
+// Children inside a caller's keyed list use the row's item. The callee
+// renders them inside its own list rows, whose delegated handlers must not
+// be confused with the caller's.
+func TestRunChildrenInRows(t *testing.T) {
+	got := runApp(t, `
+type Item struct {
+    ID   int
+    Name string
+}
+
+component Pair(trail *Signal[string], children den.Children) {
+    count := signal(2)
+    <div>
+        {for i := range count.Get() key i {
+            <span onclick={trail.Set(trail.Get() + itoa(i))}>{children}</span>
+        }}
+    </div>
+}
+
+component App() {
+    items := signal([]Item{{1, "a"}, {2, "b"}, {3, "c"}})
+    picked := signal("")
+    trail := signal("")
+    <div>
+        <ul>
+            {for _, it := range items.Get() key it.ID {
+                <li><Pair trail={trail}><button class={picked.Get() == it.Name} onclick={picked.Set(it.Name)}>{it.Name}</button></Pair></li>
+            }}
+        </ul>
+        <p>{picked.Get()}|{trail.Get()}</p>
+        <button onclick={items.Update(func(xs []Item) []Item { return []Item{xs[2], xs[0]} })}>reorder</button>
+        <button onclick={items.Update(func(xs []Item) []Item {
+            xs[0].Name = "C"
+            return xs
+        })}>rename</button>
+    </div>
+}`, `
+const row = () => findAll("li").map((li) => findAll("button", li).map((b) => b.textContent + (b.getAttribute("class") === "" ? "*" : "")).join("")).join(",");
+const p = () => find("p").textContent;
+const lis = findAll("li");
+log(row(), p());
+click(findAll("button", lis[1])[0]); await tick();
+log(row(), p());
+click(findAll("button", lis[1])[1]); await tick();
+log(row(), p());
+click(find("button", "reorder")); await tick();
+log(row(), p(), "kept:", findAll("li")[0] === lis[2], findAll("li")[1] === lis[0]);
+click(findAll("button", findAll("li")[0])[0]); await tick();
+log(row(), p());
+click(find("button", "rename")); await tick();
+log(row(), p());
+click(findAll("button", findAll("li")[0])[1]); await tick();
+log(row(), p());`)
+	expectLines(t, got,
+		`aa,bb,cc |`,
+		`aa,b*b*,cc b|0`,
+		`aa,b*b*,cc b|01`,
+		`cc,aa b|01 kept: true true`,
+		`c*c*,aa c|010`,
+		`CC,aa c|010`,
+		`C*C*,aa C|0101`)
+}
+
+// Outer passes its own children and a slot on to Inner.
+func TestRunChildrenForwarding(t *testing.T) {
+	got := runApp(t, `
+component Inner(head den.Children, children den.Children) {
+    <div><h1>{head}</h1>{children}</div>
+}
+
+component Outer(title den.Children, children den.Children) {
+    <section><Inner><:head>{title}</:head>{children}</Inner></section>
+}
+
+component App() {
+    n := signal(1)
+    <Outer>
+        <:title><i>{n.Get()}</i></:title>
+        <b>body</b>
+        <button onclick={n.Set(n.Get() + 1)}>inc</button>
+    </Outer>
+}`, `
+log(html());
+click(find("button")); await tick();
+log(html());`)
+	expectLines(t, got,
+		`<section><div><h1><i>1</i></h1><b>body</b><button>inc</button></div></section>`,
+		`<section><div><h1><i>2</i></h1><b>body</b><button>inc</button></div></section>`)
+}
+
+// Each {children} makes a fresh copy, with its own bindings.
+func TestRunChildrenTwice(t *testing.T) {
+	got := runApp(t, `
+component Twice(children den.Children) {
+    <div>{children}|{children}</div>
+}
+
+component App() {
+    n := signal(0)
+    <Twice><b onclick={n.Set(n.Get() + 1)}>{n.Get()}</b></Twice>
+}`, `
+log(html(), findAll("b")[0] !== findAll("b")[1]);
+click(findAll("b")[1]); await tick();
+log(html());`)
+	expectLines(t, got,
+		`<div><b>0</b>|<b>0</b></div> true`,
+		`<div><b>1</b>|<b>1</b></div>`)
+}
+
+func TestRunChildrenControlFlow(t *testing.T) {
+	got := runApp(t, `
+component Badge(n int) {
+    <em>{n}</em>
+}
+
+component Box(children den.Children) {
+    <div>{children}</div>
+}
+
+component App() {
+    xs := signal([]int{1, 2})
+    show := signal(true)
+    <main>
+        <Box>
+            {if show.Get() { <span>shown</span> } else { hidden }}
+            {for _, x := range xs.Get() key x { <Badge n={x} /> }}
+        </Box>
+        <button onclick={show.Set(!show.Get())}>toggle</button>
+        <button onclick={xs.Set(append(xs.Get(), 3))}>add</button>
+    </main>
+}`, `
+log(html(find("div")));
+click(find("button", "toggle")); await tick();
+log(html(find("div")));
+click(find("button", "add")); await tick();
+log(html(find("div")));`)
+	expectLines(t, got,
+		`<div><span>shown</span><em>1</em><em>2</em></div>`,
+		`<div>hidden<em>1</em><em>2</em></div>`,
+		`<div>hidden<em>1</em><em>2</em><em>3</em></div>`)
+}
+
+// Markup passed to a component that renders it inside <svg>, directly or by
+// passing it on, is built as SVG.
+func TestRunChildrenSVG(t *testing.T) {
+	got := runApp(t, `
+component Icon(children den.Children) {
+    <svg viewBox="0 0 10 10">{children}</svg>
+}
+
+component Frame(children den.Children) {
+    <div><Icon>{children}</Icon></div>
+}
+
+component Box(children den.Children) {
+    <div>{children}</div>
+}
+
+component App() {
+    <main>
+        <Icon><circle r="5" /></Icon>
+        <Frame><rect width="2" /></Frame>
+        <Box><p>html</p></Box>
+    </main>
+}`, `log(["circle", "rect", "p"].map((t) => t + ":" + find(t).namespaceURI).join(" "));`)
+	expectLines(t, got, `circle:http://www.w3.org/2000/svg rect:http://www.w3.org/2000/svg p:html`)
+}

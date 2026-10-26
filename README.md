@@ -104,7 +104,8 @@ app.den:2:8: package "fmt" is not available in den; you can import strconv, stri
 
 Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list keys that are not strings,
-numbers or bools, and calling a component as a function.
+numbers or bools, calling a component as a function, and children or slots
+a component does not take.
 
 ## Security by default
 
@@ -138,6 +139,37 @@ different behavior.
 - `{for i, x := range xs key x.ID { ... }}` over slices, arrays, maps and
   ints. The key is required and must be a string, number or bool.
 - SVG elements, and `autofocus` on elements added after the page loads.
+
+**Children and slots**
+
+```go
+component Card(title string, header den.Children, children den.Children) {
+    <section class="card">
+        <header>{header}</header>
+        <h2>{title}</h2>
+        {children}
+    </section>
+}
+
+component App() {
+    n := signal(0)
+    <Card title="Hi">
+        <:header><b>Top {n.Get()}</b></:header>
+        <p>Body</p>
+        <button onclick={n.Set(n.Get() + 1)}>+</button>
+    </Card>
+}
+```
+
+- `den.Children` is built in; no import is needed. The prop named
+  `children` gets the markup between the component's tags, and every other
+  `den.Children` prop is a named slot, filled by `<:name>...</:name>`
+  directly inside them.
+- `{children}` renders it, as often as you like, and `<Inner>{children}</Inner>`
+  passes it on. Children and slots that are not given render nothing.
+- The markup belongs to the caller: it reads the caller's signals, variables
+  and list items. The nodes it makes belong to where the callee renders it,
+  so a callee `{if}` that hides it also stops its bindings.
 
 **State**
 - `signal(v)`, `computed(expr)`, `.Get()`, `.Set(v)`, `.Update(func)`.
@@ -176,9 +208,8 @@ and den and require to print the same thing.
 
 **Not supported yet:** pointers (other than `*Signal[T]`), methods,
 interfaces (other than `error`), package-level variables, `switch`,
-`defer`, goroutines and channels, children and slots for components, scoped
-styles, server functions, and server-side rendering. All are on the
-[roadmap](docs/PLAN.md).
+`defer`, goroutines and channels, scoped styles, server functions, and
+server-side rendering. All are on the [roadmap](docs/PLAN.md).
 
 ## Developing den
 
@@ -203,9 +234,9 @@ The full plan, with phases, budgets and gates, is in [docs/PLAN.md](docs/PLAN.md
 1. **Core language (Phase 1, done):** markup control flow, structs, slices
    and maps, template cloning, lazy computed values, ownership scopes,
    TodoMVC under 10 KB, and the benchmark gate.
-2. **Components, styling and motion:** children and slots, a typed router,
-   scoped styles and design tokens, animations, `den fmt` and a VS Code
-   extension.
+2. **Components, styling and motion:** children and slots (done), a typed
+   router, scoped styles and design tokens, animations, `den fmt` and a VS
+   Code extension.
 3. **Server and security:** typed server functions with required `auth=`,
    `Secret[T]`, CSRF protection, SSR, source maps and `den test`.
 4. **Scale:** `<VirtualList>`, data windows, live streams, and the

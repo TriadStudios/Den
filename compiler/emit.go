@@ -341,14 +341,17 @@ func (e *emitter) tnodes(nodes []Node, svg bool) []*tnode {
 		case *Text:
 			out = append(out, &tnode{kind: 't', text: n.Value})
 		case *Interp:
-			if tv := e.ck.info.Types[e.cc.parts[n].expr]; tv.Value != nil {
+			x := e.cc.parts[n].expr
+			if tv := e.ck.info.Types[x]; tv.Value != nil {
 				out = append(out, &tnode{kind: 't', text: constString(tv.Value)})
+			} else if isChildren(e.ck.info.TypeOf(x)) {
+				out = append(out, &tnode{kind: 'c', src: n, need: true})
 			} else {
 				out = append(out, &tnode{kind: 't', src: n, need: true})
 			}
 		case *Element:
 			if n.IsComponent() {
-				out = append(out, &tnode{kind: 'c', src: n, need: true})
+				out = append(out, &tnode{kind: 'c', svg: svg, src: n, need: true})
 				continue
 			}
 			t := &tnode{kind: 'e', tag: n.Tag, svg: svg || n.Tag == "svg", src: n}
@@ -454,8 +457,15 @@ func (e *emitter) instantiate(nodes []Node, svg bool) string {
 		return "$cm()" // a placeholder, so a list row is never empty
 	}
 	if len(nodes) == 1 {
-		if el, ok := nodes[0].(*Element); ok && el.IsComponent() {
-			return e.componentCall(el)
+		switch n := nodes[0].(type) {
+		case *Element:
+			if n.IsComponent() {
+				return e.componentCall(n, svg)
+			}
+		case *Interp:
+			if x := e.cc.parts[n].expr; isChildren(e.ck.info.TypeOf(x)) {
+				return e.expr(x) + "()"
+			}
 		}
 	}
 	ts := e.tnodes(nodes, svg)
@@ -496,6 +506,12 @@ func (e *emitter) bind(ts []*tnode) {
 		switch n := t.src.(type) {
 		case *Interp:
 			pt := e.cc.parts[n]
+			if isChildren(e.ck.info.TypeOf(pt.expr)) {
+				// The markup is built here, so the nodes it makes belong to
+				// the scope rendering it.
+				e.line("%s.replaceWith(%s());", t.v, e.expr(pt.expr))
+				continue
+			}
 			if e.ck.reactive(pt.expr) {
 				if e.hoistable(pt.expr) {
 					e.line("$text(%s, %s, %s);", t.v, e.hoisted("("+e.row.name+") => "+e.expr(pt.expr)), e.row.name)
@@ -507,7 +523,7 @@ func (e *emitter) bind(ts []*tnode) {
 			}
 		case *Element:
 			if n.IsComponent() {
-				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n))
+				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n, t.svg))
 				continue
 			}
 			for _, a := range n.Attrs {
@@ -566,10 +582,28 @@ var bubbles = map[string]bool{
 	"dragenter": true, "dragover": true, "dragleave": true, "drop": true, "copy": true, "cut": true, "paste": true,
 }
 
-func (e *emitter) componentCall(el *Element) string {
+// componentCall emits a component use. Markup passed to a den.Children
+// parameter becomes a function that builds it: it runs in the caller's
+// scope, and the nodes it makes belong to whichever scope calls it. An
+// unfilled one is $cm, which makes an empty placeholder.
+func (e *emitter) componentCall(el *Element, svg bool) string {
+	// The callee may render the markup inside one of its own list rows, so
+	// handlers in it cannot be found through the caller's row.
+	if r := e.row; r != nil {
+		defer func(rootEl bool) { r.rootEl = rootEl }(r.rootEl)
+		r.rootEl = false
+	}
+	pt := e.cc.parts[el]
 	var args []string
-	for _, a := range e.cc.parts[el].args {
-		args = append(args, e.expr(a))
+	for i, p := range e.ck.components[el.Tag].Params {
+		switch {
+		case !p.Children:
+			args = append(args, e.expr(pt.args[i]))
+		case len(pt.slots[i]) == 0:
+			args = append(args, "$cm")
+		default:
+			args = append(args, e.block("", pt.slots[i], svg || e.ck.svgSlots[el.Tag+"."+p.Name]))
+		}
 	}
 	return jsIdent(el.Tag) + "(" + strings.Join(args, ", ") + ")"
 }
@@ -1211,6 +1245,9 @@ func (e *emitter) expr(x ast.Expr) string {
 
 func (e *emitter) compositeLit(x *ast.CompositeLit) string {
 	t := e.ck.info.TypeOf(x)
+	if isChildren(t) {
+		return zeroValue(t) // den.Children{}, the only literal Go allows
+	}
 	var parts []string
 	switch u := t.Underlying().(type) {
 	case *types.Struct:
@@ -1410,6 +1447,9 @@ var stdCalls = map[string]func(a []string) string{
 // of type t, throwing if it does not fit. Fields missing from the JSON get
 // their zero value, as with encoding/json.
 func (e *emitter) decoder(t types.Type, x string) (string, bool) {
+	if isChildren(t) {
+		return "", false
+	}
 	v := e.name("v")
 	switch u := t.Underlying().(type) {
 	case *types.Basic:
@@ -1570,6 +1610,9 @@ func constString(v constant.Value) string {
 }
 
 func zeroValue(t types.Type) string {
+	if isChildren(t) {
+		return "$cm" // renders an empty placeholder
+	}
 	switch u := t.Underlying().(type) {
 	case *types.Basic:
 		switch {
