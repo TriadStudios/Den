@@ -887,8 +887,9 @@ func yes(b bool) string {
 `
 
 // A route matches a path segment by segment: one trailing slash is ignored,
-// params are decoded, ints parse as strconv.Atoi parses, and a catch-all
-// takes the rest of the path.
+// params are decoded, a :x param needs a non-empty segment, ints parse as
+// strconv.Atoi parses, and a catch-all takes the rest of the path, which
+// may be empty.
 func TestRouteMatching(t *testing.T) {
 	got := runApp(t, routeTypes+`
 component App() {
@@ -901,7 +902,7 @@ component App() {
 }`, `
 log("start", find("p").textContent);
 for (const u of ["/about", "/about/", "/about//", "/users/7", "/users/+8", "/users/x", "/users/99999999999999999999",
-  "/users", "/users/7/x", "/files/docs", "/files/docs/", "/files/docs/a/b%20c/", "/files/%ZZ/a", "/files/a/%ZZ",
+  "/users", "/users/7/x", "/files/docs", "/files/docs/", "/files/docs//", "/files//x", "/files/docs/a/b%20c/", "/files/%ZZ/a", "/files/a/%ZZ",
   "/tags/caf%C3%A9", "/tags/a%2Fb", "/tags/%E0%A4%A", "/nowhere", "/"]) {
   visit(u); await tick();
   log(u, find("p").textContent);
@@ -919,6 +920,8 @@ for (const u of ["/about", "/about/", "/about//", "/users/7", "/users/+8", "/use
 		`/users/7/x . . .:0 .:: .:`,
 		`/files/docs . . .:0 Y:docs: .:`,
 		`/files/docs/ . . .:0 Y:docs: .:`,
+		`/files/docs// . . .:0 Y:docs: .:`,
+		`/files//x . . .:0 .:: .:`,
 		`/files/docs/a/b%20c/ . . .:0 Y:docs:a/b c .:`,
 		`/files/%ZZ/a . . .:0 .:: .:`,
 		`/files/a/%ZZ . . .:0 .:: .:`,
@@ -930,7 +933,9 @@ for (const u of ["/about", "/about/", "/about//", "/users/7", "/users/+8", "/use
 }
 
 // Link encodes each param, and its result passes den's URL check and leads
-// back through the route to the same params.
+// back through the route to the same params, except for a :x param that is
+// "", "." or "..": an empty param never matches, and browsers resolve dot
+// segments (encoded or not) to another path.
 func TestRouteLink(t *testing.T) {
 	got := runApp(t, routeTypes+`
 type PairParams struct {
@@ -953,6 +958,8 @@ component App() {
         <a href={tag.Link(TagParams{Name: "javascript:alert(1)"})}>js</a>
         <a href={files.Link(FileParams{Dir: "d", Rest: "x y/z"})}>files</a>
         <a href={files.Link(FileParams{Dir: "d"})}>files root</a>
+        <a href={tag.Link(TagParams{Name: ""})}>empty</a>
+        <a href={tag.Link(TagParams{Name: ".."})}>dots</a>
         <a href={pair.Link(PairParams{B: "evil.com"})}>pair</a>
         <p>{yes(home.Matches())} {user.Params().ID} {tag.Params().Name} {files.Params().Dir}:{files.Params().Rest} {yes(pair.Matches())}:{pair.Params().A}:{pair.Params().B}</p>
     </div>
@@ -975,8 +982,33 @@ for (const a of findAll("a")) {
 		`  . 0  d:x y/z .::`,
 		`files root /files/d/ true /files/d/`,
 		`  . 0  d: Y:files:d`,
+		`empty /tags/ true /tags/`,
+		`  . 0  : .::`,
+		`dots /tags/.. true /`,
+		`  Y 0  : .::`,
+		// An empty first param would make //evil.com, a link to that host.
 		`pair /.//evil.com true //evil.com`,
-		`  . 0  : Y::evil.com`)
+		`  . 0  : .::`)
+}
+
+// Browsers resolve dot segments away before den sees a path. Should one
+// get through, no param takes it.
+func TestRouteMatchDots(t *testing.T) {
+	got := runRuntime(t, "$match", `
+const tag = ["tags", ":Name"], rest = ["f", "*Rest"];
+for (const p of ["/tags/x", "/tags/.", "/tags/..", "/tags/%2e", "/tags/%2E%2e", "/tags/...", "/tags/.x"]) log(p, JSON.stringify($match(tag, { Name: "" }, p)));
+for (const p of ["/f/a/b", "/f/a/../b", "/f/./b"]) log(p, JSON.stringify($match(rest, { Rest: "" }, p)));`)
+	expectLines(t, got,
+		`/tags/x {"Name":"x"}`,
+		`/tags/. null`,
+		`/tags/.. null`,
+		`/tags/%2e null`,
+		`/tags/%2E%2e null`,
+		`/tags/... {"Name":"..."}`,
+		`/tags/.x {"Name":".x"}`,
+		`/f/a/b {"Rest":"a/b"}`,
+		`/f/a/../b null`,
+		`/f/./b null`)
 }
 
 // path() is the URL path: Set navigates, back and forward follow history,

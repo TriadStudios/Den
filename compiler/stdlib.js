@@ -78,28 +78,33 @@ function $route(pat, z) {
   return { s, p, ok: $computed(() => p.get() !== z) };
 }
 // $match returns the params that pathname v gives segments s, or null when
-// it does not match. One trailing slash is ignored, segments are decoded,
-// an int param must parse as strconv.Atoi parses, and a catch-all takes the
-// rest of the path, which may be empty.
+// it does not match. One trailing slash is ignored and segments are
+// decoded. A param is never "." or "..", which browsers resolve away, so a
+// path with one does not match. A :x param is a whole non-empty segment
+// (an int parses as strconv.Atoi parses), and a catch-all takes the rest of
+// the path, which may be empty.
 function $match(s, z, v) {
   const ps = v.split("/").slice(1), o = { ...z };
+  const dec = (p) => { p = decodeURIComponent(p); if (p === "." || p === "..") throw 0; return p; };
   if (ps.length > 1 && !ps.at(-1)) ps.pop();
   try {
     for (let i = 0; i < s.length; i++) {
       const c = s[i][0], k = s[i].slice(1);
-      if (c === "*") { o[k] = ps.slice(i).map(decodeURIComponent).join("/"); return o; }
+      if (c === "*") { o[k] = ps.slice(i).map(dec).join("/"); return o; }
       if (i >= ps.length) return null;
-      const d = decodeURIComponent(ps[i]);
-      if (c !== ":") { if (d !== s[i]) return null; }
-      else if (typeof z[k] === "number") { const [n, err] = $atoi(d); if (err) return null; o[k] = n; }
-      else o[k] = d;
+      if (c !== ":") { if (decodeURIComponent(ps[i]) !== s[i]) return null; continue; }
+      const d = dec(ps[i]);
+      if (!d) return null;
+      if (typeof z[k] !== "number") o[k] = d;
+      else { const [n, err] = $atoi(d); if (err) return null; o[k] = n; }
     }
   } catch { return null; }
   return ps.length === s.length ? o : null;
 }
 // $linkTo is Route.Link: the path of route r with params v, each segment
 // encoded. A path that would start with // (an empty first param) gets /.
-// in front, so it can never be read as a link to another host.
+// in front, so it can never be read as a link to another host. A :x param
+// that is "", "." or ".." makes a path the route does not match.
 function $linkTo(r, v) {
   const u = "/" + r.s.map((s) => (s[0] === ":" ? encodeURIComponent(v[s.slice(1)]) : s[0] === "*" ? v[s.slice(1)].split("/").map(encodeURIComponent).join("/") : encodeURIComponent(s))).join("/");
   return u[1] === "/" ? "/." + u : u;
