@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -109,16 +110,24 @@ const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 's
 	"object-src 'none'; base-uri 'none'; form-action 'self'; " +
 	"require-trusted-types-for 'script'; trusted-types 'none'"
 
-func indexHTML(hasCSS, dev bool) string {
+// indexHTML is the page that loads the app. An app that routes by path is
+// served at each of its paths (/users/7 as well as /), so it finds its
+// files from the site root; others keep relative URLs and can live in any
+// directory.
+func indexHTML(hasCSS, dev, router bool) string {
+	root := ""
+	if router {
+		root = "/"
+	}
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
 	fmt.Fprintf(&b, "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">\n", csp)
 	b.WriteString("<title>den app</title>\n")
 	if hasCSS {
-		b.WriteString("<link rel=\"stylesheet\" href=\"style.css\">\n")
+		fmt.Fprintf(&b, "<link rel=\"stylesheet\" href=\"%sstyle.css\">\n", root)
 	}
-	b.WriteString("<script src=\"app.js\" defer></script>\n")
+	fmt.Fprintf(&b, "<script src=\"%sapp.js\" defer></script>\n", root)
 	if dev {
 		b.WriteString("<script src=\"/__den/reload.js\" defer></script>\n")
 	}
@@ -140,7 +149,7 @@ func writeDist(dir, out string, res *compiler.Result, dev bool) error {
 			return err
 		}
 	}
-	return os.WriteFile(filepath.Join(out, "index.html"), []byte(indexHTML(hasCSS, dev)), 0o644)
+	return os.WriteFile(filepath.Join(out, "index.html"), []byte(indexHTML(hasCSS, dev, res.Router)), 0o644)
 }
 
 func gzipSize(b []byte) int {
@@ -267,14 +276,31 @@ func dev(dir, out, addr string) {
 			}
 		}
 	})
-	files := http.FileServer(http.Dir(out))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", csp)
-		w.Header().Set("Cache-Control", "no-store")
-		files.ServeHTTP(w, r)
-	})
+	mux.Handle("/", devFiles(out))
 	fmt.Printf("den dev: http://%s  (watching %s)\n", addr, dir)
 	fail(http.ListenAndServe(addr, mux))
+}
+
+// devFiles serves the built app under the strict CSP. A GET for a path with
+// no file, whose last segment has no '.', gets index.html, so an app that
+// routes by path loads at any of its URLs; a missing app.js or image is
+// still a 404.
+func devFiles(out string) http.Handler {
+	files := http.FileServer(http.Dir(out))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("Cache-Control", "no-store")
+		name := path.Clean("/" + r.URL.Path)
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(name, "/__den/") && !strings.Contains(path.Base(name), ".") {
+			if f, err := http.Dir(out).Open(name); err == nil {
+				f.Close()
+			} else {
+				http.ServeFile(w, r, filepath.Join(out, "index.html"))
+				return
+			}
+		}
+		files.ServeHTTP(w, r)
+	})
 }
 
 func snapshot(dir string) string {
