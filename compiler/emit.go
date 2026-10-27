@@ -21,6 +21,7 @@ var runtimeJS string
 type Result struct {
 	JS         string   // complete, self-contained app.js
 	Components []string // component names, in source order
+	Router     bool     // the app uses route or path, so it routes by URL path
 }
 
 // Source is one input file.
@@ -82,7 +83,7 @@ func Compile(sources []Source) (*Result, error) {
 	out.WriteString(runtimeFor(code))
 	out.WriteString(code)
 	out.WriteString("})();\n")
-	return &Result{JS: out.String(), Components: names}, nil
+	return &Result{JS: out.String(), Components: names, Router: e.router}, nil
 }
 
 var (
@@ -141,6 +142,7 @@ type emitter struct {
 	n       int // counter for generated names
 	cc      *checkedComponent
 	results []string // named results of the function being emitted
+	router  bool     // route or path is used
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -1388,7 +1390,7 @@ func (e *emitter) call(x *ast.CallExpr) string {
 		e.errAt(x, "this conversion is not supported yet")
 		return "undefined"
 	}
-	switch fun := ast.Unparen(x.Fun).(type) {
+	switch fun := callee(e.ck.info, ast.Unparen(x.Fun)).(type) {
 	case *ast.SelectorExpr:
 		if id, ok := fun.X.(*ast.Ident); ok {
 			if pkg, ok := e.ck.info.Uses[id].(*types.PkgName); ok {
@@ -1421,6 +1423,12 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return obj + ".key"
 		case "Event.PreventDefault":
 			return obj + ".preventDefault()"
+		case "Route.Matches":
+			return obj + ".ok.get()"
+		case "Route.Params":
+			return obj + ".p.get()"
+		case "Route.Link":
+			return "$linkTo(" + obj + ", " + args() + ")"
 		case "error.Error":
 			return obj + ".message"
 		}
@@ -1456,6 +1464,17 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "$stored(" + args() + ", (j) => " + dec + ")"
 				case "hash":
 					return "$hash()"
+				case "route":
+					spec, ok := e.ck.routes[x]
+					if !ok {
+						break
+					}
+					e.router = true
+					t := e.ck.info.TypeOf(x).(*types.Pointer).Elem().(*types.Named).TypeArgs().At(0)
+					return "$route(" + jsString(spec) + ", " + zeroValue(t) + ")"
+				case "path":
+					e.router = true
+					return "$path()"
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -1467,6 +1486,27 @@ func (e *emitter) call(x *ast.CallExpr) string {
 	}
 	e.errAt(x, "this call is not supported yet")
 	return "undefined"
+}
+
+// callee returns the function f that f[T](...) calls, so explicitly
+// instantiated generics, den's own (route[T]) and the program's, are called
+// like any other function.
+func callee(info *types.Info, fun ast.Expr) ast.Expr {
+	var x ast.Expr
+	switch ix := fun.(type) {
+	case *ast.IndexExpr:
+		x = ix.X
+	case *ast.IndexListExpr:
+		x = ix.X
+	default:
+		return fun
+	}
+	if id, ok := ast.Unparen(x).(*ast.Ident); ok {
+		if _, ok := info.Uses[id].(*types.Func); ok {
+			return id
+		}
+	}
+	return fun
 }
 
 // stdCalls implements the functions of the importable packages.

@@ -863,3 +863,277 @@ component App() {
 		expectLines(t, runApp(t, c.src, `log(html());`), c.want)
 	}
 }
+
+const routeTypes = `
+type UserParams struct {
+    ID int
+}
+
+type FileParams struct {
+    Dir  string
+    Rest string
+}
+
+type TagParams struct {
+    Name string
+}
+
+func yes(b bool) string {
+    if b {
+        return "Y"
+    }
+    return "."
+}
+`
+
+// A route matches a path segment by segment: one trailing slash is ignored,
+// params are decoded, ints parse as strconv.Atoi parses, and a catch-all
+// takes the rest of the path.
+func TestRouteMatching(t *testing.T) {
+	got := runApp(t, routeTypes+`
+component App() {
+    home := route[struct{}]("/")
+    about := route[struct{}]("/about/")
+    user := route[UserParams]("/users/:id")
+    files := route[FileParams]("/files/:dir/*rest")
+    tag := route[TagParams]("/tags/:name")
+    <p>{yes(home.Matches())} {yes(about.Matches())} {yes(user.Matches())}:{user.Params().ID} {yes(files.Matches())}:{files.Params().Dir}:{files.Params().Rest} {yes(tag.Matches())}:{tag.Params().Name}</p>
+}`, `
+log("start", find("p").textContent);
+for (const u of ["/about", "/about/", "/about//", "/users/7", "/users/+8", "/users/x", "/users/99999999999999999999",
+  "/users", "/users/7/x", "/files/docs", "/files/docs/", "/files/docs/a/b%20c/", "/files/%ZZ/a", "/files/a/%ZZ",
+  "/tags/caf%C3%A9", "/tags/a%2Fb", "/tags/%E0%A4%A", "/nowhere", "/"]) {
+  visit(u); await tick();
+  log(u, find("p").textContent);
+}`)
+	expectLines(t, got,
+		`start Y . .:0 .:: .:`,
+		`/about . Y .:0 .:: .:`,
+		`/about/ . Y .:0 .:: .:`,
+		`/about// . . .:0 .:: .:`,
+		`/users/7 . . Y:7 .:: .:`,
+		`/users/+8 . . Y:8 .:: .:`,
+		`/users/x . . .:0 .:: .:`,
+		`/users/99999999999999999999 . . .:0 .:: .:`,
+		`/users . . .:0 .:: .:`,
+		`/users/7/x . . .:0 .:: .:`,
+		`/files/docs . . .:0 Y:docs: .:`,
+		`/files/docs/ . . .:0 Y:docs: .:`,
+		`/files/docs/a/b%20c/ . . .:0 Y:docs:a/b c .:`,
+		`/files/%ZZ/a . . .:0 .:: .:`,
+		`/files/a/%ZZ . . .:0 .:: .:`,
+		`/tags/caf%C3%A9 . . .:0 .:: Y:café`,
+		`/tags/a%2Fb . . .:0 .:: Y:a/b`,
+		`/tags/%E0%A4%A . . .:0 .:: .:`,
+		`/nowhere . . .:0 .:: .:`,
+		`/ Y . .:0 .:: .:`)
+}
+
+// Link encodes each param, and its result passes den's URL check and leads
+// back through the route to the same params.
+func TestRouteLink(t *testing.T) {
+	got := runApp(t, routeTypes+`
+type PairParams struct {
+    A string
+    B string
+}
+
+const tagPattern = "/tags/:name"
+
+component App() {
+    home := route[struct{}]("/")
+    user := route[UserParams]("/users/:id")
+    files := route[FileParams]("/files/:dir/*rest")
+    tag := route[TagParams](tagPattern)
+    pair := route[PairParams]("/:a/:b")
+    <div>
+        <a href={home.Link(struct{}{})}>home</a>
+        <a href={user.Link(UserParams{ID: -7})}>user</a>
+        <a href={tag.Link(TagParams{Name: "a b/c?#%é"})}>tag</a>
+        <a href={tag.Link(TagParams{Name: "javascript:alert(1)"})}>js</a>
+        <a href={files.Link(FileParams{Dir: "d", Rest: "x y/z"})}>files</a>
+        <a href={files.Link(FileParams{Dir: "d"})}>files root</a>
+        <a href={pair.Link(PairParams{B: "evil.com"})}>pair</a>
+        <p>{yes(home.Matches())} {user.Params().ID} {tag.Params().Name} {files.Params().Dir}:{files.Params().Rest} {yes(pair.Matches())}:{pair.Params().A}:{pair.Params().B}</p>
+    </div>
+}`, `
+for (const a of findAll("a")) {
+  log(a.textContent, a.getAttribute("href"), a.dispatch("click").defaultPrevented, location.pathname);
+  await tick();
+  log("  " + find("p").textContent);
+}`)
+	expectLines(t, got,
+		`home / true /`,
+		`  Y 0  : .::`,
+		`user /users/-7 true /users/-7`,
+		`  . -7  : Y:users:-7`,
+		`tag /tags/a%20b%2Fc%3F%23%25%C3%A9 true /tags/a%20b%2Fc%3F%23%25%C3%A9`,
+		`  . 0 a b/c?#%é : Y:tags:a b/c?#%é`,
+		`js /tags/javascript%3Aalert(1) true /tags/javascript%3Aalert(1)`,
+		`  . 0 javascript:alert(1) : Y:tags:javascript:alert(1)`,
+		`files /files/d/x%20y/z true /files/d/x%20y/z`,
+		`  . 0  d:x y/z .::`,
+		`files root /files/d/ true /files/d/`,
+		`  . 0  d: Y:files:d`,
+		`pair /.//evil.com true //evil.com`,
+		`  . 0  : Y::evil.com`)
+}
+
+// path() is the URL path: Set navigates, back and forward follow history,
+// and clicks on links to this origin are followed without loading a page,
+// unless the browser should handle them.
+func TestRouteNavigation(t *testing.T) {
+	got := runApp(t, routeTypes+`
+component App() {
+    p := path()
+    user := route[UserParams]("/users/:id")
+    <div>
+        <nav>
+            <a href="/users/1">one</a>
+            <a href="../users/2">relative</a>
+            <a href="/users/3" target="_blank">blank</a>
+            <a href="/users/4" target="_self"><b>self</b></a>
+            <a href="/users/5" download>download</a>
+            <a href="https://example.com/users/6">external</a>
+            <a href="/users/7" onclick={e.PreventDefault()}>prevented</a>
+            <a href="#top">anchor</a>
+            <a href="mailto:a@example.com">mail</a>
+            <a>no href</a>
+        </nav>
+        <button onclick={p.Set("/users/9?tab=a#x")}>go</button>
+        <p>{p.Get()} {yes(user.Matches())} {user.Params().ID}</p>
+    </div>
+}`, `
+const p = () => find("p").textContent;
+const follow = (text, extra) => find("a", text).dispatch("click", extra).defaultPrevented;
+log(p(), entries.length);
+log("one", follow("one"), location.pathname, scrolls); await tick(); log(p());
+log("one again", follow("one"), entries.length, scrolls);
+log("relative", follow("relative"), location.pathname); await tick(); log(p());
+for (const [name, extra] of [["ctrl", { ctrlKey: true }], ["meta", { metaKey: true }], ["shift", { shiftKey: true }], ["alt", { altKey: true }], ["middle", { button: 1 }]]) {
+  log(name, follow("one", extra), location.pathname);
+}
+for (const name of ["blank", "download", "external", "prevented", "anchor", "mail", "no href"]) log(name, follow(name), location.pathname);
+log("self", find("b").dispatch("click").defaultPrevented, location.pathname); await tick(); log(p(), scrolls);
+click(find("button")); await tick(); log(p(), location.href, scrolls, entries.length);
+back(); await tick(); log(p(), location.href);
+back(); await tick(); log(p());
+forward(); forward(); await tick(); log(p(), location.href);`)
+	expectLines(t, got,
+		`/ . 0 1`,
+		`one true /users/1 1`,
+		`/users/1 Y 1`,
+		`one again true 2 2`,
+		`relative true /users/2`,
+		`/users/2 Y 2`,
+		`ctrl false /users/2`,
+		`meta false /users/2`,
+		`shift false /users/2`,
+		`alt false /users/2`,
+		`middle false /users/2`,
+		`blank false /users/2`,
+		`download false /users/2`,
+		`external false /users/2`,
+		`prevented true /users/2`,
+		`anchor false /users/2`,
+		`mail false /users/2`,
+		`no href false /users/2`,
+		`self true /users/4`,
+		`/users/4 Y 4 4`,
+		`/users/9 Y 9 http://localhost/users/9?tab=a#x 4 5`,
+		`/users/4 Y 4 http://localhost/users/4`,
+		`/users/2 Y 2`,
+		`/users/9 Y 9 http://localhost/users/9?tab=a#x`)
+}
+
+// Routes choose branches of an {if}: a branch stays while its route still
+// matches, and the branch it leaves is freed, with any route made in it.
+func TestRouteBranches(t *testing.T) {
+	got := runApp(t, routeTypes+`
+component User(user *Route[UserParams]) {
+    <p>user {user.Params().ID}</p>
+}
+
+component Other() {
+    here := route[struct{}]("/here")
+    p := path()
+    <p>other {yes(here.Matches())} {p.Get()}</p>
+}
+
+component App() {
+    home := route[struct{}]("/")
+    user := route[UserParams]("/users/:id")
+    <main>
+        {if home.Matches() {
+            <p>home</p>
+        } else if user.Matches() {
+            <User user={user} />
+        } else {
+            <Other />
+        }}
+    </main>
+}`, `
+const main = () => html(find("main"));
+log(main());
+visit("/users/7"); await tick(); const first = find("p"); log(main());
+visit("/users/8"); await tick(); log(main(), find("p") === first);
+visit("/here"); await tick(); const other = find("p"); log(main(), first.textContent);
+visit("/there"); await tick(); log(main(), find("p") === other);
+visit("/users/9"); await tick(); log(main(), "|", first.textContent, "|", other.textContent);`)
+	expectLines(t, got,
+		`<main><p>home</p></main>`,
+		`<main><p>user 7</p></main>`,
+		`<main><p>user 8</p></main> true`,
+		`<main><p>other Y /here</p></main> user 8`,
+		`<main><p>other . /there</p></main> true`,
+		`<main><p>user 9</p></main> | user 8 | other . /there`)
+}
+
+// TestRouterExample walks through examples/router on the test DOM.
+func TestRouterExample(t *testing.T) {
+	src, err := os.ReadFile("../examples/router/app.den")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := runApp(t, string(src), `
+const page = async () => { await tick(); return find("nav").childNodes.filter((a) => a.getAttribute?.("class") === "active").map((a) => a.textContent).join("") + " | " + find("main").textContent + " | " + location.pathname; };
+const go = async (text) => { find("a", text).dispatch("click"); return page(); };
+log(await page());
+log(await go("People"));
+log(await go("Ken Thompson"));
+log(await go("Next id"));
+click(find("button", "All people")); log(await page());
+log(await go("A broken link"));
+click(find("button", "Go home")); log(await page());
+back(); log(await page());
+back(); back(); log(await page(), findAll("a").find((a) => a.textContent === "Next id").getAttribute("href"));`)
+	expectLines(t, got,
+		`Home | Routing in denThe URL path picks the page. Links within the site change it without reloading, and back and forward work as usual.Every page has its own address, like this profile. | /`,
+		`People | PeopleAda Lovelace Wrote the first programGrace Hopper Built the first compilerKen Thompson Co-created Unix and Go | /people`,
+		`People | Ken ThompsonCo-created Unix and GoNext idAll people | /people/7`,
+		`People | No person 8Next idAll people | /people/8`,
+		`People | PeopleAda Lovelace Wrote the first programGrace Hopper Built the first compilerKen Thompson Co-created Unix and Go | /people`,
+		` | Not foundNothing lives at /nowhere.Go home | /nowhere`,
+		`Home | Routing in denThe URL path picks the page. Links within the site change it without reloading, and back and forward work as usual.Every page has its own address, like this profile. | /`,
+		` | Not foundNothing lives at /nowhere.Go home | /nowhere`,
+		`People | No person 8Next idAll people | /people/8 /people/9`)
+}
+
+// A program that declares its own path, route or Route keeps them, and
+// explicitly instantiated generics, den's and the program's, are called
+// like any function.
+func TestRunOwnRouterNames(t *testing.T) {
+	got := runApp(t, `
+func path() string { return "mine" }
+
+type Route struct{ N int }
+
+func first[T any](xs []T) T { return xs[0] }
+
+component App() {
+    r := Route{N: 2}
+    n := signal[int](3)
+    <p>{path()} {r.N} {n.Get()} {first[string]([]string{"a"})}</p>
+}`, `log(html());`)
+	expectLines(t, got, `<p>mine 2 3 a</p>`)
+}
