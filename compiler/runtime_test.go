@@ -1119,11 +1119,12 @@ back(); back(); log(await page(), findAll("a").find((a) => a.textContent === "Ne
 		`People | No person 8Next idAll people | /people/8 /people/9`)
 }
 
-// A program that declares its own path, route or Route keeps them, and
-// explicitly instantiated generics, den's and the program's, are called
-// like any function.
+// A program that has its own path, route or Route, as a declaration, a
+// component or an import, keeps it, as on main; route and Route give way
+// together, path on its own. Explicitly instantiated generics, den's and
+// the program's, are called like any function.
 func TestRunOwnRouterNames(t *testing.T) {
-	got := runApp(t, `
+	for _, c := range []struct{ src, want string }{{`
 func path() string { return "mine" }
 
 type Route struct{ N int }
@@ -1134,6 +1135,25 @@ component App() {
     r := Route{N: 2}
     n := signal[int](3)
     <p>{path()} {r.N} {n.Get()} {first[string]([]string{"a"})}</p>
-}`, `log(html());`)
-	expectLines(t, got, `<p>mine 2 3 a</p>`)
+}`, `<p>mine 2 3 a</p>`}, {`
+component Route(name string) {
+    <p>{name}</p>
+}
+
+component App() {
+    <Route name="x" />
+}`, `<p>x</p>`}, {`
+import path "strings"
+
+component App() {
+    <p>{path.ToUpper("x")}</p>
+}`, `<p>X</p>`}, {`
+import route "strconv"
+
+component App() {
+    p := path()
+    <p>{route.Itoa(4)}{p.Get()}</p>
+}`, `<p>4/</p>`}} {
+		expectLines(t, runApp(t, c.src, `log(html());`), c.want)
+	}
 }

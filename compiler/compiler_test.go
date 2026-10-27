@@ -448,6 +448,20 @@ component App() {
     r := f("/x")
     <p>{r.Matches()}</p>
 }`, `app.den:3:10: route can only be called, not used as a value`},
+		{"route hidden by a component named Route", `
+component Route(name string) {
+    <p>{name}</p>
+}
+component App() {
+    r := route[struct{}]("/")
+    <div>{if r.Matches() { <Route name="x" /> }}</div>
+}`, `app.den:6:10: route is not available because this program has a component named Route; rename it`},
+		{"Route hidden by an import named route", `
+import route "strconv"
+func f(r *Route[struct{}]) string { return route.Itoa(1) }
+component App() {
+    <p>{f(nil)}</p>
+}`, `app.den:3:11: Route is not available because this program imports "strconv" as route; rename it`},
 		{"path used as a value", `
 component App() {
     f := path

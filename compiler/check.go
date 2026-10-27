@@ -246,13 +246,25 @@ func check(files []*File) (*checked, error) {
 			declSrc.WriteString("\n" + lineDirective(f.Name, d.Pos) + code + "\n")
 		}
 	}
-	// The built-in package den is imported unless the program declares or
-	// imports its own den, which then means what it means in Go.
+	// own holds the names the program gives a meaning of its own at the top
+	// level, through a declaration, a component or an import, and says how.
+	// Den's built-in den, route, Route and path give way to them, so they
+	// keep meaning what they mean in Go.
 	top, aliases := topLevel(declSrc.String())
-	denTaken := top["den"]
-	for spec := range imports {
-		denTaken = denTaken || strings.HasPrefix(spec, "den ")
+	own := map[string]string{}
+	for name := range top {
+		own[name] = "declares its own " + name
 	}
+	for name := range byName {
+		own[name] = "has a component named " + name
+	}
+	for spec := range imports {
+		name, path := importName(spec)
+		own[name] = "imports " + path + " as " + name
+	}
+	denTaken := own["den"] != ""
+	// route returns a *Route[T], so the two come and go together.
+	routeTaken := own["route"] != "" || own["Route"] != ""
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -272,12 +284,10 @@ func check(files []*File) (*checked, error) {
 	src.WriteString(importSrc.String())
 	// The import directives would otherwise carry on into the prelude.
 	src.WriteString("/*line " + preludeFile + ":2:1*/" + strings.TrimPrefix(prelude, "package app\n"))
-	// The router's names are common words: a program that declares its own
-	// keeps them, as it does den.
-	if !top["route"] && !top["Route"] {
+	if !routeTaken {
 		src.WriteString(preludeRoute)
 	}
-	if !top["path"] {
+	if own["path"] == "" {
 		src.WriteString(preludePath)
 	}
 	if denTaken {
@@ -369,6 +379,14 @@ next:
 		msg := te.Msg
 		if i := strings.Index(msg, " does not satisfy renderable"); i >= 0 {
 			msg = "cannot render " + msg[:i] + ": only strings, numbers and bools can be shown in markup"
+		}
+		// A program with its own route or Route has neither of den's. Say why.
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && routeTaken && (name == "route" || name == "Route") {
+			by := "route"
+			if own[by] == "" {
+				by = "Route"
+			}
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[by])
 		}
 		errAt(te.Pos, msg)
 	}
@@ -665,6 +683,16 @@ func screenDecl(file string, d *GoDecl) (string, []importSpec, *Error) {
 		}
 		_ = lit
 	}
+}
+
+// importName returns the name an import spec (`"strings"` or `s "strings"`)
+// declares, and its quoted path.
+func importName(spec string) (name, path string) {
+	if name, path, ok := strings.Cut(spec, " "); ok {
+		return name, path
+	}
+	p, _ := strconv.Unquote(spec)
+	return p[strings.LastIndex(p, "/")+1:], spec
 }
 
 func checkImport(file, lit string, pos Pos) *Error {
