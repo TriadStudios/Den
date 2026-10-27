@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -346,6 +347,126 @@ component App() {
 component Card(title strin) {
     <h2>{title}</h2>
 }`, `app.den:5:22: undefined: strin`},
+		{"route pattern that is not a constant", `
+component App() {
+    p := "/x"
+    r := route[struct{}](p)
+    <p>{r.Matches()}</p>
+}`, `app.den:4:26: route pattern must be a constant string`},
+		{"route pattern without a leading slash", `
+component App() {
+    r := route[struct{}]("about")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:26: route pattern "about" must start with /`},
+		{"route pattern in a function", `
+func users() *Route[struct{}] { return route[struct{}]("users") }
+component App() {
+    <p>{users().Matches()}</p>
+}`, `app.den:2:56: route pattern "users" must start with /`},
+		{"route param with no name", `
+component App() {
+    r := route[struct{}]("/users/:")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:26: route pattern "/users/:" has a param with no name`},
+		{"route catch-all with no name", `
+component App() {
+    r := route[struct{}]("/files/*")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:26: route pattern "/files/*" has a param with no name`},
+		{"route param named twice", `
+type P struct{ ID int }
+component App() {
+    r := route[P]("/a/:id/:ID")
+    <p>{r.Matches()}</p>
+}`, `app.den:4:19: route pattern "/a/:id/:ID" has param ID twice (param names ignore case)`},
+		{"route catch-all before the end", `
+type P struct{ Rest string }
+component App() {
+    r := route[P]("/files/*rest/x")
+    <p>{r.Matches()}</p>
+}`, `app.den:4:19: route pattern "/files/*rest/x": *rest must be the last segment`},
+		{"route param that is not an identifier", `
+type P struct{ ID int }
+component App() {
+    r := route[P]("/users/:user-id")
+    <p>{r.Matches()}</p>
+}`, `app.den:4:19: route pattern "/users/:user-id": param name "user-id" is not a Go identifier`},
+		{"route param that is blank", `
+type P struct{ ID int }
+component App() {
+    r := route[P]("/users/:_")
+    <p>{r.Matches()}</p>
+}`, `app.den:4:19: route pattern "/users/:_": a param cannot be named _`},
+		{"route params that are not a struct", `
+component App() {
+    r := route[int]("/x")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:16: route params must be a struct type, not int`},
+		{"route param with no field", `
+component App() {
+    r := route[struct{}]("/users/:id")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:26: route pattern "/users/:id": param id matches no field of struct{}`},
+		{"route param matching two fields", `
+type P struct {
+    ID int
+    Id int
+}
+component App() {
+    r := route[P]("/users/:id")
+    <p>{r.Matches()}</p>
+}`, `app.den:7:19: route pattern "/users/:id": param id matches both ID and Id of P`},
+		{"route field with no param", `
+type P struct {
+    ID   int
+    Name string
+}
+component App() {
+    r := route[P]("/users/:id")
+    <p>{r.Matches()}</p>
+}`, `app.den:7:16: field Name of P has no param in route pattern "/users/:id"`},
+		{"route field that is not a string or int", `
+type P struct{ Score float64 }
+component App() {
+    r := route[P]("/s/:score")
+    <p>{r.Matches()}</p>
+}`, `app.den:4:16: field Score of P is float64; route params can be strings or ints`},
+		{"route field of a struct literal", `
+component App() {
+    r := route[struct{ On bool }]("/:on")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:16: field On of struct{On bool} is bool; route params can be strings or ints`},
+		{"route catch-all that is not a string", `
+type P struct{ Rest int }
+component App() {
+    r := route[P]("/f/*rest")
+    <p>{r.Matches()}</p>
+}`, `app.den:4:16: field Rest of P is int, but the catch-all *rest needs a string`},
+		{"route used as a value", `
+component App() {
+    f := route[struct{}]
+    r := f("/x")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:10: route can only be called, not used as a value`},
+		{"route hidden by a component named Route", `
+component Route(name string) {
+    <p>{name}</p>
+}
+component App() {
+    r := route[struct{}]("/")
+    <div>{if r.Matches() { <Route name="x" /> }}</div>
+}`, `app.den:6:10: route is not available because this program has a component named Route; rename it`},
+		{"Route hidden by an import named route", `
+import route "strconv"
+func f(r *Route[struct{}]) string { return route.Itoa(1) }
+component App() {
+    <p>{f(nil)}</p>
+}`, `app.den:3:11: Route is not available because this program imports "strconv" as route; rename it`},
+		{"path used as a value", `
+component App() {
+    f := path
+    <p>{f().Get()}</p>
+}`, `app.den:3:10: path can only be called, not used as a value`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -534,6 +655,62 @@ func TestRuntimeBudget(t *testing.T) {
 	t.Logf("full runtime: %d bytes, %d gzipped", len(all), gzipLen(all))
 	if n := gzipLen(all); n >= 3*1024 {
 		t.Errorf("runtime is %d bytes gzipped, over the 3 KB budget", n)
+	}
+}
+
+// TestRuntimeNames checks that runtime.js and stdlib.js never declare the
+// same name: tree shaking finds declarations by name, so one would quietly
+// replace the other.
+func TestRuntimeNames(t *testing.T) {
+	seen := map[string]bool{}
+	for _, line := range strings.Split(runtimeJS+"\n"+stdlibJS, "\n") {
+		if m := runtimeDecl.FindStringSubmatch(line); m != nil {
+			if seen[m[1]] {
+				t.Errorf("%s is declared twice", m[1])
+			}
+			seen[m[1]] = true
+		}
+	}
+}
+
+// An app that uses neither route nor path ships none of the router, and
+// one that uses only path ships no route matching.
+func TestRouterTreeShaking(t *testing.T) {
+	src, err := os.ReadFile("../examples/counter/app.den")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := []string{"pushState", "popstate", "$path", "$route", "$match", "$linkTo"}
+	for _, c := range []struct {
+		name, src string
+		router    bool
+		ships     []string
+	}{
+		{"counter", string(src), false, nil},
+		{"path only", `
+component App() {
+    p := path()
+    <p>{p.Get()}</p>
+}`, true, router[:3]},
+		{"routes", `
+type P struct{ ID int }
+component App() {
+    user := route[P]("/users/:id")
+    <a href={user.Link(P{ID: 1})}>{user.Params().ID}</a>
+}`, true, append(router, "$atoi")},
+	} {
+		res, err := compileOne(c.src)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if res.Router != c.router {
+			t.Errorf("%s: Router is %t", c.name, res.Router)
+		}
+		for _, w := range router {
+			if got, want := strings.Contains(res.JS, w), slices.Contains(c.ships, w); got != want {
+				t.Errorf("%s: ships %s: %t, want %t", c.name, w, got, want)
+			}
+		}
 	}
 }
 

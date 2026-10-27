@@ -1,5 +1,6 @@
-// den's standard library: the browser built-ins (stored, hash) and the
-// imported Go packages. Like the runtime, an app ships only what it uses.
+// den's standard library: the browser built-ins (stored, hash, path,
+// route) and the imported Go packages. Like the runtime, an app ships only
+// what it uses.
 
 // Go's unicode.IsSpace, which differs from JS's \s.
 const $WS = "[\\t-\\r \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]+";
@@ -38,4 +39,74 @@ function $hash() {
   $cleanup(() => removeEventListener("hashchange", f));
   $effect(() => { const h = s.get(); if (location.hash !== h) location.hash = h; });
   return s;
+}
+// path is one signal per app, holding location.pathname. Setting it pushes
+// a history entry for the URL it is given (the signal keeps only the path).
+// Back and forward set it, and so does a click on a link to this origin,
+// which is followed here instead of loading a new page. It listens on
+// window, so den's handlers on document, and their PreventDefault, go first.
+let $pathS = null;
+function $path() {
+  if ($pathS) return $pathS;
+  const s = ($pathS = $signal(location.pathname)), set = s.set;
+  s.set = (v) => {
+    const u = new URL(v, location.href);
+    if (u.href !== location.href) history.pushState(null, "", u.href);
+    set.call(s, location.pathname);
+  };
+  addEventListener("popstate", () => set.call(s, location.pathname));
+  addEventListener("click", (e) => {
+    let a = e.target, t, u;
+    while (a && a.localName !== "a") a = a.parentNode;
+    if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if ((u = a.getAttribute("href")) == null || a.getAttribute("download") != null || ((t = a.getAttribute("target")) && t !== "_self")) return;
+    try { u = new URL(u, location.href); } catch { return; }
+    // Other origins, and anchors on this page, are left to the browser.
+    if (u.origin !== location.origin || (u.hash && u.pathname + u.search === location.pathname + location.search)) return;
+    e.preventDefault();
+    s.set(u.href);
+    globalThis.scrollTo?.(0, 0);
+  });
+  return s;
+}
+// route[T](pattern) is $route(pattern, z): the pattern with its params
+// renamed to T's JS field names, and T's zero value. A route holds s, the
+// pattern's segments; p, a computed of its params (z itself when the path
+// does not match); and ok, whether it matches.
+function $route(pat, z) {
+  const s = pat.split("/").slice(1), path = $path(), p = $computed(() => $match(s, z, path.get()) ?? z);
+  return { s, p, ok: $computed(() => p.get() !== z) };
+}
+// $match returns the params that pathname v gives segments s, or null when
+// it does not match. One trailing slash is ignored and segments are
+// decoded. A :x param is a whole non-empty segment (an int parses as
+// strconv.Atoi parses), and a catch-all takes the rest of the path, which
+// may be empty. Browsers resolve "." and ".." segments away, so the path
+// does not match when a decoded :x param is one, or when any "/"-separated
+// part of the decoded catch-all value is one: a%2F..%2Fb is the value
+// a/../b, which Link writes as the segments a, .. and b.
+function $match(s, z, v) {
+  const ps = v.split("/").slice(1), o = { ...z }, dot = (p) => p === "." || p === "..";
+  if (ps.length > 1 && !ps.at(-1)) ps.pop();
+  try {
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i][0], k = s[i].slice(1);
+      if (c === "*") { const r = ps.slice(i).map(decodeURIComponent).join("/"); if (r.split("/").some(dot)) return null; o[k] = r; return o; }
+      if (i >= ps.length) return null;
+      if (c !== ":") { if (decodeURIComponent(ps[i]) !== s[i]) return null; continue; }
+      const d = decodeURIComponent(ps[i]);
+      if (!d || dot(d)) return null;
+      if (typeof z[k] !== "number") o[k] = d;
+      else { const [n, err] = $atoi(d); if (err) return null; o[k] = n; }
+    }
+  } catch { return null; }
+  return ps.length === s.length ? o : null;
+}
+// $linkTo is Route.Link: the path of route r with params v, each segment
+// encoded. A path that would start with // (an empty first param) gets /.
+// in front, so it can never be read as a link to another host. A :x param
+// that is "", "." or ".." makes a path the route does not match.
+function $linkTo(r, v) {
+  const u = "/" + r.s.map((s) => (s[0] === ":" ? encodeURIComponent(v[s.slice(1)]) : s[0] === "*" ? v[s.slice(1)].split("/").map(encodeURIComponent).join("/") : encodeURIComponent(s))).join("/");
+  return u[1] === "/" ? "/." + u : u;
 }

@@ -53,6 +53,26 @@ func stored[T any](key string, initial T) *Signal[T] { return &Signal[T]{v: init
 func hash() *Signal[string] { return nil }
 `
 
+// preludeRoute declares the router's typed routes, unless the program
+// declares its own route or Route, which then keep their Go meaning.
+const preludeRoute = `
+// Route is a URL pattern whose params fill a T.
+type Route[T any] struct{ p T }
+
+func (r *Route[T]) Matches() bool   { return false }
+func (r *Route[T]) Params() T       { return r.p }
+func (r *Route[T]) Link(p T) string { return "" }
+
+// route is a typed URL pattern, like route[UserParams]("/users/:id").
+func route[T any](pattern string) *Route[T] { return nil }
+`
+
+// preludePath declares path, unless the program declares its own.
+const preludePath = `
+// path is a signal holding location.pathname; Set navigates.
+func path() *Signal[string] { return nil }
+`
+
 // preludeDen ends the prelude of a program that imports the built-in
 // package den, which is every program that does not declare its own den.
 const preludeDen = `
@@ -174,6 +194,7 @@ type checked struct {
 	components  map[string]*Component
 	readsSignal map[types.Object]bool // functions that may read a signal
 	nilTypes    map[*ast.Ident]types.Type
+	routes      map[*ast.CallExpr]string // route[T](...) calls: the pattern to match
 }
 
 type checkedComponent struct {
@@ -225,13 +246,25 @@ func check(files []*File) (*checked, error) {
 			declSrc.WriteString("\n" + lineDirective(f.Name, d.Pos) + code + "\n")
 		}
 	}
-	// The built-in package den is imported unless the program declares or
-	// imports its own den, which then means what it means in Go.
+	// own holds the names the program gives a meaning of its own at the top
+	// level, through a declaration, a component or an import, and says how.
+	// Den's built-in den, route, Route and path give way to them, so they
+	// keep meaning what they mean in Go.
 	top, aliases := topLevel(declSrc.String())
-	denTaken := top["den"]
-	for spec := range imports {
-		denTaken = denTaken || strings.HasPrefix(spec, "den ")
+	own := map[string]string{}
+	for name := range top {
+		own[name] = "declares its own " + name
 	}
+	for name := range byName {
+		own[name] = "has a component named " + name
+	}
+	for spec := range imports {
+		name, path := importName(spec)
+		own[name] = "imports " + path + " as " + name
+	}
+	denTaken := own["den"] != ""
+	// route returns a *Route[T], so the two come and go together.
+	routeTaken := own["route"] != "" || own["Route"] != ""
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -251,6 +284,12 @@ func check(files []*File) (*checked, error) {
 	src.WriteString(importSrc.String())
 	// The import directives would otherwise carry on into the prelude.
 	src.WriteString("/*line " + preludeFile + ":2:1*/" + strings.TrimPrefix(prelude, "package app\n"))
+	if !routeTaken {
+		src.WriteString(preludeRoute)
+	}
+	if own["path"] == "" {
+		src.WriteString(preludePath)
+	}
 	if denTaken {
 		src.WriteString(preludePlain)
 	} else {
@@ -341,6 +380,14 @@ next:
 		if i := strings.Index(msg, " does not satisfy renderable"); i >= 0 {
 			msg = "cannot render " + msg[:i] + ": only strings, numbers and bools can be shown in markup"
 		}
+		// A program with its own route or Route has neither of den's. Say why.
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && routeTaken && (name == "route" || name == "Route") {
+			by := "route"
+			if own[by] == "" {
+				by = "Route"
+			}
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[by])
+		}
 		errAt(te.Pos, msg)
 	}
 	// gen took a prop for den.Children by reading its type; go/types must
@@ -368,6 +415,11 @@ next:
 			errAt(id.Pos(), fmt.Sprintf("type %s is based on den.Children, which den does not support; declare an alias instead: type %s = den.Children", id.Name, id.Name))
 		}
 	}
+	// Route patterns and params are checked once Go accepts the program.
+	var routes map[*ast.CallExpr]string
+	if len(typeErrs) == 0 {
+		routes = checkRoutes(file, info, pkg, fset, errAt)
+	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
 	for x, tv := range info.Types {
@@ -384,7 +436,7 @@ next:
 		return nil, errs.sorted()
 	}
 
-	out := &checked{fset: fset, info: info, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info)}
+	out := &checked{fset: fset, info: info, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes}
 	decls := map[string]*ast.FuncDecl{}
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
@@ -633,6 +685,16 @@ func screenDecl(file string, d *GoDecl) (string, []importSpec, *Error) {
 	}
 }
 
+// importName returns the name an import spec (`"strings"` or `s "strings"`)
+// declares, and its quoted path.
+func importName(spec string) (name, path string) {
+	if name, path, ok := strings.Cut(spec, " "); ok {
+		return name, path
+	}
+	p, _ := strconv.Unquote(spec)
+	return p[strings.LastIndex(p, "/")+1:], spec
+}
+
 func checkImport(file, lit string, pos Pos) *Error {
 	path, _ := strconv.Unquote(lit)
 	if stdPackages[path] == "" {
@@ -854,12 +916,14 @@ func (ck *checked) reactive(n ast.Node) bool {
 		if !ok {
 			return true
 		}
-		switch fun := ast.Unparen(call.Fun).(type) {
+		switch fun := callee(ck.info, ast.Unparen(call.Fun)).(type) {
 		case *ast.SelectorExpr:
-			if fun.Sel.Name == "Get" {
-				if recv := ck.recvName(fun); recv == "Signal" || recv == "Computed" {
-					found = true
-				}
+			// A route's Matches and Params read the path signal.
+			switch recv := ck.recvName(fun); fun.Sel.Name {
+			case "Get":
+				found = recv == "Signal" || recv == "Computed"
+			case "Matches", "Params":
+				found = recv == "Route"
 			}
 		case *ast.Ident:
 			switch o := ck.info.Uses[fun].(type) {
