@@ -79,22 +79,23 @@ function $route(pat, z) {
 }
 // $match returns the params that pathname v gives segments s, or null when
 // it does not match. One trailing slash is ignored and segments are
-// decoded. A param is never "." or "..", which browsers resolve away, so a
-// path with one does not match. A :x param is a whole non-empty segment
-// (an int parses as strconv.Atoi parses), and a catch-all takes the rest of
-// the path, which may be empty.
+// decoded. A :x param is a whole non-empty segment (an int parses as
+// strconv.Atoi parses), and a catch-all takes the rest of the path, which
+// may be empty. Browsers resolve "." and ".." segments away, so the path
+// does not match when a decoded :x param is one, or when any "/"-separated
+// part of the decoded catch-all value is one: a%2F..%2Fb is the value
+// a/../b, which Link writes as the segments a, .. and b.
 function $match(s, z, v) {
-  const ps = v.split("/").slice(1), o = { ...z };
-  const dec = (p) => { p = decodeURIComponent(p); if (p === "." || p === "..") throw 0; return p; };
+  const ps = v.split("/").slice(1), o = { ...z }, dot = (p) => p === "." || p === "..";
   if (ps.length > 1 && !ps.at(-1)) ps.pop();
   try {
     for (let i = 0; i < s.length; i++) {
       const c = s[i][0], k = s[i].slice(1);
-      if (c === "*") { o[k] = ps.slice(i).map(dec).join("/"); return o; }
+      if (c === "*") { const r = ps.slice(i).map(decodeURIComponent).join("/"); if (r.split("/").some(dot)) return null; o[k] = r; return o; }
       if (i >= ps.length) return null;
       if (c !== ":") { if (decodeURIComponent(ps[i]) !== s[i]) return null; continue; }
-      const d = dec(ps[i]);
-      if (!d) return null;
+      const d = decodeURIComponent(ps[i]);
+      if (!d || dot(d)) return null;
       if (typeof z[k] !== "number") o[k] = d;
       else { const [n, err] = $atoi(d); if (err) return null; o[k] = n; }
     }

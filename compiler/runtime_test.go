@@ -992,12 +992,20 @@ for (const a of findAll("a")) {
 }
 
 // Browsers resolve dot segments away before den sees a path. Should one
-// get through, no param takes it.
+// get through, no param takes it. A catch-all value is "/"-separated parts
+// (Link writes each part as a segment), so no part of the decoded value is
+// "." or "..", even when the raw segment hid the "/" as %2F. A :x param is
+// one segment whatever it holds, so only the whole value is checked.
 func TestRouteMatchDots(t *testing.T) {
-	got := runRuntime(t, "$match", `
-const tag = ["tags", ":Name"], rest = ["f", "*Rest"];
-for (const p of ["/tags/x", "/tags/.", "/tags/..", "/tags/%2e", "/tags/%2E%2e", "/tags/...", "/tags/.x"]) log(p, JSON.stringify($match(tag, { Name: "" }, p)));
-for (const p of ["/f/a/b", "/f/a/../b", "/f/./b"]) log(p, JSON.stringify($match(rest, { Rest: "" }, p)));`)
+	got := runRuntime(t, "$match $linkTo", `
+const tag = ["tags", ":Name"], rest = ["f", "*Rest"], all = ["*Rest"];
+for (const p of ["/tags/x", "/tags/.", "/tags/..", "/tags/%2e", "/tags/%2E%2e", "/tags/...", "/tags/.x", "/tags/..%2F"]) log(p, JSON.stringify($match(tag, { Name: "" }, p)));
+for (const p of ["/f/a/b", "/f/a/../b", "/f/./b", "/f/", "/f/a%2F..%2Fb", "/f/a%2F...", "/f/.%2Fb"]) log(p, JSON.stringify($match(rest, { Rest: "" }, p)));
+for (const p of ["/docs/a%2F..%2F..%2Fadmin", "/docs/a%2F.", "/docs/%2E%2E%2Fx", "/docs/a%2F%2E", "/docs/a%2Fb"]) log(p, JSON.stringify($match(all, { Rest: "" }, p)));
+for (const [s, v, z] of [[tag, { Name: "../" }, { Name: "" }], [all, { Rest: "docs/a/b" }, { Rest: "" }]]) {
+  const u = $linkTo({ s }, v);
+  log("link", u, JSON.stringify($match(s, z, u)));
+}`)
 	expectLines(t, got,
 		`/tags/x {"Name":"x"}`,
 		`/tags/. null`,
@@ -1006,9 +1014,21 @@ for (const p of ["/f/a/b", "/f/a/../b", "/f/./b"]) log(p, JSON.stringify($match(
 		`/tags/%2E%2e null`,
 		`/tags/... {"Name":"..."}`,
 		`/tags/.x {"Name":".x"}`,
+		`/tags/..%2F {"Name":"../"}`,
 		`/f/a/b {"Rest":"a/b"}`,
 		`/f/a/../b null`,
-		`/f/./b null`)
+		`/f/./b null`,
+		`/f/ {"Rest":""}`,
+		`/f/a%2F..%2Fb null`,
+		`/f/a%2F... {"Rest":"a/..."}`,
+		`/f/.%2Fb null`,
+		`/docs/a%2F..%2F..%2Fadmin null`,
+		`/docs/a%2F. null`,
+		`/docs/%2E%2E%2Fx null`,
+		`/docs/a%2F%2E null`,
+		`/docs/a%2Fb {"Rest":"docs/a/b"}`,
+		`link /tags/..%2F {"Name":"../"}`,
+		`link /docs/a/b {"Rest":"docs/a/b"}`)
 }
 
 // path() is the URL path: Set navigates, back and forward follow history,
