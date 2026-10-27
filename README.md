@@ -41,6 +41,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/counter` (two counters, a computed value, a bound input) | 2.3 KB |
 | `examples/todos` (add, toggle, remove, filter) | 3.9 KB |
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.3 KB |
+| `examples/router` (pages by URL path, a typed param, not found) | 4.0 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -104,8 +105,8 @@ app.den:2:8: package "fmt" is not available in den; you can import strconv, stri
 
 Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list keys that are not strings,
-numbers or bools, calling a component as a function, and children or slots
-a component does not take.
+numbers or bools, calling a component as a function, children or slots
+a component does not take, and route patterns that do not fit their params.
 
 ## Security by default
 
@@ -178,7 +179,70 @@ component App() {
 - `signal(v)`, `computed(expr)`, `.Get()`, `.Set(v)`, `.Update(func)`.
 - `stored(key, initial)`: a signal kept in localStorage as JSON and decoded
   back into Go types.
-- `hash()`: a signal holding `location.hash`, for simple routing.
+- `hash()`: a signal holding `location.hash`, for simple routing. To route
+  by URL path, use `route` and `path` (below).
+
+**Routing**
+
+```go
+type UserParams struct {
+    ID int
+}
+
+component App() {
+    home := route[struct{}]("/")
+    user := route[UserParams]("/users/:id")
+    <div>
+        <nav><a href="/">Home</a> <a href={user.Link(UserParams{ID: 7})}>User 7</a></nav>
+        {if home.Matches() {
+            <p>Home</p>
+        } else if user.Matches() {
+            <User user={user} />
+        } else {
+            <p>Not found</p>
+        }}
+    </div>
+}
+
+component User(user *Route[UserParams]) {
+    <h1>User {user.Params().ID}</h1>
+}
+```
+
+- `route[T](pattern)` is a typed URL pattern. A pattern starts with `/`, and
+  each segment is static text, a param `:name`, or (last) a catch-all
+  `*name` that takes the rest of the path, which may be empty. Each param
+  fills the field of the struct `T` with its name, ignoring case (`:id`
+  fills `ID`). Fields are strings or ints; a catch-all fills a string.
+- `r.Matches()` reports whether the current path matches, and `r.Params()`
+  returns its params, or the zero `T` when it does not match. Both are
+  reactive, like `.Get()`. A path matches with or without one trailing
+  slash, params are percent-decoded, and an int param must parse as
+  `strconv.Atoi` parses it, or the route does not match.
+- `r.Link(p)` is the path for params `p`, each one percent-encoded.
+- `path()` is a signal holding `location.pathname`. `Set` navigates with
+  `history.pushState` (the URL may have a query and a fragment; the signal
+  keeps the path), and back and forward update it.
+- Once the app has called `route` or `path`, a click on a link to the same
+  origin is followed without loading a page, unless it is a modified or
+  middle click, the link has a `target` other than `_self` or a `download`
+  attribute, it only jumps to an anchor on the current page, or a handler
+  called `e.PreventDefault()`.
+- Props are values, read when the component is made. A page that should
+  follow its params from one URL to the next takes the route, as `User`
+  does above, rather than `user.Params().ID`.
+- These are compile errors, reported at the pattern or at `T`: a pattern
+  that is not a constant or does not start with `/`; a param with no name,
+  a name that is not a Go identifier or is used twice, a catch-all that is
+  not last; a `T` that is not a struct, a param with no field, a field with
+  no param, and a field that is not a string or an int. For example,
+  `app.den:3:16: field Name of UserParams has no param in route pattern "/users/:id"`.
+- Hosting: the server must answer paths it has no file for with
+  `index.html` (`den dev` does, for paths whose last segment has no `.`),
+  and the app must be served from the site root, since its `index.html`
+  then loads `/app.js` and `/style.css`. A base path is not supported yet.
+- `route`, `Route` and `path` are ordinary names: a program that declares
+  its own keeps it.
 
 **Go**
 - `type`, `const` and `func` declarations, including generic and variadic
@@ -242,8 +306,8 @@ rebuild of 100 components under 50 ms.
    and maps, template cloning, lazy computed values, ownership scopes,
    TodoMVC under 10 KB, and the benchmark gate.
 2. **Components, styling and motion:** children and slots (done), a typed
-   router, scoped styles and design tokens, animations, `den fmt` and a VS
-   Code extension.
+   router (done), scoped styles and design tokens, animations, `den fmt` and
+   a VS Code extension.
 3. **Server and security:** typed server functions with required `auth=`,
    `Secret[T]`, CSRF protection, SSR, source maps and `den test`.
 4. **Scale:** `<VirtualList>`, data windows, live streams, and the
