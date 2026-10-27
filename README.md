@@ -210,16 +210,22 @@ component User(user *Route[UserParams]) {
 ```
 
 - `route[T](pattern)` is a typed URL pattern. A pattern starts with `/`, and
-  each segment is static text, a param `:name`, or (last) a catch-all
-  `*name` that takes the rest of the path, which may be empty. Each param
-  fills the field of the struct `T` with its name, ignoring case (`:id`
-  fills `ID`). Fields are strings or ints; a catch-all fills a string.
+  each segment is static text, a param `:name` that takes one non-empty
+  segment, or (last) a catch-all `*name` that takes the rest of the path,
+  which may be empty. Each param fills the field of the struct `T` with
+  its name, ignoring case (`:id` fills `ID`). Fields are strings or ints;
+  a catch-all fills a string.
 - `r.Matches()` reports whether the current path matches, and `r.Params()`
   returns its params, or the zero `T` when it does not match. Both are
   reactive, like `.Get()`. A path matches with or without one trailing
   slash, params are percent-decoded, and an int param must parse as
   `strconv.Atoi` parses it, or the route does not match.
-- `r.Link(p)` is the path for params `p`, each one percent-encoded.
+- `r.Link(p)` is the path for params `p`, each one percent-encoded. It
+  leads back to the same params, except for a `:name` param that is `""`,
+  `"."` or `".."`, and a catch-all that ends in `/` or has a `.` or `..`
+  part: an empty param never matches, one trailing slash is ignored, and
+  browsers resolve `.` and `..` segments (encoded or not) away, so no
+  param ever takes one.
 - `path()` is a signal holding `location.pathname`. `Set` navigates with
   `history.pushState` (the URL may have a query and a fragment; the signal
   keeps the path), and back and forward update it.
@@ -241,8 +247,10 @@ component User(user *Route[UserParams]) {
   `index.html` (`den dev` does, for paths whose last segment has no `.`),
   and the app must be served from the site root, since its `index.html`
   then loads `/app.js` and `/style.css`. A base path is not supported yet.
-- `route`, `Route` and `path` are ordinary names: a program that declares
-  its own keeps it.
+- `route`, `Route` and `path` are ordinary names. A program that has its
+  own at the top level, as a declaration, a component or an import, keeps
+  it. `route` and `Route` go together: a program with either has neither
+  of den's, and using the other says so.
 
 **Go**
 - `type`, `const` and `func` declarations, including generic and variadic
