@@ -170,8 +170,17 @@ func report(out string, res *compiler.Result) {
 	fmt.Printf("built %d components → %s\n", len(res.Components), out)
 	fmt.Printf("  app.js  %.1f KB  (%.1f KB gzip)\n", float64(len(js))/1024, float64(gzipSize(js))/1024)
 	if css := []byte(res.CSS); len(css) > 0 {
-		fmt.Printf("  scoped CSS  %.1f KB  (%.1f KB gzip), at the top of style.css\n", float64(len(css))/1024, float64(gzipSize(css))/1024)
+		fmt.Printf("  scoped CSS  %s  (%s gzip), at the top of style.css\n", size(len(css)), size(gzipSize(css)))
 	}
+}
+
+// size formats n bytes: in KB from 1 KB, in bytes below it, where one
+// decimal of a KB would round small CSS down to 0.0 KB.
+func size(n int) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%.1f KB", float64(n)/1024)
 }
 
 // ---- dev server -------------------------------------------------------------

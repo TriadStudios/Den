@@ -85,6 +85,14 @@ func TestWriteDistCSS(t *testing.T) {
 	}
 }
 
+func TestSize(t *testing.T) {
+	for n, want := range map[int]string{0: "0 B", 40: "40 B", 1023: "1023 B", 1024: "1.0 KB", 1317: "1.3 KB"} {
+		if got := size(n); got != want {
+			t.Errorf("size(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
 // An app that routes by path loads its files from the site root; others
 // keep relative URLs, so their pages are unchanged.
 func TestIndexHTML(t *testing.T) {
