@@ -1143,9 +1143,15 @@ visit("/users/9"); await tick(); log(main(), "|", first.textContent, "|", other.
 
 // TestRouterExample walks through examples/router on the test DOM.
 func TestRouterExample(t *testing.T) {
-	src, err := os.ReadFile("../examples/router/app.den")
-	if err != nil {
-		t.Fatal(err)
+	// The example's files (app.den and tokens.den) as one source.
+	files, _ := filepath.Glob("../examples/router/*.den")
+	var src []byte
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src = append(append(src, b...), '\n')
 	}
 	got := runApp(t, string(src), `
 const page = async () => { await tick(); return find("nav").childNodes.filter((a) => a.getAttribute?.("class") === "active").map((a) => a.textContent).join("") + " | " + find("main").textContent + " | " + location.pathname; };
