@@ -135,6 +135,10 @@ func indexHTML(hasCSS, dev, router bool) string {
 	return b.String()
 }
 
+// writeDist writes app.js, index.html and style.css: the CSS of the
+// components' style blocks, then the app's own style.css as it is, so the
+// app's rules come later and can override the components' design tokens.
+// The page's CSP allows no inline styles, so all of it goes in the file.
 func writeDist(dir, out string, res *compiler.Result, dev bool) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
@@ -142,9 +146,10 @@ func writeDist(dir, out string, res *compiler.Result, dev bool) error {
 	if err := os.WriteFile(filepath.Join(out, "app.js"), []byte(res.JS), 0o644); err != nil {
 		return err
 	}
-	css, err := os.ReadFile(filepath.Join(dir, "style.css"))
-	hasCSS := err == nil
+	own, err := os.ReadFile(filepath.Join(dir, "style.css"))
+	hasCSS := err == nil || res.CSS != ""
 	if hasCSS {
+		css := append([]byte(res.CSS), own...)
 		if err := os.WriteFile(filepath.Join(out, "style.css"), css, 0o644); err != nil {
 			return err
 		}
@@ -164,6 +169,9 @@ func report(out string, res *compiler.Result) {
 	js := []byte(res.JS)
 	fmt.Printf("built %d components → %s\n", len(res.Components), out)
 	fmt.Printf("  app.js  %.1f KB  (%.1f KB gzip)\n", float64(len(js))/1024, float64(gzipSize(js))/1024)
+	if css := []byte(res.CSS); len(css) > 0 {
+		fmt.Printf("  scoped CSS  %.1f KB  (%.1f KB gzip), at the top of style.css\n", float64(len(css))/1024, float64(gzipSize(css))/1024)
+	}
 }
 
 // ---- dev server -------------------------------------------------------------

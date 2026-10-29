@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/TriadStudios/Den/compiler"
 )
 
 // The dev server answers a path that has no file, and looks like a page
@@ -41,6 +43,44 @@ func TestDevFiles(t *testing.T) {
 		}
 		if c.code == 200 && w.Header().Get("Cache-Control") != "no-store" {
 			t.Errorf("%s %s: no Cache-Control: no-store header", c.method, c.path)
+		}
+	}
+}
+
+// style.css is the components' scoped CSS followed by the app's own, which
+// can then override their tokens; an app with neither has no style.css,
+// and an app without style blocks gets its own file unchanged.
+func TestWriteDistCSS(t *testing.T) {
+	const own = "body { margin: 0 }\n"
+	const scoped = ":root{--ink:#000}\np[d-abcde]{color:var(--ink)}\n"
+	for _, c := range []struct {
+		name        string
+		own, scoped string
+		want        string // "" when there is no style.css
+	}{
+		{"both", own, scoped, scoped + own},
+		{"only the app's", own, "", own},
+		{"only scoped", "", scoped, scoped},
+		{"neither", "", "", ""},
+	} {
+		dir, out := t.TempDir(), t.TempDir()
+		if c.own != "" {
+			os.WriteFile(filepath.Join(dir, "style.css"), []byte(c.own), 0o644)
+		}
+		if err := writeDist(dir, out, &compiler.Result{JS: "js", CSS: c.scoped}, false); err != nil {
+			t.Fatal(err)
+		}
+		css, err := os.ReadFile(filepath.Join(out, "style.css"))
+		page, _ := os.ReadFile(filepath.Join(out, "index.html"))
+		link := strings.Contains(string(page), `<link rel="stylesheet" href="style.css">`)
+		if c.want == "" {
+			if err == nil || link {
+				t.Errorf("%s: style.css %q, link %t", c.name, css, link)
+			}
+			continue
+		}
+		if string(css) != c.want || !link {
+			t.Errorf("%s: style.css %q, want %q; link %t", c.name, css, c.want, link)
 		}
 	}
 }
