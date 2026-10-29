@@ -130,11 +130,13 @@ padding takes a length`).
   policies allowed. The runtime never needs one. Styles are `style-src
   'self'` too: the browser ignores `<style>` elements and `style="..."`
   attributes, so CSS goes in style blocks (below) or `style.css`.
-- **Checked CSS.** In style blocks, `url(...)` takes the same URLs as a
-  static `href`, and `expression(`, `javascript:`, `behavior` and
-  `-moz-binding` are compile errors. Design token values cannot contain
-  `;`, braces, `<`, backslashes, `url(` or comments, so a token can never
-  end its declaration or rule.
+- **Checked CSS.** In style blocks, `url(...)` and the strings in
+  `image-set()` and `src()` take the same URLs as a static `href`, and
+  `expression(`, `javascript:`, `behavior` and `-moz-binding` are compile
+  errors. Design token values cannot contain control characters
+  (newlines and form feeds included), `;`, braces, `<`, backslashes,
+  `url(`, `javascript:` or comments, so a token can never end its string,
+  declaration or rule.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
@@ -300,7 +302,9 @@ component Card(title string, children den.Children) {
   the arguments of `:not()`, `:is()`, `:has()` and the like are left as
   written. `@media`, `@supports` and `@container` rules hold rules as
   usual. `@keyframes fade` becomes local to the component, and
-  `animation` and `animation-name` in the block follow it.
+  `animation` and `animation-name` in the block follow it. A keyframes
+  name cannot be one of the keywords those properties take, such as
+  `ease`, `linear`, `infinite` or `none`.
 - `$name` in a value is a design token: a package-level constant of type
   `den.Color`, `den.Length`, `den.Duration`, `den.Font` or `den.Token`,
   named in kebab case (`$radius-lg` is the constant `RadiusLg` or
@@ -334,9 +338,11 @@ component Card(title string, children den.Children) {
   `@keyframes` (`@import`, `@font-face` and the rest go in `style.css`);
   nested rules and `&`; and tokens in selectors, in `@media` conditions or
   inside `url()`, where custom properties do not work.
-- Only a statement that starts a line with `style {` begins a style
-  block, which no Go statement can do; `style` is otherwise an ordinary
-  name.
+- A line among a component's Go statements that starts a statement with
+  `style {` (or `style{`) begins a style block. In Go, such a line could
+  only be a composite literal of a type named `style`, as in
+  `style{1, 2}[0] = 5`; write it as `(style{1, 2})[0] = 5`, or give the
+  type another name. Everywhere else `style` is an ordinary name.
 
 **Go**
 - `type`, `const` and `func` declarations, including generic and variadic
