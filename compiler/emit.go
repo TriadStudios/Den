@@ -34,17 +34,27 @@ type Source struct {
 // Compile parses, type-checks and emits JavaScript for a set of .den files.
 // The component named App is mounted into #app.
 func Compile(sources []Source) (*Result, error) {
-	var files []*File
+	var files, partial []*File
 	var errs ErrorList
 	for _, s := range sources {
 		f, err := Parse(s.Name, s.Code)
 		if err != nil {
 			errs = append(errs, err.(ErrorList)...)
+			partial = append(partial, f)
 			continue
 		}
 		files = append(files, f)
 	}
 	if len(errs) > 0 {
+		// A style block whose CSS does not scan may be Go: a composite
+		// literal of the program's own type style.
+		if slices.ContainsFunc(errs, func(e *Error) bool { return e.styleScan }) && declaresStyle(append(files, partial...)) {
+			for _, e := range errs {
+				if e.styleScan {
+					e.Msg += "; " + literalHint
+				}
+			}
+		}
 		return nil, errs.sorted()
 	}
 	ck, err := check(files)

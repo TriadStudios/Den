@@ -697,6 +697,29 @@ func screenDecl(file string, d *GoDecl) (string, []importSpec, *Error) {
 	}
 }
 
+// declaresStyle reports whether the program gives the name style a meaning
+// at the top level, through a declaration or an import, as check's own
+// map records it. Components never take it: their names are capitalized.
+func declaresStyle(files []*File) bool {
+	var src strings.Builder
+	for _, f := range files {
+		for _, d := range f.Decls {
+			code, imps, err := screenDecl(f.Name, d)
+			if err != nil {
+				continue
+			}
+			for _, im := range imps {
+				if name, _ := importName(im.spec); name == "style" {
+					return true
+				}
+			}
+			src.WriteString(code + "\n")
+		}
+	}
+	top, _ := topLevel(src.String())
+	return top["style"]
+}
+
 // importName returns the name an import spec (`"strings"` or `s "strings"`)
 // declares, and its quoted path.
 func importName(spec string) (name, path string) {

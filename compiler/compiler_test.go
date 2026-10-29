@@ -684,6 +684,89 @@ component App() {
     style { a:not(.b { margin: 0; } }
     <p>x</p>
 }`, `app.den:3:18: unclosed ( in selector`},
+		// A form feed ends a CSS string, so a token holding one in quotes
+		// would turn the rest of style.css into part of the :root rule.
+		{"form feed in a token", `
+const Odd den.Token = "'a\fb'"
+component App() {
+    style { q { quotes: $odd; } }
+    <q>x</q>
+}`, `app.den:2:7: design token Odd: a token cannot contain a control character (U+000C)`},
+		{"form feed in a token made by concatenation", `
+const ff = "\f"
+const Odd den.Token = "'a" + ff + "b'"
+component App() {
+    style { q { quotes: $odd; } }
+    <q>x</q>
+}`, `app.den:3:7: design token Odd: a token cannot contain a control character (U+000C)`},
+		{"carriage return in a token", `
+const Gap den.Length = "1px\r"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: a token cannot contain a control character (U+000D)`},
+		{"NUL in a token", `
+const Ink den.Color = "red\x00"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Ink: a token cannot contain a control character (U+0000)`},
+		{"DEL in a token", `
+const Body den.Font = "serif\x7f"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Body: a token cannot contain a control character (U+007F)`},
+		{"javascript in a token", `
+const Odd den.Token = "JavaScript :alert(1)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Odd: a token cannot contain "javascript:"`},
+		{"form feed in a style block string", "\ncomponent App() {\n    style { p::after { content: \"a\fb\"; } }\n    <p>x</p>\n}",
+			`app.den:3:33: unterminated string in style block`},
+		{"carriage return in a style block string", "\ncomponent App() {\n    style { p::after { content: \"a\rb\"; } }\n    <p>x</p>\n}",
+			`app.den:3:33: unterminated string in style block`},
+		{"escaped line end in a selector", "\ncomponent App() {\n    style { .a\\\fb { margin: 0; } }\n    <p>x</p>\n}",
+			`app.den:3:15: a backslash cannot end a line in a selector`},
+		{"keyframes named like an animation keyword", `
+component App() {
+    style { @keyframes ease { to { opacity: 1; } } }
+    <p>x</p>
+}`, `app.den:3:24: "ease" cannot name @keyframes: animation reads it as a keyword; choose another name`},
+		{"keyframes named like a CSS-wide keyword", `
+component App() {
+    style { @keyframes  NONE { to { opacity: 1; } } }
+    <p>x</p>
+}`, `app.den:3:25: "NONE" cannot name @keyframes`},
+		{"unsafe URL in image-set", `
+component App() {
+    style { p { background-image: image-set("vbscript:x" 1x, "a.png" 2x); } }
+    <p>x</p>
+}`, `app.den:3:45: unsafe URL in image-set(): only http, https, mailto, tel and relative URLs are allowed`},
+		{"unsafe URL in src", `
+component App() {
+    style { p { background: src("vbscript:x"); } }
+    <p>x</p>
+}`, `app.den:3:33: unsafe URL in src()`},
+		{"composite literal of type style, indexed", `
+type style []int
+component App() {
+    style{1, 2}[0] = 5
+    <p>x</p>
+}`, `app.den:4:5: style { opens a style block; write (style{...}) for a composite literal of type style`},
+		{"composite literal of type style, called", `
+type style struct{ F func() }
+func f() {}
+component App() {
+    style{F: f}.F()
+    <p>x</p>
+}`, `app.den:5:5: style { opens a style block; write (style{...}) for a composite literal of type style`},
+		{"composite literal of type style that is not CSS", `
+type style []int
+component App() {
+    style{
+        1, // it's
+        2,
+    }[0] = 5
+    <p>x</p>
+}`, `app.den:5:17: unterminated string in style block; style { opens a style block; write (style{...}) for a composite literal of type style`},
 		{"bad keyframe selector", `
 component App() {
     style { @keyframes spin { start { opacity: 0; } } }

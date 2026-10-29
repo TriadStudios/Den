@@ -26,17 +26,21 @@ import (
 
 // cssAtom returns the end of the CSS string, comment or unquoted url(...)
 // that starts at i, or i+1 for anything else, and a message if it is not
-// terminated.
+// terminated. As in CSS, a newline (\n, \r or \f) that is not escaped ends
+// a string that is still open.
 func cssAtom(src string, i int) (int, string) {
 	switch c := src[i]; {
 	case c == '"' || c == '\'':
 		for j := i + 1; j < len(src); j++ {
 			switch src[j] {
 			case '\\':
+				if strings.HasPrefix(src[j+1:], "\r\n") {
+					j++ // an escaped CRLF is one newline
+				}
 				j++
 			case c:
 				return j + 1, ""
-			case '\n':
+			case '\n', '\r', '\f':
 				return len(src), "unterminated string in style block"
 			}
 		}
@@ -60,7 +64,7 @@ func cssAtom(src string, i int) (int, string) {
 				j++
 			case ')':
 				return j + 1, ""
-			case '\n':
+			case '\n', '\r', '\f':
 				return len(src), "unterminated url( in style block"
 			}
 		}
@@ -298,7 +302,9 @@ func (s *styler) keyframes(i, end int) {
 		if s.src[i] == '@' {
 			switch nameEnd, name := s.atName(i, end); name {
 			case "keyframes":
-				s.kf[strings.TrimSpace(s.src[nameEnd:stop])] = true
+				if name := strings.TrimSpace(s.src[nameEnd:stop]); !animationKeywords[strings.ToLower(name)] {
+					s.kf[name] = true
+				}
 			case "media", "supports", "container":
 				s.keyframes(stop+1, close)
 			}
@@ -365,6 +371,10 @@ func (s *styler) atRule(start, open, close int) string {
 			s.errAt(start, "@keyframes needs a name, like @keyframes fade-in")
 			return ""
 		}
+		if animationKeywords[strings.ToLower(kname)] {
+			s.errAt(s.skipSpace(nameEnd, open), "%q cannot name @keyframes: animation reads it as a keyword; choose another name", kname)
+			return ""
+		}
 		var frames []string
 		for i := s.skipSpace(open+1, close); i < close; i = s.skipSpace(i, close) {
 			stop := s.preludeEnd(i, close)
@@ -389,6 +399,17 @@ func (s *styler) atRule(start, open, close int) string {
 	}
 	s.errAt(start, "@%s is not allowed in a style block; put it in style.css", name)
 	return ""
+}
+
+// animationKeywords are the words the animation properties read as
+// keywords, never as a @keyframes name: a block's references to its own
+// keyframes are renamed, so a keyframes name among them would rename the
+// keyword too.
+var animationKeywords = map[string]bool{
+	"initial": true, "inherit": true, "unset": true, "revert": true, "revert-layer": true, "default": true, "none": true,
+	"ease": true, "ease-in": true, "ease-out": true, "ease-in-out": true, "linear": true, "step-start": true, "step-end": true,
+	"infinite": true, "normal": true, "reverse": true, "alternate": true, "alternate-reverse": true,
+	"forwards": true, "backwards": true, "both": true, "running": true, "paused": true,
 }
 
 // cssIdent reports whether name is a plain CSS identifier.
@@ -522,11 +543,13 @@ func (s *styler) value(prop string, i, end int) string {
 	// An open ( or [ would make the browser read the rest of style.css as
 	// part of this value, so they must balance.
 	var open []int
+	var fns []string // the function each open ( belongs to, in lower case
 	defer func() {
 		if len(open) > 0 {
 			s.errAt(open[len(open)-1], "unclosed %c", s.src[open[len(open)-1]])
 		}
 	}()
+	start := i
 	for i < end {
 		c := s.src[i]
 		switch {
@@ -538,6 +561,9 @@ func (s *styler) value(prop string, i, end int) string {
 			i, _ = cssAtom(s.src, i)
 		case c == '"' || c == '\'':
 			j, _ := cssAtom(s.src, i)
+			if len(fns) > 0 && urlFuncs[fns[len(fns)-1]] {
+				s.checkURL(i, s.src[i+1:j-1], fns[len(fns)-1])
+			}
 			write(s.src[i:j])
 			i = j
 		case c == '\\':
@@ -576,7 +602,11 @@ func (s *styler) value(prop string, i, end int) string {
 		default:
 			switch c {
 			case '(', '[':
-				open = append(open, i)
+				k := i
+				for k > start && c == '(' && cssNameChar(s.src[k-1]) {
+					k--
+				}
+				open, fns = append(open, i), append(fns, strings.ToLower(s.src[k:i]))
 			case ')', ']':
 				want := byte('(')
 				if c == ']' {
@@ -587,7 +617,7 @@ func (s *styler) value(prop string, i, end int) string {
 					open = nil
 					return ""
 				}
-				open = open[:len(open)-1]
+				open, fns = open[:len(open)-1], fns[:len(fns)-1]
 			case '{', '}':
 				s.errAt(i, "unexpected %c", c)
 				open = nil
@@ -622,15 +652,27 @@ func (s *styler) url(i, end int, next *int) string {
 		arg = strings.TrimRight(s.src[j:k-1], " \t\r\n\f")
 		out, *next = arg, k
 	}
-	switch {
-	case strings.ContainsAny(arg, "\\"):
-		s.errAt(i, "escapes are not allowed in url()")
-	case strings.Contains(arg, "$"):
+	if strings.Contains(arg, "$") {
 		s.errAt(i, "design tokens cannot be used in url(): CSS custom properties do not work there")
-	case !safeStaticURL(arg):
-		s.errAt(i, "unsafe URL in url(): only http, https, mailto, tel and relative URLs are allowed")
+	} else {
+		s.checkURL(i, arg, "url")
 	}
 	return "url(" + out + ")"
+}
+
+// urlFuncs are the functions other than url() whose string arguments are
+// URLs.
+var urlFuncs = map[string]bool{"image-set": true, "-webkit-image-set": true, "src": true}
+
+// checkURL checks the URL arg at off, given to the function fn: the same
+// URLs as a static href.
+func (s *styler) checkURL(off int, arg, fn string) {
+	switch {
+	case strings.Contains(arg, "\\"):
+		s.errAt(off, "escapes are not allowed in %s()", fn)
+	case !safeStaticURL(arg):
+		s.errAt(off, "unsafe URL in %s(): only http, https, mailto, tel and relative URLs are allowed", fn)
+	}
 }
 
 // token resolves the design token $name at off, used in property prop,
@@ -766,13 +808,24 @@ func colorOnly(p string) bool {
 // checkToken checks the value of a design token of type kind, which is
 // written into the CSS as it is. It returns what is wrong, or "".
 func checkToken(kind, v string) string {
+	// Control characters include \n, \r and \f, which end a CSS string:
+	// one in a quoted token would leave the string open and turn the rest
+	// of style.css into part of the :root rule.
+	for i := 0; i < len(v); i++ {
+		if v[i] < 0x20 || v[i] == 0x7f {
+			return fmt.Sprintf("a token cannot contain a control character (U+%04X)", v[i])
+		}
+	}
 	if strings.TrimSpace(v) == "" {
 		return "a token cannot be empty"
 	}
-	for _, bad := range []string{";", "{", "}", "<", "\\", "url(", "expression(", "/*", "\n", "\r"} {
+	for _, bad := range []string{";", "{", "}", "<", "\\", "url(", "expression(", "/*"} {
 		if strings.Contains(strings.ToLower(v), bad) {
 			return fmt.Sprintf("a token cannot contain %q", bad)
 		}
+	}
+	if strings.Contains(strings.ToLower(strings.ReplaceAll(v, " ", "")), "javascript:") {
+		return `a token cannot contain "javascript:"`
 	}
 	if !balanced(v) {
 		return "its quotes, parentheses or brackets do not balance"
@@ -1042,6 +1095,9 @@ func (s *styler) selector(i, end int) (string, bool) {
 			}
 			cur.WriteString(collapseCSS(s.src[j:next]))
 		case '\\':
+			if j+1 < end && strings.IndexByte("\n\r\f", s.src[j+1]) >= 0 {
+				bad(j, "a backslash cannot end a line in a selector")
+			}
 			next = escapeEnd(s.src, j, end)
 			cur.WriteString(s.src[j:next])
 		default:

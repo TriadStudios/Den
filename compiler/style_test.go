@@ -41,6 +41,7 @@ func TestScopeSelectors(t *testing.T) {
 		{`p { font: 16px / 1.5 a , b; margin: calc( 1px + 2px ) auto !important }`, `p[d-x]{font:16px / 1.5 a,b;margin:calc(1px + 2px) auto !important}`},
 		{`p { background: url( "a b.png" ) , URL(img/x.png); }`, `p[d-x]{background:url("a b.png"),url(img/x.png)}`},
 		{`p { --gap : 4px ; }`, `p[d-x]{--gap:4px}`},
+		{`p { background-image: image-set("a.png" 1x, url(b.png) 2x, "https://x.test/c.avif" type("image/avif")); }`, `p[d-x]{background-image:image-set("a.png" 1x,url(b.png) 2x,"https://x.test/c.avif" type("image/avif"))}`},
 		{`p {} a { }`, ``},
 		{`@media (min-width: 40rem) and (max-width: 60rem) { .a, .b { margin: 0 } }`, `@media (min-width: 40rem) and (max-width: 60rem){.a[d-x],.b[d-x]{margin:0}}`},
 		{`@MEDIA screen { @supports (display: grid) { @container (width > 1px) { a b { margin: 0 } } } }`, `@media screen{@supports (display: grid){@container (width > 1px){a[d-x] b[d-x]{margin:0}}}}`},
@@ -68,12 +69,14 @@ a { animation: spin 1s linear infinite, other 2s; }
 b { animation-name: spin-slow, spin; -webkit-animation: 1s spin; transition: spin 1s; }
 @media (prefers-reduced-motion: no-preference) { @keyframes spin-slow { to { opacity: 1 } } }
 c { animation: var(--spin) 1s; content: "spin"; }
+d { animation: spin 1s ease-in-out infinite alternate both, ease 2s; }
 `
 	want := `a[d-x]{animation:spin-d-x 1s linear infinite,other 2s}
 @keyframes spin-d-x{from{transform:rotate(0)}50%,75.5%{opacity:.5}to{transform:rotate(1turn)}}
 b[d-x]{animation-name:spin-slow-d-x,spin-d-x;-webkit-animation:1s spin-d-x;transition:spin 1s}
 @media (prefers-reduced-motion: no-preference){@keyframes spin-slow-d-x{to{opacity:1}}}
 c[d-x]{animation:var(--spin) 1s;content:"spin"}
+d[d-x]{animation:spin-d-x 1s ease-in-out infinite alternate both,ease 2s}
 `
 	got, errs := scopeBlock(src)
 	if len(errs) > 0 {
@@ -131,7 +134,7 @@ func TestCheckToken(t *testing.T) {
 		"Length":   {"16", "px", "1.5.5px", "16 px", "--4px", "calc(1px", "calc(1px) 2px", "auto"},
 		"Duration": {"150", "ms", "1 s", "fast"},
 		"Font":     {"a,,b", `"unclosed`, `"a"b"`, "1font", "a, "},
-		"Token":    {"a;b", `"a;b"`, "a{", "}", "<x", `a\b`, "url(x)", "EXPRESSION(1)", "a /* b", "a\nb", "(a", `"a`, "  "},
+		"Token":    {"'a\fb'", "a\tb", "\x00", "a\x7f", "a\x1b", "JAVA script:x", "a;b", `"a;b"`, "a{", "}", "<x", `a\b`, "url(x)", "EXPRESSION(1)", "a /* b", "a\nb", "(a", `"a`, "  "},
 	}
 	for kind, vs := range ok {
 		for _, v := range vs {
@@ -262,6 +265,50 @@ component App() {
     <p>{n} {style.n} {k} {m} {x.style}</p>
 }`, `log(html());`)
 	expectLines(t, got, `<p>5 2 2 4 3</p>`)
+}
+
+// A statement line that starts `style {` opens a style block, even where
+// Go would read a composite literal of a type named style; in parentheses
+// the literal is Go again. The error says so only when the program has
+// its own style.
+func TestStyleLiteralStatements(t *testing.T) {
+	got := runApp(t, `
+type style []int
+type look struct{ F func() int }
+
+func two() int { return 2 }
+
+component App() {
+    s := style{1, 2}
+    (style{1, 2})[0] = 5
+    n := (look{F: two}).F()
+    (look{F: two}).F()
+    <p>{s[0]} {n} {len(style{3})}</p>
+}`, `log(html());`)
+	expectLines(t, got, `<p>1 2 1</p>`)
+	_, err := compileOne(`
+component App() {
+    style{
+        1, // it's
+        2,
+    }[0] = 5
+    <p>x</p>
+}`)
+	if err == nil || !strings.Contains(err.Error(), "app.den:4:17: unterminated string in style block") || strings.Contains(err.Error(), literalHint) {
+		t.Errorf("got %v", err)
+	}
+	// The program's own style may be in another file, or an import.
+	for _, other := range []string{"type style []int", `import style "strings"
+func f() string { return style.ToUpper("x") }`} {
+		_, err = Compile([]Source{{Name: "a.den", Code: other + "\n"}, {Name: "b.den", Code: `
+component App() {
+    style{ 1, "x }
+    <p>x</p>
+}`}})
+		if err == nil || !strings.Contains(err.Error(), "b.den:3:15: unterminated string in style block; "+literalHint) {
+			t.Errorf("%s: got %v", other, err)
+		}
+	}
 }
 
 // Elements from a component's own markup carry its scope; the elements

@@ -32,6 +32,8 @@ type Error struct {
 	File string
 	Pos  Pos
 	Msg  string
+
+	styleScan bool // the CSS of a style block did not scan
 }
 
 func (e *Error) Error() string {
@@ -212,7 +214,8 @@ type parser_ struct {
 
 type bailout struct{ err *Error }
 
-// Parse parses a .den source file.
+// Parse parses a .den source file. On an error it also returns what it
+// parsed before it.
 func Parse(name, src string) (f *File, err error) {
 	p := &parser_{file: name, src: src}
 	p.lines = append(p.lines, 0)
@@ -227,7 +230,7 @@ func Parse(name, src string) (f *File, err error) {
 			if !ok {
 				panic(r)
 			}
-			f, err = nil, ErrorList{b.err}
+			err = ErrorList{b.err}
 		}
 	}()
 	f = &File{Name: name}
@@ -622,14 +625,21 @@ func (p *parser_) styleAt(off int) bool {
 // read as CSS: strings, comments and url(...) may hold anything. A line
 // that starts with `<tag` is markup, which CSS never has, so a block that
 // reaches one was not closed.
+//
+// Go allows a statement line to start `style {` only for a composite
+// literal of a type named style, used as in `style{1, 2}[0] = 5`, so a
+// block followed by '.', '[' or '(' gets an error saying how to write one.
 func (p *parser_) scanStyle(kw int) styleSpan {
+	fail := func(off int, msg string) {
+		panic(bailout{&Error{File: p.file, Pos: p.posAt(off), Msg: msg, styleScan: true}})
+	}
 	open := strings.IndexByte(p.src[kw:], '{') + kw
 	depth := 0
 	lineStart := false
 	for i := open; i < len(p.src); {
 		switch c := p.src[i]; {
 		case lineStart && c == '<' && i+1 < len(p.src) && isLetter(p.src[i+1]):
-			p.failAt(p.posAt(kw), "unterminated style block")
+			fail(kw, "unterminated style block")
 		case c == '\n':
 			lineStart = true
 		case c != ' ' && c != '\t' && c != '\r':
@@ -637,7 +647,7 @@ func (p *parser_) scanStyle(kw int) styleSpan {
 		}
 		next, err := cssAtom(p.src, i)
 		if err != "" {
-			p.failAt(p.posAt(i), "%s", err)
+			fail(i, err)
 		}
 		switch p.src[i] {
 		case '{':
@@ -645,14 +655,23 @@ func (p *parser_) scanStyle(kw int) styleSpan {
 		case '}':
 			depth--
 			if depth == 0 {
+				j := i + 1
+				for j < len(p.src) && (p.src[j] == ' ' || p.src[j] == '\t') {
+					j++
+				}
+				if j < len(p.src) && strings.IndexByte(".[(", p.src[j]) >= 0 {
+					p.failAt(p.posAt(kw), "%s", literalHint)
+				}
 				return styleSpan{kw, open, i + 1}
 			}
 		}
 		i = next
 	}
-	p.failAt(p.posAt(kw), "unterminated style block")
+	fail(kw, "unterminated style block")
 	panic("unreachable")
 }
+
+const literalHint = "style { opens a style block; write (style{...}) for a composite literal of type style"
 
 func (p *parser_) parseElement(inSVG bool) *Element {
 	el := &Element{Pos: p.posAt(p.off)}
