@@ -20,6 +20,7 @@ var runtimeJS string
 // Result is a compiled program.
 type Result struct {
 	JS         string   // complete, self-contained app.js
+	CSS        string   // the scoped CSS of the style blocks, for style.css; empty without any
 	Components []string // component names, in source order
 	Router     bool     // the app uses route or path, so it routes by URL path
 }
@@ -50,8 +51,12 @@ func Compile(sources []Source) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	scopes, css, errs := styles(ck)
+	if len(errs) > 0 {
+		return nil, errs.sorted()
+	}
 	var body strings.Builder
-	e := &emitter{ck: ck, w: &body, tpls: map[string]string{}}
+	e := &emitter{ck: ck, w: &body, tpls: map[string]string{}, scopes: scopes}
 	for _, fd := range ck.funcs {
 		e.funcDecl(fd)
 	}
@@ -83,7 +88,7 @@ func Compile(sources []Source) (*Result, error) {
 	out.WriteString(runtimeFor(code))
 	out.WriteString(code)
 	out.WriteString("})();\n")
-	return &Result{JS: out.String(), Components: names, Router: e.router}, nil
+	return &Result{JS: out.String(), CSS: css, Components: names, Router: e.router}, nil
 }
 
 var (
@@ -141,8 +146,9 @@ type emitter struct {
 	errs    ErrorList
 	n       int // counter for generated names
 	cc      *checkedComponent
-	results []string // named results of the function being emitted
-	router  bool     // route or path is used
+	results []string              // named results of the function being emitted
+	router  bool                  // route or path is used
+	scopes  map[*Component]string // the scope attribute of each component with a style block
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -403,6 +409,11 @@ func (e *emitter) tnodes(nodes []Node, svg ns) []*tnode {
 				if a.Kind != AttrExpr {
 					t.attrs = append(t.attrs, a)
 				}
+			}
+			// The component whose markup this is: for markup passed to a
+			// den.Children prop, that is the caller.
+			if scope := e.scopes[e.cc.c]; scope != "" {
+				t.attrs = append(t.attrs, &Attr{Name: scope, Kind: AttrStatic})
 			}
 			t.children = e.tnodes(n.Children, t.svg.inner(n.Tag))
 			out = append(out, t)

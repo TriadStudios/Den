@@ -1,0 +1,1203 @@
+package compiler
+
+import (
+	"fmt"
+	"go/constant"
+	"go/types"
+	"hash/fnv"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Style blocks. A component's `style { ... }` holds CSS that applies only
+// to the elements its own markup creates. Each such element gets a static
+// scope attribute (d-xxxxx) in its template, and every compound selector
+// in the block is narrowed to it, so a rule can neither leak out of the
+// component nor into the components it uses. `$name` in a value is a
+// design token: a package-level Go constant of type den.Color, den.Length,
+// den.Duration, den.Font or den.Token, checked at compile time and emitted
+// as a CSS custom property so style.css can theme it.
+//
+// The CSS of every block, scoped, goes into style.css ahead of the app's
+// own: the page's CSP allows no inline styles, and none of it needs any
+// JavaScript at run time.
+
+// cssAtom returns the end of the CSS string, comment or unquoted url(...)
+// that starts at i, or i+1 for anything else, and a message if it is not
+// terminated.
+func cssAtom(src string, i int) (int, string) {
+	switch c := src[i]; {
+	case c == '"' || c == '\'':
+		for j := i + 1; j < len(src); j++ {
+			switch src[j] {
+			case '\\':
+				j++
+			case c:
+				return j + 1, ""
+			case '\n':
+				return len(src), "unterminated string in style block"
+			}
+		}
+		return len(src), "unterminated string in style block"
+	case c == '/' && strings.HasPrefix(src[i:], "/*"):
+		if end := strings.Index(src[i+2:], "*/"); end >= 0 {
+			return i + end + 4, ""
+		}
+		return len(src), "unterminated comment in style block"
+	case (c == 'u' || c == 'U') && len(src) >= i+4 && strings.EqualFold(src[i:i+4], "url(") && (i == 0 || !cssNameChar(src[i-1])):
+		j := i + 4
+		for j < len(src) && isCSSSpace(src[j]) {
+			j++
+		}
+		if j < len(src) && (src[j] == '"' || src[j] == '\'') {
+			return i + 1, "" // a quoted url is a function holding a string
+		}
+		for ; j < len(src); j++ {
+			switch src[j] {
+			case '\\':
+				j++
+			case ')':
+				return j + 1, ""
+			case '\n':
+				return len(src), "unterminated url( in style block"
+			}
+		}
+		return len(src), "unterminated url( in style block"
+	}
+	return i + 1, ""
+}
+
+func isCSSSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
+
+func cssNameStart(c byte) bool { return isLetter(c) || c == '-' || c >= 0x80 }
+
+func cssNameChar(c byte) bool { return cssNameStart(c) || isDigit(c) }
+
+// tokenTypes are the design token types of the built-in package den.
+var tokenTypes = []string{"Color", "Length", "Duration", "Font", "Token"}
+
+// tokenKind returns the name of t's design token type, or "".
+func tokenKind(t types.Type) string {
+	n, ok := types.Unalias(t).(*types.Named)
+	if !ok || n.Obj().Pkg() == nil || n.Obj().Pkg().Path() != "den" || !slices.Contains(tokenTypes, n.Obj().Name()) {
+		return ""
+	}
+	return n.Obj().Name()
+}
+
+// scopeNames gives each component with a style block its scope attribute:
+// d- and five base-36 digits of an FNV hash of its name, so the name stays
+// the same from one build to the next. Components are taken in name order,
+// and one whose name is already taken hashes its name again with a count.
+func scopeNames(comps []*Component) map[*Component]string {
+	sorted := slices.Clone(comps)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	taken := map[string]bool{}
+	out := map[*Component]string{}
+	for _, c := range sorted {
+		for n := 0; ; n++ {
+			key := c.Name
+			if n > 0 {
+				key += "#" + strconv.Itoa(n)
+			}
+			h := fnv.New32a()
+			h.Write([]byte(key))
+			s := strconv.FormatUint(uint64(h.Sum32()%(36*36*36*36*36)), 36)
+			name := "d-" + strings.Repeat("0", 5-len(s)) + s
+			if !taken[name] {
+				taken[name] = true
+				out[c] = name
+				break
+			}
+		}
+	}
+	return out
+}
+
+// styles checks every design token and compiles every style block. It
+// returns each styled component's scope attribute and the CSS: a :root
+// rule giving the tokens the blocks use, then each component's rules in
+// component order. The CSS is empty when no component has a style block.
+func styles(ck *checked) (map[*Component]string, string, ErrorList) {
+	var errs ErrorList
+	for id, obj := range ck.info.Defs {
+		if c, ok := obj.(*types.Const); ok && tokenKind(c.Type()) != "" {
+			if msg := checkToken(tokenKind(c.Type()), constant.StringVal(c.Val())); msg != "" {
+				p := ck.fset.Position(id.Pos())
+				errs = append(errs, &Error{File: p.Filename, Pos: Pos{p.Line, p.Column}, Msg: fmt.Sprintf("design token %s: %s", c.Name(), msg)})
+			}
+		}
+	}
+	var styled []*Component
+	for _, cc := range ck.comps {
+		if cc.c.Style != nil {
+			styled = append(styled, cc.c)
+		}
+	}
+	scopes := scopeNames(styled)
+	vars := map[string]string{}
+	var body strings.Builder
+	for _, c := range styled {
+		s := &styler{ck: ck, c: c, src: c.Style.Src, attr: scopes[c], vars: vars, errs: &errs}
+		s.sheet(&body)
+	}
+	if len(errs) > 0 {
+		return nil, "", errs
+	}
+	var out strings.Builder
+	if len(vars) > 0 {
+		names := make([]string, 0, len(vars))
+		for n := range vars {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		out.WriteString(":root{")
+		for i, n := range names {
+			if i > 0 {
+				out.WriteByte(';')
+			}
+			out.WriteString("--" + n + ":" + vars[n])
+		}
+		out.WriteString("}\n")
+	}
+	out.WriteString(body.String())
+	return scopes, out.String(), nil
+}
+
+// styler compiles one component's style block.
+type styler struct {
+	ck   *checked
+	c    *Component
+	src  string
+	attr string            // the scope attribute
+	kf   map[string]bool   // the block's @keyframes names
+	vars map[string]string // the custom properties tokens use, and their values
+	errs *ErrorList
+}
+
+// pos returns the position in the .den file of src[off].
+func (s *styler) pos(off int) Pos {
+	base := s.c.Style.Pos
+	nl := strings.LastIndexByte(s.src[:off], '\n')
+	if nl < 0 {
+		return Pos{base.Line, base.Col + off}
+	}
+	return Pos{base.Line + strings.Count(s.src[:off], "\n"), off - nl}
+}
+
+func (s *styler) errAt(off int, format string, args ...any) {
+	*s.errs = append(*s.errs, &Error{File: s.c.File, Pos: s.pos(off), Msg: fmt.Sprintf(format, args...)})
+}
+
+// sheet writes the block's rules, one top-level rule per line.
+func (s *styler) sheet(w *strings.Builder) {
+	// Code in CSS: old browsers ran expression(...) and javascript: URLs.
+	lower := strings.ToLower(s.src)
+	for i := 0; i < len(s.src); {
+		next, _ := cssAtom(s.src, i)
+		for j := i; j < next && !strings.HasPrefix(s.src[i:], "/*"); j++ {
+			for _, bad := range []string{"expression(", "javascript:"} {
+				if strings.HasPrefix(lower[j:], bad) {
+					s.errAt(j, "%q is not allowed in a style block", bad)
+				}
+			}
+		}
+		i = next
+	}
+	s.kf = map[string]bool{}
+	s.keyframes(0, len(s.src))
+	s.rules(0, len(s.src), w, true)
+}
+
+// skipSpace moves past whitespace and comments.
+func (s *styler) skipSpace(i, end int) int {
+	for i < end {
+		switch {
+		case isCSSSpace(s.src[i]):
+			i++
+		case strings.HasPrefix(s.src[i:end], "/*"):
+			i, _ = cssAtom(s.src, i)
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// find returns the offset of the first byte in stops in src[i:end] that is
+// outside strings, comments, parentheses and brackets, or end.
+func (s *styler) find(i, end int, stops string) int {
+	depth := 0
+	for i < end {
+		c := s.src[i]
+		switch {
+		case depth == 0 && strings.IndexByte(stops, c) >= 0:
+			return i
+		case c == '(' || c == '[':
+			depth++
+		case (c == ')' || c == ']') && depth > 0:
+			depth--
+		}
+		i, _ = cssAtom(s.src, i)
+	}
+	return end
+}
+
+// preludeEnd returns the offset of the '{' or ';' that ends the selector
+// or at-rule prelude at i, or end. A '{' ends it even inside parentheses,
+// where it has no business, so an unclosed one is reported by the
+// selector rather than taking the rest of the block with it.
+func (s *styler) preludeEnd(i, end int) int {
+	for i < end && s.src[i] != '{' && s.src[i] != ';' {
+		i, _ = cssAtom(s.src, i)
+	}
+	return min(i, end)
+}
+
+// matchBrace returns the offset of the '}' that closes the '{' at open.
+// The parser checked that the braces of the block balance.
+func (s *styler) matchBrace(open, end int) int {
+	depth := 0
+	for i := open; i < end; {
+		switch s.src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+		i, _ = cssAtom(s.src, i)
+	}
+	return end
+}
+
+// atName reads the name of the at-rule at i: its end, and the name in
+// lower case.
+func (s *styler) atName(i, end int) (int, string) {
+	j := i + 1
+	for j < end && cssNameChar(s.src[j]) {
+		j++
+	}
+	return j, strings.ToLower(s.src[i+1 : j])
+}
+
+// keyframes collects the names of the block's @keyframes, so animation
+// values can name them before or after they are declared.
+func (s *styler) keyframes(i, end int) {
+	for i = s.skipSpace(i, end); i < end; i = s.skipSpace(i, end) {
+		stop := s.preludeEnd(i, end)
+		if stop >= end || s.src[stop] == ';' {
+			i = stop + 1
+			continue
+		}
+		close := s.matchBrace(stop, end)
+		if s.src[i] == '@' {
+			switch nameEnd, name := s.atName(i, end); name {
+			case "keyframes":
+				s.kf[strings.TrimSpace(s.src[nameEnd:stop])] = true
+			case "media", "supports", "container":
+				s.keyframes(stop+1, close)
+			}
+		}
+		i = close + 1
+	}
+}
+
+// rules compiles the rules in src[i:end]: the whole block, or the body of
+// an @media, @supports or @container rule.
+func (s *styler) rules(i, end int, w *strings.Builder, top bool) {
+	for i = s.skipSpace(i, end); i < end; i = s.skipSpace(i, end) {
+		start := i
+		stop := s.preludeEnd(i, end)
+		if stop >= end || s.src[stop] == ';' {
+			if s.src[start] == '@' {
+				_, name := s.atName(start, end)
+				s.errAt(start, "@%s is not allowed in a style block; put it in style.css", name)
+			} else {
+				s.errAt(start, "expected { after the selector")
+			}
+			i = stop + 1
+			continue
+		}
+		close := s.matchBrace(stop, end)
+		i = close + 1
+		var rule string
+		if s.src[start] == '@' {
+			rule = s.atRule(start, stop, close)
+		} else {
+			sel, ok := s.selectorList(start, stop)
+			decls := s.declarations(stop+1, close)
+			if ok && decls != "" {
+				rule = sel + "{" + decls + "}"
+			}
+		}
+		if rule != "" {
+			w.WriteString(rule)
+			if top {
+				w.WriteByte('\n')
+			}
+		}
+	}
+}
+
+// atRule compiles the at-rule at start whose block is src[open:close+1].
+func (s *styler) atRule(start, open, close int) string {
+	nameEnd, name := s.atName(start, open)
+	switch name {
+	case "media", "supports", "container":
+		prelude := s.value("@"+name, nameEnd, open)
+		var inner strings.Builder
+		s.rules(open+1, close, &inner, false)
+		if inner.Len() == 0 {
+			return ""
+		}
+		if prelude != "" {
+			prelude = " " + prelude
+		}
+		return "@" + name + prelude + "{" + inner.String() + "}"
+	case "keyframes":
+		kname := strings.TrimSpace(s.src[nameEnd:open])
+		if !cssIdent(kname) {
+			s.errAt(start, "@keyframes needs a name, like @keyframes fade-in")
+			return ""
+		}
+		var frames []string
+		for i := s.skipSpace(open+1, close); i < close; i = s.skipSpace(i, close) {
+			stop := s.preludeEnd(i, close)
+			if stop >= close || s.src[stop] == ';' {
+				s.errAt(i, "expected { after the keyframe selector")
+				i = stop + 1
+				continue
+			}
+			end := s.matchBrace(stop, close)
+			var sels []string
+			for _, part := range s.splitTop(i, stop) {
+				sel := strings.ToLower(strings.TrimSpace(s.src[part[0]:part[1]]))
+				if sel != "from" && sel != "to" && !isPercentage(sel) {
+					s.errAt(s.skipSpace(part[0], part[1]), "keyframe selectors are from, to or a percentage, not %q", sel)
+				}
+				sels = append(sels, sel)
+			}
+			frames = append(frames, strings.Join(sels, ",")+"{"+s.declarations(stop+1, end)+"}")
+			i = end + 1
+		}
+		return "@keyframes " + kname + "-" + s.attr + "{" + strings.Join(frames, "") + "}"
+	}
+	s.errAt(start, "@%s is not allowed in a style block; put it in style.css", name)
+	return ""
+}
+
+// cssIdent reports whether name is a plain CSS identifier.
+func cssIdent(name string) bool {
+	if name == "" || !(cssNameStart(name[0]) || name[0] == '_') || strings.HasPrefix(name, "--") || (name[0] == '-' && len(name) > 1 && isDigit(name[1])) {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !cssNameChar(name[i]) && name[i] != '_' {
+			return false
+		}
+	}
+	return name != "-"
+}
+
+func isPercentage(s string) bool {
+	n, ok := strings.CutSuffix(s, "%")
+	return ok && isNumber(n)
+}
+
+// isNumber reports whether s is a plain decimal number such as 1, 0.5,
+// .5 or 100, without a sign.
+func isNumber(s string) bool {
+	digits, dot := 0, false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case isDigit(s[i]):
+			digits++
+		case s[i] == '.' && !dot && i+1 < len(s):
+			dot = true
+		default:
+			return false
+		}
+	}
+	return digits > 0
+}
+
+// splitTop splits src[i:end] at the commas outside parentheses, brackets
+// and strings.
+func (s *styler) splitTop(i, end int) [][2]int {
+	var out [][2]int
+	for {
+		comma := s.find(i, end, ",")
+		out = append(out, [2]int{i, comma})
+		if comma >= end {
+			return out
+		}
+		i = comma + 1
+	}
+}
+
+// declarations compiles the declarations in src[i:end].
+func (s *styler) declarations(i, end int) string {
+	var out []string
+	for i < end {
+		stop := s.find(i, end, ";{")
+		if stop < end && s.src[stop] == '{' {
+			s.errAt(stop, "nested rules are not supported in a style block; write each rule with its full selector")
+			break
+		}
+		if d := s.declaration(i, stop); d != "" {
+			out = append(out, d)
+		}
+		i = stop + 1
+	}
+	return strings.Join(out, ";")
+}
+
+// declaration compiles `property: value` in src[i:end].
+func (s *styler) declaration(i, end int) string {
+	i = s.skipSpace(i, end)
+	if i >= end {
+		return ""
+	}
+	colon := s.find(i, end, ":")
+	if colon >= end {
+		s.errAt(i, "expected property: value")
+		return ""
+	}
+	name := strings.TrimRight(s.src[i:colon], " \t\r\n\f")
+	custom := strings.HasPrefix(name, "--") && len(name) > 2
+	if !custom && !cssIdent(name) {
+		s.errAt(i, "%q is not a CSS property name", name)
+		return ""
+	}
+	if custom {
+		for j := 2; j < len(name); j++ {
+			if !cssNameChar(name[j]) && name[j] != '_' {
+				s.errAt(i, "%q is not a CSS property name", name)
+				return ""
+			}
+		}
+	} else {
+		name = strings.ToLower(name)
+	}
+	if name == "behavior" || name == "-moz-binding" {
+		s.errAt(i, "%s is not allowed in a style block: it can run code", name)
+		return ""
+	}
+	errs := len(*s.errs)
+	v := s.value(name, colon+1, end)
+	if v == "" && !custom && len(*s.errs) == errs {
+		s.errAt(i, "%s has no value", name)
+		return ""
+	}
+	return name + ":" + v
+}
+
+// value compiles the value of property prop in src[i:end], or the
+// condition of an at-rule when prop is "@media" and the like: comments are
+// dropped, whitespace collapsed, tokens replaced by custom properties and
+// URLs checked. In animation values, the names of the block's @keyframes
+// become their scoped names.
+func (s *styler) value(prop string, i, end int) string {
+	var b strings.Builder
+	space := false
+	write := func(t string) {
+		if t == "" {
+			return
+		}
+		if space && b.Len() > 0 {
+			last := b.String()[b.Len()-1]
+			if last != ',' && last != '(' && t[0] != ',' && t[0] != ')' {
+				b.WriteByte(' ')
+			}
+		}
+		space = false
+		b.WriteString(t)
+	}
+	anim := strings.TrimPrefix(prop, "-webkit-") == "animation" || strings.TrimPrefix(prop, "-webkit-") == "animation-name"
+	// An open ( or [ would make the browser read the rest of style.css as
+	// part of this value, so they must balance.
+	var open []int
+	defer func() {
+		if len(open) > 0 {
+			s.errAt(open[len(open)-1], "unclosed %c", s.src[open[len(open)-1]])
+		}
+	}()
+	for i < end {
+		c := s.src[i]
+		switch {
+		case isCSSSpace(c):
+			space = true
+			i++
+		case strings.HasPrefix(s.src[i:end], "/*"):
+			space = true
+			i, _ = cssAtom(s.src, i)
+		case c == '"' || c == '\'':
+			j, _ := cssAtom(s.src, i)
+			write(s.src[i:j])
+			i = j
+		case c == '\\':
+			s.errAt(i, "escapes are only allowed inside strings in a style block")
+			i += 2
+		case c == '$':
+			j := i + 1
+			for j < end && (cssNameChar(s.src[j]) || s.src[j] == '_') {
+				j++
+			}
+			name := s.src[i+1 : j]
+			switch {
+			case name == "":
+				s.errAt(i, "stray $: a design token is written $name, like $space-4")
+			case strings.HasPrefix(prop, "@"):
+				s.errAt(i, "design tokens cannot be used in %s conditions: CSS custom properties do not work there", prop)
+			default:
+				if v := s.token(i, name, prop); v != "" {
+					write(v)
+				}
+			}
+			i = j
+		case (c == 'u' || c == 'U') && end-i >= 4 && strings.EqualFold(s.src[i:i+4], "url(") && (i == 0 || !cssNameChar(s.src[i-1])):
+			write(s.url(i, end, &i))
+		case cssNameStart(c) || c == '_' || c == '#' || isDigit(c) || (c == '.' && i+1 < end && isDigit(s.src[i+1])):
+			j := i + 1
+			for j < end && (cssNameChar(s.src[j]) || s.src[j] == '_' || (s.src[j] == '.' && !cssNameStart(c))) {
+				j++
+			}
+			word := s.src[i:j]
+			if anim && len(open) == 0 && s.kf[word] && (j >= end || s.src[j] != '(') {
+				word += "-" + s.attr
+			}
+			write(word)
+			i = j
+		default:
+			switch c {
+			case '(', '[':
+				open = append(open, i)
+			case ')', ']':
+				want := byte('(')
+				if c == ']' {
+					want = '['
+				}
+				if len(open) == 0 || s.src[open[len(open)-1]] != want {
+					s.errAt(i, "unexpected %c", c)
+					open = nil
+					return ""
+				}
+				open = open[:len(open)-1]
+			case '{', '}':
+				s.errAt(i, "unexpected %c", c)
+				open = nil
+				return ""
+			}
+			write(string(c))
+			i++
+		}
+	}
+	return b.String()
+}
+
+// url checks the url(...) at i, sets *next past it and returns it.
+func (s *styler) url(i, end int, next *int) string {
+	j := i + 4
+	for j < end && isCSSSpace(s.src[j]) {
+		j++
+	}
+	var arg, out string
+	if j < end && (s.src[j] == '"' || s.src[j] == '\'') {
+		k, _ := cssAtom(s.src, j)
+		arg, out = s.src[j+1:k-1], s.src[j:k]
+		j = s.skipSpace(k, end)
+		if j >= end || s.src[j] != ')' {
+			s.errAt(i, "expected ) to close url(")
+			*next = s.find(j, end, ")") + 1
+			return ""
+		}
+		*next = j + 1
+	} else {
+		k, _ := cssAtom(s.src, i)
+		arg = strings.TrimRight(s.src[j:k-1], " \t\r\n\f")
+		out, *next = arg, k
+	}
+	switch {
+	case strings.ContainsAny(arg, "\\"):
+		s.errAt(i, "escapes are not allowed in url()")
+	case strings.Contains(arg, "$"):
+		s.errAt(i, "design tokens cannot be used in url(): CSS custom properties do not work there")
+	case !safeStaticURL(arg):
+		s.errAt(i, "unsafe URL in url(): only http, https, mailto, tel and relative URLs are allowed")
+	}
+	return "url(" + out + ")"
+}
+
+// token resolves the design token $name at off, used in property prop,
+// records its custom property and returns var(--name).
+func (s *styler) token(off int, name, prop string) string {
+	camel, ok := tokenCamel(name)
+	if !ok {
+		s.errAt(off, "$%s is not a design token name; write it in kebab case, like $space-4", name)
+		return ""
+	}
+	want := "want a const " + strings.ToUpper(camel[:1]) + camel[1:] + " of type den.Color, den.Length, den.Duration, den.Font or den.Token"
+	var found []*types.Const
+	for _, n := range []string{strings.ToLower(camel[:1]) + camel[1:], strings.ToUpper(camel[:1]) + camel[1:]} {
+		if c, ok := s.ck.pkg.Scope().Lookup(n).(*types.Const); ok && !slices.Contains(found, c) {
+			found = append(found, c)
+		}
+	}
+	switch len(found) {
+	case 0:
+		s.errAt(off, "unknown token $%s (%s)", name, want)
+		return ""
+	case 2:
+		s.errAt(off, "design token $%s is ambiguous: both %s and %s are constants", name, found[0].Name(), found[1].Name())
+		return ""
+	}
+	c := found[0]
+	kind := tokenKind(c.Type())
+	if kind == "" {
+		s.errAt(off, "$%s is %s, not a design token type (%s)", name, errorf("%s", c.Type()), want)
+		return ""
+	}
+	if msg := tokenFits(kind, prop); msg != "" {
+		s.errAt(off, "$%s is a den.%s, %s", name, kind, msg)
+		return ""
+	}
+	v := kebab(c.Name())
+	s.vars[v] = strings.TrimSpace(constant.StringVal(c.Val()))
+	return "var(--" + v + ")"
+}
+
+// tokenCamel turns a token's kebab-case name into the camel case of the
+// constant it names: space-4 is space4, radius-lg is radiusLg.
+func tokenCamel(name string) (string, bool) {
+	parts := strings.Split(name, "-")
+	var b strings.Builder
+	for i, p := range parts {
+		if p == "" {
+			return "", false
+		}
+		for j := 0; j < len(p); j++ {
+			if !isLetter(p[j]) && !isDigit(p[j]) || p[j] == '_' {
+				return "", false
+			}
+		}
+		if i > 0 {
+			p = strings.ToUpper(p[:1]) + p[1:]
+		}
+		b.WriteString(p)
+	}
+	return b.String(), isLetter(name[0])
+}
+
+// kebab is the custom property name of the constant name: Space4 is
+// space-4 and RadiusLg is radius-lg, so tokenCamel leads back to it.
+func kebab(name string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case i > 0 && 'A' <= c && c <= 'Z':
+			b.WriteByte('-')
+			c += 'a' - 'A'
+		case i > 0 && isDigit(c) && !isDigit(name[i-1]):
+			b.WriteByte('-')
+		case i == 0 && 'A' <= c && c <= 'Z':
+			c += 'a' - 'A'
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// tokenFits reports why a token of type kind cannot be used in property
+// prop, or "" when it can. Only properties that take nothing else are
+// checked; shorthands and unknown properties take any token.
+func tokenFits(kind, prop string) string {
+	if strings.HasPrefix(prop, "--") {
+		return ""
+	}
+	for _, v := range []string{"-webkit-", "-moz-", "-ms-", "-o-"} {
+		prop = strings.TrimPrefix(prop, v)
+	}
+	switch kind {
+	case "Color":
+		if lengthOnly(prop) {
+			return "but " + prop + " takes a length"
+		}
+	case "Length":
+		if colorOnly(prop) {
+			return "but " + prop + " takes a color"
+		}
+	case "Duration":
+		if !strings.HasPrefix(prop, "transition") && !strings.HasPrefix(prop, "animation") {
+			return "which only transition and animation properties take"
+		}
+	case "Font":
+		if prop != "font-family" && prop != "font" {
+			return "which only font-family and font take"
+		}
+	}
+	return ""
+}
+
+func lengthOnly(p string) bool {
+	switch p {
+	case "width", "height", "min-width", "max-width", "min-height", "max-height",
+		"top", "right", "bottom", "left", "font-size", "line-height", "letter-spacing":
+		return true
+	}
+	return strings.HasPrefix(p, "padding") || strings.HasPrefix(p, "margin") || strings.HasPrefix(p, "inset") ||
+		p == "gap" || strings.HasSuffix(p, "-gap") ||
+		strings.HasPrefix(p, "border") && strings.HasSuffix(p, "radius")
+}
+
+func colorOnly(p string) bool {
+	switch p {
+	case "color", "background-color", "outline-color", "fill", "stroke", "accent-color", "caret-color", "text-decoration-color":
+		return true
+	}
+	return strings.HasPrefix(p, "border") && strings.HasSuffix(p, "-color")
+}
+
+// checkToken checks the value of a design token of type kind, which is
+// written into the CSS as it is. It returns what is wrong, or "".
+func checkToken(kind, v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "a token cannot be empty"
+	}
+	for _, bad := range []string{";", "{", "}", "<", "\\", "url(", "expression(", "/*", "\n", "\r"} {
+		if strings.Contains(strings.ToLower(v), bad) {
+			return fmt.Sprintf("a token cannot contain %q", bad)
+		}
+	}
+	if !balanced(v) {
+		return "its quotes, parentheses or brackets do not balance"
+	}
+	lv := strings.ToLower(strings.TrimSpace(v))
+	switch kind {
+	case "Color":
+		if !isColor(lv) {
+			return fmt.Sprintf("%q is not a color (want a hex color like #fff, a function like rgb(...) or oklch(...), transparent, currentColor or a color name)", v)
+		}
+	case "Length":
+		if !isLength(lv) {
+			return fmt.Sprintf("%q is not a length (want 0, a number with a unit like 16px or 1.5rem, or calc(), min(), max() or clamp())", v)
+		}
+	case "Duration":
+		if !isDuration(lv) {
+			return fmt.Sprintf("%q is not a duration (want a number of ms or s, like 150ms)", v)
+		}
+	case "Font":
+		if !isFont(strings.TrimSpace(v)) {
+			return fmt.Sprintf("%q is not a list of font families (want names separated by commas, like system-ui, \"Segoe UI\", sans-serif)", v)
+		}
+	}
+	return ""
+}
+
+// balanced reports whether the strings in v are closed and its
+// parentheses and brackets balance.
+func balanced(v string) bool {
+	var stack []byte
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; c {
+		case '"', '\'':
+			j := strings.IndexByte(v[i+1:], c)
+			if j < 0 {
+				return false
+			}
+			i += j + 1
+		case '(':
+			stack = append(stack, ')')
+		case '[':
+			stack = append(stack, ']')
+		case ')', ']':
+			if len(stack) == 0 || stack[len(stack)-1] != c {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	return len(stack) == 0
+}
+
+// cssFunc reports whether v is one call of a function in names, such as
+// rgb(...), with nothing after its closing parenthesis.
+func cssFunc(v string, names ...string) bool {
+	open := strings.IndexByte(v, '(')
+	return open > 0 && slices.Contains(names, v[:open]) && closesAtEnd(v[open:])
+}
+
+// closesAtEnd reports whether the '(' at the start of v is closed by the
+// last byte of v.
+func closesAtEnd(v string) bool {
+	depth := 0
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i == len(v)-1
+			}
+		}
+	}
+	return false
+}
+
+func isColor(v string) bool {
+	if h, ok := strings.CutPrefix(v, "#"); ok {
+		for i := 0; i < len(h); i++ {
+			if !isDigit(h[i]) && !('a' <= h[i] && h[i] <= 'f') {
+				return false
+			}
+		}
+		return len(h) == 3 || len(h) == 4 || len(h) == 6 || len(h) == 8
+	}
+	return v == "transparent" || v == "currentcolor" || cssColors[v] ||
+		cssFunc(v, "rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color", "color-mix")
+}
+
+func isLength(v string) bool {
+	if v == "0" || cssFunc(v, "calc", "min", "max", "clamp") {
+		return true
+	}
+	n := trimSign(v)
+	i := 0
+	for i < len(n) && (isDigit(n[i]) || n[i] == '.') {
+		i++
+	}
+	return i > 0 && isNumber(n[:i]) && cssUnits[n[i:]]
+}
+
+func isDuration(v string) bool {
+	n := trimSign(v)
+	unit := "s"
+	if strings.HasSuffix(n, "ms") {
+		unit = "ms"
+	}
+	num, ok := strings.CutSuffix(n, unit)
+	return ok && isNumber(num)
+}
+
+func trimSign(v string) string {
+	if v != "" && (v[0] == '+' || v[0] == '-') {
+		return v[1:]
+	}
+	return v
+}
+
+// isFont reports whether v is a comma-separated list of font family
+// names, each a quoted string or one or more identifiers.
+func isFont(v string) bool {
+	for _, fam := range strings.Split(v, ",") {
+		fam = strings.TrimSpace(fam)
+		if fam == "" {
+			return false
+		}
+		if q := fam[0]; q == '"' || q == '\'' {
+			if len(fam) < 2 || fam[len(fam)-1] != q || strings.IndexByte(fam[1:len(fam)-1], q) >= 0 {
+				return false
+			}
+			continue
+		}
+		for _, word := range strings.Fields(fam) {
+			if !cssIdent(word) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// cssUnits are the CSS length and percentage units.
+var cssUnits = map[string]bool{}
+
+// cssColors are the CSS named colors.
+var cssColors = map[string]bool{}
+
+func init() {
+	for _, u := range strings.Fields(`% px rem em ex ch lh rlh cap ic rex rch rcap ric
+		vw vh vi vb vmin vmax svw svh svi svb svmin svmax lvw lvh lvi lvb lvmin lvmax
+		dvw dvh dvi dvb dvmin dvmax cqw cqh cqi cqb cqmin cqmax cm mm q in pt pc fr`) {
+		cssUnits[u] = true
+	}
+	for _, c := range strings.Fields(`aliceblue antiquewhite aqua aquamarine azure beige bisque black
+		blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral
+		cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen
+		darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon
+		darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink
+		deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro
+		ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo
+		ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+		lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen
+		lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen
+		magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+		mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream
+		mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid
+		palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum
+		powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown
+		seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen
+		steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow
+		yellowgreen`) {
+		cssColors[c] = true
+	}
+}
+
+// selectorList narrows each selector in src[i:end] to the component.
+func (s *styler) selectorList(i, end int) (string, bool) {
+	var out []string
+	ok := true
+	for _, part := range s.splitTop(i, end) {
+		sel, good := s.selector(part[0], part[1])
+		ok = ok && good
+		out = append(out, sel)
+	}
+	return strings.Join(out, ","), ok
+}
+
+// selector narrows the complex selector in src[i:end] to the component:
+// every compound selector in it gets the scope attribute, before any
+// pseudo-element. Arguments of pseudo-classes such as :not() and :is()
+// stay as they are written.
+func (s *styler) selector(i, end int) (string, bool) {
+	var comps []string
+	var offs []int
+	var combs []byte
+	var cur strings.Builder
+	curOff := 0
+	comb := byte(0) // the combinator since the last compound
+	ok := true
+	bad := func(off int, format string, args ...any) {
+		s.errAt(off, format, args...)
+		ok = false
+	}
+	endCompound := func() {
+		if cur.Len() == 0 {
+			return
+		}
+		if len(comps) > 0 {
+			combs = append(combs, comb)
+		}
+		comps, offs = append(comps, cur.String()), append(offs, curOff)
+		cur.Reset()
+		comb = 0
+	}
+	for j := i; j < end; {
+		c := s.src[j]
+		switch {
+		case strings.HasPrefix(s.src[j:end], "/*"):
+			j, _ = cssAtom(s.src, j)
+			continue
+		case isCSSSpace(c):
+			endCompound()
+			if comb == 0 {
+				comb = ' '
+			}
+			j++
+			continue
+		case c == '>' || c == '+' || c == '~':
+			endCompound()
+			switch {
+			case len(comps) == 0:
+				bad(j, "a selector cannot start with %c", c)
+			case comb != 0 && comb != ' ':
+				bad(j, "two combinators in a row in a selector")
+			}
+			comb = c
+			j++
+			continue
+		case c == '&':
+			bad(j, "& (CSS nesting) is not supported in a style block; write each rule with its full selector")
+		case c == '$':
+			bad(j, "design tokens cannot be used in selectors")
+		case c == ')' || c == ']':
+			bad(j, "unexpected %c in selector", c)
+		}
+		if cur.Len() == 0 {
+			curOff = j
+		}
+		var next int
+		switch c {
+		case '(', '[':
+			closer := ")"
+			if c == '[' {
+				closer = "]"
+			}
+			next = s.find(j+1, end, closer) + 1
+			if next > end {
+				bad(j, "unclosed %c in selector", c)
+				next = end
+			}
+			for k := j; k < next; {
+				if s.src[k] == '{' || s.src[k] == '}' {
+					bad(k, "unexpected %c in selector", s.src[k])
+				}
+				k, _ = cssAtom(s.src, k)
+			}
+			cur.WriteString(collapseCSS(s.src[j:next]))
+		case '\\':
+			next = escapeEnd(s.src, j, end)
+			cur.WriteString(s.src[j:next])
+		default:
+			next, _ = cssAtom(s.src, j)
+			cur.WriteString(s.src[j:next])
+		}
+		j = next
+	}
+	endCompound()
+	switch {
+	case len(comps) == 0:
+		bad(i, "empty selector")
+		return "", false
+	case comb != 0 && comb != ' ':
+		bad(s.skipSpace(i, end), "a selector cannot end with a combinator")
+	}
+	var b strings.Builder
+	for k, comp := range comps {
+		if k > 0 {
+			if combs[k-1] != ' ' {
+				b.WriteByte(combs[k-1])
+			} else {
+				b.WriteByte(' ')
+			}
+		}
+		if name := pageCompound(comp); name != "" {
+			bad(offs[k], "%s is outside every component, so a component's style can never match it; put page-wide styles in style.css", name)
+		}
+		at := pseudoElement(comp)
+		b.WriteString(comp[:at] + "[" + s.attr + "]" + comp[at:])
+	}
+	return b.String(), ok
+}
+
+// escapeEnd returns the end of the CSS escape at i: a backslash and one
+// character, or up to six hex digits and one optional space.
+func escapeEnd(src string, i, end int) int {
+	j := i + 1
+	if j >= end {
+		return end
+	}
+	if !isHex(src[j]) {
+		return j + 1
+	}
+	for k := 0; k < 6 && j < end && isHex(src[j]); k++ {
+		j++
+	}
+	if j < end && isCSSSpace(src[j]) {
+		j++
+	}
+	return j
+}
+
+func isHex(c byte) bool { return isDigit(c) || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F' }
+
+// collapseCSS drops the comments in src and collapses its whitespace,
+// leaving strings as they are.
+func collapseCSS(src string) string {
+	var b strings.Builder
+	space := false
+	for i := 0; i < len(src); {
+		switch {
+		case isCSSSpace(src[i]):
+			space = true
+			i++
+		case strings.HasPrefix(src[i:], "/*"):
+			i, _ = cssAtom(src, i)
+		default:
+			if space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			space = false
+			j := i + 1
+			switch src[i] {
+			case '"', '\'':
+				j, _ = cssAtom(src, i)
+			case '\\':
+				j = escapeEnd(src, i, len(src))
+			}
+			b.WriteString(src[i:j])
+			i = j
+		}
+	}
+	return b.String()
+}
+
+// topLevelBytes calls f with the offset of each byte of the compound selector
+// comp that is outside parentheses, brackets, strings and escapes.
+func topLevelBytes(comp string, f func(i int) bool) {
+	depth := 0
+	for i := 0; i < len(comp); {
+		c := comp[i]
+		switch {
+		case c == '\\':
+			i = escapeEnd(comp, i, len(comp))
+			continue
+		case c == '"' || c == '\'':
+			i, _ = cssAtom(comp, i)
+			continue
+		case c == '(' || c == '[':
+			depth++
+		case c == ')' || c == ']':
+			depth--
+		case depth == 0:
+			if !f(i) {
+				return
+			}
+		}
+		i++
+	}
+}
+
+// pseudoElement returns where the first pseudo-element of the compound
+// selector comp starts, or len(comp).
+func pseudoElement(comp string) int {
+	at := len(comp)
+	topLevelBytes(comp, func(i int) bool {
+		if comp[i] != ':' {
+			return true
+		}
+		if strings.HasPrefix(comp[i:], "::") {
+			at = i
+			return false
+		}
+		j := i + 1
+		for j < len(comp) && cssNameChar(comp[j]) {
+			j++
+		}
+		switch strings.ToLower(comp[i+1 : j]) {
+		case "before", "after", "first-line", "first-letter":
+			at = i
+			return false
+		}
+		return true
+	})
+	return at
+}
+
+// pageCompound returns html, body or :root when the compound selector
+// comp names one of them, which no component's markup creates.
+func pageCompound(comp string) string {
+	j := 0
+	for j < len(comp) && cssNameChar(comp[j]) {
+		j++
+	}
+	if t := strings.ToLower(comp[:j]); t == "html" || t == "body" {
+		return t
+	}
+	found := ""
+	topLevelBytes(comp, func(i int) bool {
+		if comp[i] == ':' && (i == 0 || comp[i-1] != ':') && len(comp) >= i+5 && strings.EqualFold(comp[i:i+5], ":root") &&
+			(i+5 == len(comp) || !cssNameChar(comp[i+5])) {
+			found = ":root"
+			return false
+		}
+		return true
+	})
+	return found
+}

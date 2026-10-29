@@ -467,6 +467,228 @@ component App() {
     f := path
     <p>{f().Get()}</p>
 }`, `app.den:3:10: path can only be called, not used as a value`},
+		{"second style block", `
+component App() {
+    style { p { color: red; } }
+    style { a { color: blue; } }
+    <p>x</p>
+}`, `app.den:4:5: component App has a second style block; put all of its CSS in one`},
+		{"style block after the markup", `
+component App() {
+    <p>x</p>
+    style { p { color: red; } }
+}`, `app.den:4:5: the style block of App must come before its markup`},
+		{"unterminated style block", `
+component App() {
+    style { p { color: red; }
+    <p>x</p>
+}`, `app.den:3:5: unterminated style block`},
+		{"unterminated string in a style block", `
+component App() {
+    style { p::after { content: "x; } }
+    <p>x</p>
+}`, `app.den:3:33: unterminated string in style block`},
+		{"unknown token", `
+component App() {
+    style { p { color: $ink; } }
+    <p>x</p>
+}`, `app.den:3:24: unknown token $ink (want a const Ink of type den.Color, den.Length, den.Duration, den.Font or den.Token)`},
+		{"unknown token on a later line", `
+component App() {
+    style {
+        p {
+            margin: 0;
+            color: $nope;
+        }
+    }
+    <p>x</p>
+}`, `app.den:6:20: unknown token $nope`},
+		{"ambiguous token", `
+const ink den.Color = "#000"
+const Ink den.Color = "#111"
+component App() {
+    style { p { color: $ink; } }
+    <p>x</p>
+}`, `app.den:5:24: design token $ink is ambiguous: both ink and Ink are constants`},
+		{"token that is not a token type", `
+const Ink string = "#000"
+component App() {
+    style { p { color: $ink; } }
+    <p>x</p>
+}`, `app.den:4:24: $ink is string, not a design token type`},
+		{"local const is not a token", `
+component App() {
+    const ink den.Color = "#000"
+    style { p { color: $ink; } }
+    <p>{string(ink)}</p>
+}`, `app.den:4:24: unknown token $ink`},
+		{"bad color token", `
+const Ink den.Color = "#12"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Ink: "#12" is not a color`},
+		{"bad length token", `
+const Gap den.Length = "16"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: "16" is not a length`},
+		{"bad duration token", `
+const Fast den.Duration = "fast"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Fast: "fast" is not a duration`},
+		{"bad font token", `
+const Body den.Font = "serif,,sans-serif"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Body: "serif,,sans-serif" is not a list of font families`},
+		{"token that breaks out of its declaration", `
+const Shadow den.Token = "0 0 1px red; color: blue"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Shadow: a token cannot contain ";"`},
+		{"color token that closes the rule", `
+const (
+    Ink den.Color = "red}*"
+)
+component App() {
+    <p>x</p>
+}`, `app.den:3:5: design token Ink: a token cannot contain "}"`},
+		{"token with an open string", `
+const Quote den.Token = "\"x"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Quote: its quotes, parentheses or brackets do not balance`},
+		{"color token where a length goes", `
+const Ink den.Color = "#000"
+component App() {
+    style { p { padding: $ink; } }
+    <p>x</p>
+}`, `app.den:4:26: $ink is a den.Color, but padding takes a length`},
+		{"length token where a color goes", `
+const Gap den.Length = "4px"
+component App() {
+    style { p { border-top-color: $gap; } }
+    <p>x</p>
+}`, `app.den:4:35: $gap is a den.Length, but border-top-color takes a color`},
+		{"duration token outside a transition", `
+const Fast den.Duration = "1s"
+component App() {
+    style { p { width: $fast; } }
+    <p>x</p>
+}`, `app.den:4:24: $fast is a den.Duration, which only transition and animation properties take`},
+		{"font token outside font", `
+const Body den.Font = "serif"
+component App() {
+    style { p { color: $body; } }
+    <p>x</p>
+}`, `app.den:4:24: $body is a den.Font, which only font-family and font take`},
+		{"token in a media condition", `
+const Wide den.Length = "40rem"
+component App() {
+    style { @media (min-width: $wide) { p { color: red; } } }
+    <p>x</p>
+}`, `app.den:4:32: design tokens cannot be used in @media conditions: CSS custom properties do not work there`},
+		{"import in a style block", `
+component App() {
+    style { @import "x.css"; }
+    <p>x</p>
+}`, `app.den:3:13: @import is not allowed in a style block; put it in style.css`},
+		{"font-face in a style block", `
+component App() {
+    style { @font-face { font-family: x; } }
+    <p>x</p>
+}`, `app.den:3:13: @font-face is not allowed in a style block; put it in style.css`},
+		{":root in a style block", `
+component App() {
+    style { :root { color: red; } }
+    <p>x</p>
+}`, `app.den:3:13: :root is outside every component, so a component's style can never match it; put page-wide styles in style.css`},
+		{"body in a style block", `
+component App() {
+    style { body p { color: red; } }
+    <p>x</p>
+}`, `app.den:3:13: body is outside every component`},
+		{"html in a selector list", `
+component App() {
+    style { p, HTML > a { color: red; } }
+    <p>x</p>
+}`, `app.den:3:16: html is outside every component`},
+		{"unsafe url scheme", `
+component App() {
+    style { p { background: url("vbscript:x"); } }
+    <p>x</p>
+}`, `app.den:3:29: unsafe URL in url(): only http, https, mailto, tel and relative URLs are allowed`},
+		{"unsafe unquoted url", `
+component App() {
+    style { p { background: url(data:image/png;base64,xx); } }
+    <p>x</p>
+}`, `app.den:3:29: unsafe URL in url()`},
+		{"javascript in a style block", `
+component App() {
+    style { p::after { content: "JavaScript:x"; } }
+    <p>x</p>
+}`, `app.den:3:34: "javascript:" is not allowed in a style block`},
+		{"expression in a style block", `
+component App() {
+    style { p { width: expression(1); } }
+    <p>x</p>
+}`, `app.den:3:24: "expression(" is not allowed in a style block`},
+		{"behavior in a style block", `
+component App() {
+    style { p { behavior: url(x.htc); } }
+    <p>x</p>
+}`, `app.den:3:17: behavior is not allowed in a style block: it can run code`},
+		{"stray dollar", `
+component App() {
+    style { p { margin: $ 1px; } }
+    <p>x</p>
+}`, `app.den:3:25: stray $: a design token is written $name, like $space-4`},
+		{"dollar in a selector", `
+component App() {
+    style { p$x { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:14: design tokens cannot be used in selectors`},
+		{"nested rule", `
+component App() {
+    style { p { margin: 0; a { color: red; } } }
+    <p>x</p>
+}`, `app.den:3:30: nested rules are not supported in a style block; write each rule with its full selector`},
+		{"nesting selector", `
+component App() {
+    style { &.on { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:13: & (CSS nesting) is not supported in a style block`},
+		{"selector ending in a combinator", `
+component App() {
+    style { p > { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:13: a selector cannot end with a combinator`},
+		{"declaration without a colon", `
+component App() {
+    style { p { margin; } }
+    <p>x</p>
+}`, `app.den:3:17: expected property: value`},
+		{"unclosed parenthesis in a value", `
+component App() {
+    style { p { color: rgb(0 0 0; margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:27: unclosed (`},
+		{"extra parenthesis in a value", `
+component App() {
+    style { p { width: calc(1px)); } }
+    <p>x</p>
+}`, `app.den:3:33: unexpected )`},
+		{"unclosed parenthesis in a selector", `
+component App() {
+    style { a:not(.b { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:18: unclosed ( in selector`},
+		{"bad keyframe selector", `
+component App() {
+    style { @keyframes spin { start { opacity: 0; } } }
+    <p>x</p>
+}`, `app.den:3:31: keyframe selectors are from, to or a percentage, not "start"`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
