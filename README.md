@@ -41,7 +41,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/counter` (two counters, a computed value, a bound input) | 2.3 KB |
 | `examples/todos` (add, toggle, remove, filter) | 3.9 KB |
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.3 KB |
-| `examples/router` (pages by URL path, a typed param, not found) | 4.0 KB |
+| `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.1 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -58,7 +58,7 @@ den check examples/todomvc     # type-check only
 
 Den needs Go 1.24 or later and has no dependencies beyond the Go standard
 library. An app is a directory of `.den` files with a component named `App`,
-plus an optional `style.css`.
+plus an optional `style.css` for page-wide styles.
 
 ## How it works
 
@@ -85,6 +85,9 @@ plus an optional `style.css`.
      functions of the row's item, so a row costs almost nothing beyond its
      DOM. Their elements carry a small `den-click="0"`-style attribute that
      names the handler.
+   - Each component's `style` block becomes scoped CSS in `style.css`, and
+     its elements get their scope attribute in the template, so styles cost
+     no JavaScript at all.
 4. **Runtime.** `compiler/runtime.js` is a push-pull signal graph (computed
    values are lazy and effects are glitch-free), ownership scopes (effects
    stop when the branch or row that created them goes away), keyed list
@@ -106,7 +109,10 @@ app.den:2:8: package "fmt" is not available in den; you can import strconv, stri
 Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list keys that are not strings,
 numbers or bools, calling a component as a function, children or slots
-a component does not take, and route patterns that do not fit their params.
+a component does not take, route patterns that do not fit their params,
+and design tokens that do not exist, hold a bad value or are used in the
+wrong kind of property (`app.den:9:30: $surface is a den.Color, but
+padding takes a length`).
 
 ## Security by default
 
@@ -121,7 +127,14 @@ a component does not take, and route patterns that do not fit their params.
   relative URLs pass.
 - **Strict CSP.** Generated pages ship with `script-src 'self'`, no
   `unsafe-inline`, no `unsafe-eval`, and Trusted Types enforced with zero
-  policies allowed. The runtime never needs one.
+  policies allowed. The runtime never needs one. Styles are `style-src
+  'self'` too: the browser ignores `<style>` elements and `style="..."`
+  attributes, so CSS goes in style blocks (below) or `style.css`.
+- **Checked CSS.** In style blocks, `url(...)` takes the same URLs as a
+  static `href`, and `expression(`, `javascript:`, `behavior` and
+  `-moz-binding` are compile errors. Design token values cannot contain
+  `;`, braces, `<`, backslashes, `url(` or comments, so a token can never
+  end its declaration or rule.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
@@ -252,6 +265,79 @@ component User(user *Route[UserParams]) {
   it. `route` and `Route` go together: a program with either has neither
   of den's, and using the other says so.
 
+**Styles**
+
+```go
+const (
+    Surface  den.Color  = "#ffffff"
+    Ink      den.Color  = "oklch(25% 0.02 260)"
+    Space4   den.Length = "16px"
+    RadiusLg den.Length = "12px"
+    Body     den.Font   = "system-ui, sans-serif"
+)
+
+component Card(title string, children den.Children) {
+    style {
+        .card { padding: $space-4; border-radius: $radius-lg; background: $surface; }
+        .card h2 { color: $ink; font-family: $body; }
+        @media (min-width: 40rem) { .card { padding: calc($space-4 * 2); } }
+    }
+    <section class="card"><h2>{title}</h2>{children}</section>
+}
+```
+
+- A component can have one `style { ... }` block, among its Go statements
+  before the markup. It holds CSS that applies only to the elements the
+  component's own markup makes. Each of them carries an attribute named
+  from a hash of the component's name, such as `d-k3x9q`, and every
+  compound selector in the block is narrowed to it: `.card h2` becomes
+  `.card[d-k3x9q] h2[d-k3x9q]`. So a component's rules never reach into
+  the components it uses, and theirs never reach into it. Markup passed as
+  children or a slot is styled by the component that wrote it.
+- The attribute is part of the template, so scoping costs nothing at run
+  time, and `class={...}` can replace the whole class without losing it.
+- The attribute goes before a pseudo-element (`a[d-k3x9q]::before`), and
+  the arguments of `:not()`, `:is()`, `:has()` and the like are left as
+  written. `@media`, `@supports` and `@container` rules hold rules as
+  usual. `@keyframes fade` becomes local to the component, and
+  `animation` and `animation-name` in the block follow it.
+- `$name` in a value is a design token: a package-level constant of type
+  `den.Color`, `den.Length`, `den.Duration`, `den.Font` or `den.Token`,
+  named in kebab case (`$radius-lg` is the constant `RadiusLg` or
+  `radiusLg`). Token values are checked when the app builds: a `den.Color`
+  is a hex color, a color function such as `oklch(...)`, `transparent`,
+  `currentColor` or a color name; a `den.Length` is `0`, a number with a
+  unit, or `calc()`, `min()`, `max()` or `clamp()`; a `den.Duration` is a
+  number of `ms` or `s`; a `den.Font` is a list of font families; a
+  `den.Token` is any other value. A color cannot go where only a length
+  can (`padding`, `width`, `gap` and so on), a length where only a color
+  can, a duration outside `transition` and `animation`, or a font outside
+  `font` and `font-family`.
+- Tokens become CSS custom properties: `$surface` is `var(--surface)`, and
+  the CSS starts with `:root{--surface:#ffffff;...}`, giving every token
+  the style blocks use. `den build` writes the CSS of all style blocks at
+  the top of `style.css`, followed by the app's own `style.css`, whose
+  rules come later and can give the tokens other values, for a dark theme
+  for instance:
+
+  ```css
+  @media (prefers-color-scheme: dark) {
+    :root { --surface: #1f1f1d; --ink: #f1efe8; }
+  }
+  ```
+
+- These are compile errors: a second style block, or one after the
+  markup; a token that does not exist, matches two constants (`ink` and
+  `Ink`) or is not a constant of a token type; `:root`, `html` or `body`
+  in a selector, which no component makes (page-wide styles go in
+  `style.css`); at-rules other than `@media`, `@supports`, `@container` and
+  `@keyframes` (`@import`, `@font-face` and the rest go in `style.css`);
+  nested rules and `&`; and tokens in selectors, in `@media` conditions or
+  inside `url()`, where custom properties do not work.
+- Only a statement that starts a line with `style {` begins a style
+  block, which no Go statement can do; `style` is otherwise an ordinary
+  name.
+
 **Go**
 - `type`, `const` and `func` declarations, including generic and variadic
   functions, named results and multiple return values.
@@ -283,8 +369,8 @@ and den and require to print the same thing.
 
 **Not supported yet:** pointers (other than `*Signal[T]`), methods,
 interfaces (other than `error`), package-level variables, `switch`,
-`defer`, goroutines and channels, scoped styles, server functions, and
-server-side rendering. The larger ones are on the [roadmap](#roadmap).
+`defer`, goroutines and channels, server functions, and server-side
+rendering. The larger ones are on the [roadmap](#roadmap).
 
 ## Developing den
 
@@ -314,8 +400,8 @@ rebuild of 100 components under 50 ms.
    and maps, template cloning, lazy computed values, ownership scopes,
    TodoMVC under 10 KB, and the benchmark gate.
 2. **Components, styling and motion:** children and slots (done), a typed
-   router (done), scoped styles and design tokens, animations, `den fmt` and
-   a VS Code extension.
+   router (done), scoped styles and design tokens (done), animations,
+   `den fmt` and a VS Code extension.
 3. **Server and security:** typed server functions with required `auth=`,
    `Secret[T]`, CSRF protection, SSR, source maps and `den test`.
 4. **Scale:** `<VirtualList>`, data windows, live streams, and the
