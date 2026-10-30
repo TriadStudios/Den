@@ -20,24 +20,28 @@ function $atoi(s) {
 }
 // stored keeps a signal in localStorage as JSON. dec turns parsed JSON back
 // into den values and throws if it does not fit the type, in which case the
-// initial value is used.
+// initial value is used. Each write is saved as it is made (Update calls
+// set too), not by an effect: an effect belongs to the block around it, and
+// an update that wrote the signal and removed that block would be lost.
 function $stored(key, init, dec) {
   let v = init;
   try { const j = localStorage.getItem(key); if (j !== null) v = dec(JSON.parse(j)); } catch {}
-  const s = $signal(v);
-  $effect(() => { const v = s.get(); try { localStorage.setItem(key, JSON.stringify(v, $json)); } catch {} });
+  const s = $signal(v), set = s.set, put = (v) => { try { localStorage.setItem(key, JSON.stringify(v, $json)); } catch {} };
+  s.set = (v) => { put(v); set.call(s, v); };
+  put(v);
   return s;
 }
 function $json(k, v) { return v instanceof Map ? Object.fromEntries(v) : v instanceof $Slice ? $arr(v) : v; }
 function $want(v, t) { if (typeof v !== t) throw 0; return v; }
 function $list(v) { if (!Array.isArray(v)) throw 0; return v; }
 function $obj(v) { if (typeof v !== "object" || !v || Array.isArray(v)) throw 0; return v; }
-// hash is a signal holding location.hash, kept in sync both ways.
+// hash is a signal holding location.hash, kept in sync both ways. Like
+// stored, a write moves location.hash as it is made, not by an effect.
 function $hash() {
-  const s = $signal(location.hash), f = () => s.set(location.hash);
+  const s = $signal(location.hash), set = s.set, f = () => s.set(location.hash);
+  s.set = (v) => { if (location.hash !== v) location.hash = v; set.call(s, v); };
   addEventListener("hashchange", f);
   $cleanup(() => removeEventListener("hashchange", f));
-  $effect(() => { const h = s.get(); if (location.hash !== h) location.hash = h; });
   return s;
 }
 // path is one signal per app, holding location.pathname. Setting it pushes

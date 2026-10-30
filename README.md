@@ -270,9 +270,10 @@ component App() {
 **State**
 - `signal(v)`, `computed(expr)`, `.Get()`, `.Set(v)`, `.Update(func)`.
 - `stored(key, initial)`: a signal kept in localStorage as JSON and decoded
-  back into Go types.
-- `hash()`: a signal holding `location.hash`, for simple routing. To route
-  by URL path, use `route` and `path` (below).
+  back into Go types. Each `Set` or `Update` is saved as it is made.
+- `hash()`: a signal holding `location.hash`, for simple routing; setting
+  it sets `location.hash` at once. To route by URL path, use `route` and
+  `path` (below).
 - Changes land together: the signals a handler sets update the page once,
   in a microtask after it returns, and nothing sees some of them but not
   the others. An `{if}` or `{for}` checks its condition or list again

@@ -2149,6 +2149,44 @@ click(find("button", "swap")); await tick(); show();`)
 		`<ul><li>b</li><li>a</li></ul> 2`)
 }
 
+// stored and hash save each write as it is made, Update included: a
+// write in the update that also removes the component holding the signal
+// still lands, whichever comes first.
+func TestStoredInBranch(t *testing.T) {
+	got := runApp(t, `
+component Panel(open *Signal[bool]) {
+    theme := stored("theme", "light")
+    h := hash()
+    <div>
+        <p>{theme.Get()} {h.Get()}</p>
+        <button onclick={theme.Set("dark"); h.Set("#dark"); open.Set(false)}>saveclose</button>
+        <button onclick={open.Set(false); theme.Update(func(s string) string { return s + "!" }); h.Set("#blue")}>closesave</button>
+    </div>
+}
+
+component App() {
+    open := signal(true)
+    <main>
+        {if open.Get() {
+            <Panel open={open} />
+        }}
+        <button onclick={open.Set(true)}>open</button>
+    </main>
+}`, `
+log("start", localStorage.getItem("theme"), location.hash);
+click(find("button", "saveclose")); await tick();
+log(localStorage.getItem("theme"), location.hash, html(find("main")));
+click(find("button", "open")); await tick();
+log(find("p").textContent);
+click(find("button", "closesave")); await tick();
+log(localStorage.getItem("theme"), location.hash);`)
+	expectLines(t, got,
+		`start "light" `,
+		`"dark" #dark <main><button>open</button></main>`,
+		`dark #dark`,
+		`"dark!" #blue`)
+}
+
 // TestUpdateOrderRandom builds random trees of {if} and keyed {for}
 // blocks, plain and with motion, around bindings and computed values over
 // a few signals; applies random batches of writes; and after each batch
