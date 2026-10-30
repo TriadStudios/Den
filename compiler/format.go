@@ -498,7 +498,7 @@ func (f *formatter) goExpr(src string, off, indent int) string {
 		f.goErrors(err, &s)
 	} else if vs := file.Decls[0].(*ast.GenDecl).Specs[0].(*ast.ValueSpec); len(file.Decls) == 1 && len(vs.Values) == 1 {
 		if x, ok := printNode(fset, file, vs.Values[0], indent); ok && strings.HasPrefix(x, "f(") && strings.HasSuffix(x, ")") {
-			out = x[2 : len(x)-1]
+			out = strings.TrimLeft(x[2:len(x)-1], " ") // go/printer puts a blank before a leading comment
 		}
 	}
 	f.cache[key] = out
@@ -1200,9 +1200,11 @@ func (m *mprinter) frozenElement(e *mElem) {
 }
 
 func (m *mprinter) interp(a *mInterp) string {
-	t := strings.TrimSpace(a.raw)
-	if t == "" || strings.HasPrefix(t, "/*") && strings.HasSuffix(t, "*/") {
-		return "{" + lf(t) + "}" // the parser drops these
+	if t := lf(strings.TrimSpace(a.raw)); commentOnly(t) { // the parser drops these
+		if endsInLineComment(t) {
+			return "{" + t + "\n" + tabs(m.depth) + "}" // as Go would read it
+		}
+		return "{" + t + "}"
 	}
 	return "{" + m.f.goExpr(a.raw, a.off, m.depth) + "}"
 }

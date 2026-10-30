@@ -864,8 +864,7 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 			nodes = append(nodes, p.parseControl())
 		case rest[0] == '{':
 			src, srcPos := p.readBraced()
-			trimmed := strings.TrimSpace(src)
-			if trimmed == "" || (strings.HasPrefix(trimmed, "/*") && strings.HasSuffix(trimmed, "*/")) {
+			if commentOnly(src) {
 				continue
 			}
 			nodes = append(nodes, &Interp{Src: src, Pos_: srcPos})
@@ -884,6 +883,28 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 			if t != "" {
 				nodes = append(nodes, &Text{Value: html.UnescapeString(t), Pos_: p.posAt(start)})
 			}
+		}
+	}
+}
+
+// commentOnly reports whether src, the inside of a {...} in markup, holds
+// nothing but comments and whitespace, which makes it a comment. Checking
+// that it starts with /* and ends with */ was not enough: {/* a */ x /* b */}
+// was dropped with its x.
+func commentOnly(src string) bool {
+	fset := token.NewFileSet()
+	file := fset.AddFile("", -1, len(src))
+	var s scanner.Scanner
+	bad := false
+	s.Init(file, []byte(src), func(token.Position, string) { bad = true }, scanner.ScanComments)
+	for {
+		_, tok, lit := s.Scan()
+		switch {
+		case tok == token.EOF:
+			return !bad // an unterminated comment is left to the Go checker
+		case tok == token.COMMENT, tok == token.SEMICOLON && lit == "\n":
+		default:
+			return false
 		}
 	}
 }

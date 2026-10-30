@@ -56,6 +56,19 @@ func expectLines(t *testing.T, got string, want ...string) {
 	}
 }
 
+// A {...} in markup is a comment only when nothing but comments is in it:
+// {/* a */ x /* b */} shows x.
+func TestRunCommentInterp(t *testing.T) {
+	got := runApp(t, `
+component App() {
+	x := "hi"
+	<p>{/* a */ x /* b */}|{/* only a comment */}|{
+		// a line comment
+	}|{ }|{/* a */ /* b */}</p>
+}`, `log(find("p").textContent);`)
+	expectLines(t, got, `hi||||`)
+}
+
 func TestRunCounter(t *testing.T) {
 	got := runApp(t, `
 component App() {

@@ -429,7 +429,7 @@ func (s *slotter) nodes(ns []mNode, frozen bool) {
 				i = j
 			}
 		case *mInterp:
-			if t := strings.TrimSpace(n.raw); t != "" && !strings.HasPrefix(t, "/*") {
+			if !commentOnly(n.raw) {
 				s.goCode(n.off, n.off+len(n.raw))
 			}
 		case *mElem:

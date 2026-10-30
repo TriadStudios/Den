@@ -29,7 +29,9 @@ component App() {
     style { .x { color: red } } // the only rule
     m := n2 + 1
     <main>
-        <p>{/* nothing */}{}{ m }</p>
+        <p>{/* nothing */}{}{ m }{/* a */ m /* b */}{
+            // only a comment
+        }</p>
         <p>{m /* why */}</p>
         <p title={m /* also why */}>t</p>
         <button onclick={n.Set(1) // one}>1</button>

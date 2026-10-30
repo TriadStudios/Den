@@ -30,7 +30,10 @@ component App() {
 	} // the only rule
 	m := n2 + 1
 	<main>
-		<p>{/* nothing */}{}{m}</p>
+		<p>
+			{/* nothing */}{}{m}{/* a */ m /* b */}{// only a comment
+			}
+		</p>
 		<p>{m /* why */}</p>
 		<p title={m /* also why */}>t</p>
 		<button
