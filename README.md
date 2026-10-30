@@ -273,6 +273,12 @@ component App() {
   back into Go types.
 - `hash()`: a signal holding `location.hash`, for simple routing. To route
   by URL path, use `route` and `path` (below).
+- Changes land together: the signals a handler sets update the page once,
+  in a microtask after it returns, and nothing sees some of them but not
+  the others. An `{if}` or `{for}` checks its condition or list again
+  before anything inside it runs, so a guard holds:
+  `{if len(xs.Get()) > 1 { <p>{xs.Get()[1]}</p> }}` takes the `<p>` away
+  when `xs` shrinks, and never reads past the end.
 
 **Routing**
 

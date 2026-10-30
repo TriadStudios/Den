@@ -33,12 +33,13 @@ class $Sig {
 // A computed value or effect is a signal with f, its function, called with c
 // (the list row it belongs to, if any); s its state (0 clean, 1 check, 2
 // dirty); d the nodes it read (one node, or an array); n the next entry in
-// its scope; and x, set once it is disposed. An effect also has e, a sink
-// called with the node when its value changes, and t and k for the sink to
-// write to. Most nodes have one reader and read one node, so storing those
-// directly saves allocating a collection for each.
+// its scope; p its owner, the effect that made its scope (see $scope); and
+// x, set once it is disposed. An effect also has e, a sink called with the
+// node when its value changes, and t and k for the sink to write to. Most
+// nodes have one reader and read one node, so storing those directly saves
+// allocating a collection for each.
 class $Node extends $Sig {
-  constructor(f, e, t, k, c) { super($Node); this.f = f; this.e = e; this.t = t; this.k = k; this.c = c; this.s = 2; this.d = this.n = null; }
+  constructor(f, e, t, k, c) { super($Node); this.f = f; this.e = e; this.t = t; this.k = k; this.c = c; this.s = 2; this.d = this.n = null; this.p = $owner?.p; }
   get() { $fresh(this); return super.get(); }
 }
 function $each(o, f) { o?.forEach ? o.forEach(f) : o && f(o); }
@@ -68,12 +69,18 @@ function $update(n) {
   n.s = 0;
   if (!Object.is(v, n.v) || $mutable(n.v)) n.e ? n.e(n) : $each(n.o, (m) => { m.s = 2; });
 }
+// $run runs n's owners that are due first, then n unless they disposed it:
+// an effect never runs while a block around it still has to re-check, since
+// the block may remove it. Each owner runs its own owners first, so they go
+// outermost first.
+function $run(n) {
+  for (let o = n; o = o.p; ) o.s && $run(o);
+  n.x || $fresh(n);
+}
 function $flush() {
   for (let i = 0; $queue.length; i++) {
     if (i > 1000) { $queue = []; console.error("den: update loop"); break; }
-    const q = $queue;
-    $queue = [];
-    for (const e of q) if (!e.x) $fresh(e);
+    $queue.splice(0).forEach($run);
   }
 }
 function $signal(v) { return new $Sig(v); }
@@ -86,9 +93,13 @@ function $dispose(n) { n.x = true; $each(n.d, (d) => $unlink(d, n)); n.d = null;
 // costs no allocation of its own. It is passed around as its newest entry.
 function $cleanup(x) { if ($owner) { x.n = $owner.h; $owner.h = x; } }
 function $free(x) { for (; x; x = x.n) x.f ? $dispose(x) : x(); }
-// $scope runs f untracked in a new scope: [result, scope].
+// $scope runs f untracked in a new scope: [result, scope]. The scope's p,
+// the owner of the nodes made in it, is the effect running when $scope is
+// called, or else the owner of the enclosing scope. So code that builds
+// nodes untracked must do it in a $scope, never by setting $listener to
+// null itself, or they get no owner.
 function $scope(f) {
-  const o = $owner, l = $listener, own = { h: null };
+  const o = $owner, l = $listener, own = { h: null, p: l || o?.p };
   $owner = own;
   $listener = null;
   try { return [f(), own.h]; } finally { $owner = o; $listener = l; }
@@ -159,9 +170,8 @@ function $if(a, b, cond, yes, no) {
 function $for(a, b, list, key, row, ui, hs) {
   let rows = [];
   $effect(() => {
-    const items = list(), l = $listener;
-    $listener = null;
-    try { rows = $reconcile(a, b, rows, items, key, row, ui, hs); } finally { $listener = l; }
+    const items = list();
+    rows = $scope(() => $reconcile(a, b, rows, items, key, row, ui, hs))[0];
   });
   $cleanup(() => rows.forEach((r) => $free(r.d)));
 }

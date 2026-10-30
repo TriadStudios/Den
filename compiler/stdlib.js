@@ -200,9 +200,10 @@ function $form(a, b, list, key, row, ui, hs) {
   let rows = [], ran = false;
   const out = new Map(), rm = (m) => { const p = $where(rows); m.remove(); $glide(p, rows); };
   $effect(() => {
-    const items = list(), l = $listener;
-    $listener = null;
-    try {
+    const items = list();
+    // $scope runs the rest untracked, and makes this effect the owner of
+    // the rows it builds.
+    $scope(() => {
       const ix = items.$k, now = new Map();
       items.forEach((v, n) => { const i = ix ? ix[n] : n, k = key(v, i); now.has(k) || now.set(k, [v, i]); });
       const keep = rows.filter((r) => now.has(r.k));
@@ -225,7 +226,7 @@ function $form(a, b, list, key, row, ui, hs) {
       if (ran) rows.forEach((r) => had.has(r.k) || $enter($nodes(r)));
       $glide(p, rows);
       ran = true;
-    } finally { $listener = l; }
+    });
   });
   $cleanup(() => { rows.forEach((r) => $free(r.d)); $gone(out); });
 }
