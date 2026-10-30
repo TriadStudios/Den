@@ -364,14 +364,21 @@ func TestGoConformance(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no conformance files")
 	}
+	progs := map[string]string{}
 	for _, f := range files {
-		t.Run(filepath.Base(f), func(t *testing.T) {
-			src, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		progs[filepath.Base(f)] = string(src)
+	}
+	for name, src := range conformInline {
+		progs[name] = src
+	}
+	for name, src := range progs {
+		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			main := "package main\n\nimport \"fmt\"\n\n" + string(src) +
+			main := "package main\n\nimport \"fmt\"\n\n" + src +
 				"\n\nfunc itoa(n int) string { return fmt.Sprint(n) }\n\nfunc main() { fmt.Println(run()) }\n"
 			os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0o644)
 			os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module conform\n\ngo 1.24\n"), 0o644)
@@ -381,12 +388,52 @@ func TestGoConformance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("go run: %v\n%s", err, want)
 			}
-			got := runApp(t, string(src)+"\ncomponent App() {\n    <p>{run()}</p>\n}\n", `log(find("p").textContent);`)
+			got := runApp(t, src+"\ncomponent App() {\n    <p>{run()}</p>\n}\n", `log(find("p").textContent);`)
 			if got != strings.TrimSpace(string(want)) {
 				t.Errorf("den and Go differ\n  go: %s\n den: %s", strings.TrimSpace(string(want)), got)
 			}
 		})
 	}
+}
+
+// conformInline holds conformance programs that cannot be files in
+// testdata/conform, because den fmt would rewrite what they test and
+// TestRepoFormatted keeps every .den file formatted.
+var conformInline = map[string]string{
+	// Parentheses gofmt drops: around if and for conditions and range
+	// expressions, and nested ones. Den drops them too, so formatting
+	// never changes the JS.
+	"parens": `
+type P struct{ N int }
+
+func run() string {
+	out := ""
+	x, xs := 2, []int{3, 4}
+	if (x > 1) {
+		out += "a"
+	}
+	if y := x * 2; ((y > 3)) {
+		out += "b"
+	} else if (y < 0) {
+		out += "c"
+	}
+	for i := 0; (i < 2); i++ {
+		out += itoa(i)
+	}
+	for (x < 4) {
+		x++
+	}
+	for _, v := range (xs) {
+		out += itoa(((v + 1)) * 2)
+	}
+	for i := range ((3)) {
+		out += itoa(i)
+	}
+	if (P{1}) == (P{x - 3}) {
+		out += "p"
+	}
+	return out + itoa(x)
+}`,
 }
 
 // TestSliceGrowth pins den's own capacity growth for append: at least
