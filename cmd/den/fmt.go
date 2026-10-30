@@ -138,8 +138,13 @@ func (f *fmtRun) format(name string, src []byte, info fs.FileInfo) {
 
 // writeAtomic replaces the file at path with data, giving it mode perm: it
 // writes a temporary file next to it and renames it over the file, so the
-// file is never left half written.
+// file is never left half written. A symlink is followed, as gofmt does:
+// the file it names is replaced, and the link stays a link.
 func writeAtomic(path string, data []byte, perm fs.FileMode) error {
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err

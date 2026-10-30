@@ -114,6 +114,40 @@ func TestFmtWrite(t *testing.T) {
 	}
 }
 
+// -w on a symlink rewrites the file it names and leaves the link a link,
+// whether the link is named or found in a directory.
+func TestFmtWriteSymlink(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"real/a.den": messy, "real/b.den": messy})
+	if err := os.MkdirAll(filepath.Join(dir, "links"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.den", "b.den"} {
+		if err := os.Symlink(filepath.Join(dir, "real", name), filepath.Join(dir, "links", name)); err != nil {
+			t.Skipf("cannot create symlinks here: %v", err)
+		}
+	}
+	if code, _, errs := runFmtTest(t, "", "-w", filepath.Join(dir, "links", "a.den")); code != 0 {
+		t.Fatalf("named link: %d %s", code, errs)
+	}
+	if code, _, errs := runFmtTest(t, "", "-w", filepath.Join(dir, "links")); code != 0 {
+		t.Fatalf("directory of links: %d %s", code, errs)
+	}
+	for _, name := range []string{"a.den", "b.den"} {
+		link := filepath.Join(dir, "links", name)
+		if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s is no longer a symlink: %v", link, err)
+		}
+		if got := readFile(t, filepath.Join(dir, "real", name)); got != tidy {
+			t.Errorf("real/%s is %q", name, got)
+		}
+	}
+	entries, _ := os.ReadDir(filepath.Join(dir, "links"))
+	if len(entries) != 2 {
+		t.Errorf("links holds %d entries", len(entries))
+	}
+}
+
 // -d prints a unified diff of each file that would change.
 func TestFmtDiff(t *testing.T) {
 	dir := t.TempDir()
