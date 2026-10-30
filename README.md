@@ -130,24 +130,32 @@ padding takes a length`).
   policies allowed. The runtime never needs one. Styles are `style-src
   'self'` too: the browser ignores `<style>` elements and `style="..."`
   attributes, so CSS goes in style blocks (below) or `style.css`.
-- **Checked CSS.** Den checks every URL written in a style block: the
-  argument of `url(...)` and every string anywhere inside `image-set()`,
-  `-webkit-image-set()`, `image()` and `src()`. It must be a URL a static
-  `href` may have (http, https, mailto, tel or relative) or a
-  `data:image/` URL, with no `expression(` or `javascript:` in it.
-  `var()`, `env()`, `attr()` and design tokens are compile errors inside
-  those functions, so no value den has not checked can become a URL
-  there. Elsewhere, `expression(` and `javascript:` are errors outside
+- **Checked CSS.** Den checks the CSS in style blocks and the values of
+  design tokens. The app's own `style.css` is not checked. Every URL
+  written in a style block is checked: the argument of `url(...)` and
+  every string anywhere inside `image-set()`, `-webkit-image-set()`,
+  `image()` and `src()`. It must be a URL a static `href` may have (http,
+  https, mailto, tel or relative) or a `data:image/` URL, with no
+  `expression(` or `javascript:` in it. `var()`, `env()`, `attr()` and
+  design tokens are compile errors inside those functions, and calls of
+  custom functions (`--name(...)`) are errors anywhere in a style block,
+  since an `@function` in `style.css` could turn their arguments into
+  URLs. So nothing in a style block can become a URL den has not
+  checked. Elsewhere, `expression(` and `javascript:` are errors outside
   strings (in a string such as `content: "a javascript: tutorial"` they
-  are only text), and so are `behavior` and `-moz-binding`. CSS names and
-  keywords are compared ignoring ASCII case only, as browsers do. The
-  app's own `style.css` is not checked. Backslash escapes are allowed only
-  inside strings, and the CSS of every block is read back before it is
-  written, so one component's rules cannot run into the rules after them.
-  Design token values cannot contain control characters (newlines and
-  form feeds included), `;`, braces, `<`, backslashes, `url(`,
-  `javascript:` or comments, so a token can never end its string,
-  declaration or rule.
+  are only text), and so are `behavior` and `-moz-binding`. CSS names
+  and keywords are compared ignoring ASCII case only, as browsers do.
+  Backslash escapes are allowed only inside strings, and the CSS of every
+  block is read back before it is written, so one component's rules
+  cannot run into the rules after them.
+  A design token's value is checked by the same code as a value in a
+  style block, and more strictly, since `var()` can take it into any
+  property: it cannot hold a function that takes a URL or an image at
+  all (`url()`, `image-set()`, `image()`, `src()`, `cross-fade()`,
+  `element()` and their prefixed forms), a custom function, `$`, control
+  characters (newlines and form feeds included), `;`, `<`, backslashes,
+  comments, `javascript:` or `expression(`, so a token can never carry a
+  URL or end its string, declaration or rule.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
@@ -326,7 +334,9 @@ component Card(title string, children den.Children) {
   unit, or `calc()`, `min()`, `max()` or `clamp()`; a `den.Duration` is a
   number of `ms` or `s` (numbers may have exponents: `1e3ms`, `1.5E-1rem`);
   a `den.Font` is a list of font families; a `den.Token` is any other
-  value. A color cannot go where only a length
+  value. Every token value is also checked as a value in a style block
+  is, and cannot hold a URL: write `url()` and `image-set()` in the style
+  block, where den checks the URL. A color cannot go where only a length
   can (`padding`, `width`, `gap` and so on), a length where only a color
   can, a duration outside `transition` and `animation`, or a font outside
   `font` and `font-family`.
@@ -350,11 +360,11 @@ component Card(title string, children den.Children) {
   in a selector, which no component makes (page-wide styles go in
   `style.css`); at-rules other than `@media`, `@supports`, `@container` and
   `@keyframes` (`@import`, `@font-face` and the rest go in `style.css`);
-  nested rules and `&`, and `{}` blocks in custom property values; and
-  tokens in selectors, in `@media` conditions or inside `url()`, where
-  custom properties do not work; and tokens, `var()`, `env()` or `attr()`
-  inside `image-set()`, `image()` or `src()`, whose URLs are checked when
-  the app builds.
+  nested rules and `&`, and `{}` blocks in custom property values; calls
+  of custom functions (`--name(...)`); tokens in selectors, in `@media`
+  conditions or inside `url()`, where custom properties do not work; and
+  tokens, `var()`, `env()` or `attr()` inside `image-set()`, `image()` or
+  `src()`, whose URLs are checked when the app builds.
 - Backslash escapes are allowed only inside strings: `content: "\201C"`
   is fine, `.sm\:p-4` is an error. To select a class with such
   characters, match it as a string: `[class~="sm:p-4"]`. Brackets must
