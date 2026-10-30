@@ -818,8 +818,11 @@ func (s *styler) value(prop string, i, end int) string {
 			i, _ = cssAtom(s.src, i)
 		case c == '"' || c == '\'':
 			j, _ := cssAtom(s.src, i)
-			if len(fns) > 0 && urlFuncs[fns[len(fns)-1]] {
-				s.checkURL(i, s.src[i+1:j-1], fns[len(fns)-1])
+			// Any string inside a URL function is checked as a URL, even in
+			// parentheses or type(), where browsers take none today: a MIME
+			// type such as "image/png" passes as a relative URL.
+			if fn := slices.IndexFunc(fns, func(f string) bool { return urlFuncs[f] }); fn >= 0 {
+				s.checkURL(i, s.src[i+1:j-1], fns[fn])
 			}
 			write(s.src[i:j])
 			i = j

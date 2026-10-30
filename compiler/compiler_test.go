@@ -684,6 +684,11 @@ component App() {
     style { p { background-image: image-set(src(attr(data-x)) 1x); } }
     <p>x</p>
 }`, `app.den:3:49: attr() cannot be used in image-set()`},
+		{"string in parentheses in image-set", `
+component App() {
+    style { p { background-image: image-set(("javascript:x") 1x); } }
+    <p>x</p>
+}`, `app.den:3:46: image-set() cannot contain "expression(" or "javascript:"`},
 		{"expression in a style block", `
 component App() {
     style { p { width: expression(1); } }

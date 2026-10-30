@@ -131,7 +131,7 @@ padding takes a length`).
   'self'` too: the browser ignores `<style>` elements and `style="..."`
   attributes, so CSS goes in style blocks (below) or `style.css`.
 - **Checked CSS.** Den checks every URL written in a style block: the
-  argument of `url(...)` and each string directly inside `image-set()`,
+  argument of `url(...)` and every string anywhere inside `image-set()`,
   `-webkit-image-set()`, `image()` and `src()`. It must be a URL a static
   `href` may have (http, https, mailto, tel or relative) or a
   `data:image/` URL, with no `expression(` or `javascript:` in it.
