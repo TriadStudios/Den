@@ -644,6 +644,24 @@ component App() {
     style { p { --x: {}; } }
     <p>x</p>
 }`, `app.den:3:22: {} blocks in custom property values are not supported`},
+		// Case is ASCII-only in CSS. Unicode lowering once changed byte
+		// offsets (İ is two bytes, its lower case one), so this panicked or
+		// let expression( through.
+		{"expression after a dotted capital I", `
+component App() {
+    style { p::after { content: "İ"/**/expression(1); } }
+    <p>x</p>
+}`, `app.den:3:41: "expression(" is not allowed in a style block`},
+		{"data URL whose type is not ASCII image", `
+component App() {
+    style { p { background: url("DATA:İMAGE/png,x"); } }
+    <p>x</p>
+}`, `app.den:3:29: unsafe URL in url()`},
+		{"at-rule name with a dotted capital I", `
+component App() {
+    style { @MEDİA screen { p { color: red; } } }
+    <p>x</p>
+}`, `app.den:3:13: @medİa is not allowed in a style block`},
 		{"expression in a style block", `
 component App() {
     style { p { width: expression(1); } }

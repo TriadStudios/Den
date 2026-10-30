@@ -51,6 +51,9 @@ func TestScopeSelectors(t *testing.T) {
 		{`p { --gap : 4px ; }`, `p[d-x]{--gap:4px}`},
 		{`p { background-image: image-set("a.png" 1x, url(b.png) 2x, "https://x.test/c.avif" type("image/avif")); }`, `p[d-x]{background-image:image-set("a.png" 1x,url(b.png) 2x,"https://x.test/c.avif" type("image/avif"))}`},
 		{`[href^="javascript:"]::after { content: "a javascript: tutorial, expression(1)" }`, `[href^="javascript:"][d-x]::after{content:"a javascript: tutorial, expression(1)"}`},
+		// Unicode case mapping changes these letters' byte lengths, or maps
+		// them to ASCII; CSS case is ASCII only.
+		{`.city::after { content: "İZMİR ıK ẞȺſ"; --K: 1 } .ı.İ, Ⱥ { cOLOR: red }`, `.city[d-x]::after{content:"İZMİR ıK ẞȺſ";--K:1}` + "\n" + `.ı.İ[d-x],Ⱥ[d-x]{color:red}`},
 		{`p { background: url(data:image/png;base64,iVBORw0KGgo=), url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>"); }`, `p[d-x]{background:url(data:image/png;base64,iVBORw0KGgo=),url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>")}`},
 		{`p {} a { }`, ``},
 		{`@media (min-width: 40rem) and (max-width: 60rem) { .a, .b { margin: 0 } }`, `@media (min-width: 40rem) and (max-width: 60rem){.a[d-x],.b[d-x]{margin:0}}`},
@@ -464,7 +467,7 @@ var (
 		"::before", ":after", ":hover", "::selection", ":not(.x)", ":is(.a, .b)", ":where(p)", ":has(> img)",
 		":nth-child(2n + 1)", "[x]", `[title="a b"]`, `[x='}{']`, `[href$=".pdf" i]`, `[x="\"]"]`, ":first-line",
 		"input::-webkit-input-placeholder", ".a/**/.b", "a /* c */ b", "_x", "-x", "é", "/", "*", "/**/", "a//**/*",
-		":is(//**/*)", "u/**/rl(x)", `[href^="javascript:"]`}
+		":is(//**/*)", "u/**/rl(x)", `[href^="javascript:"]`, ".İ", "ı", ".K", "ẞ", "Ⱥ", "ſ", ":ROOT", "İ:before"}
 	fuzzProps = []string{"color", "margin", "padding", "content", "background", "background-image", "animation",
 		"animation-name", "font-family", "font", "transition", "--x", "--y", "width", "border-color", "box-shadow", "quotes"}
 	fuzzValues = []string{"red", "1px", "0", "auto", "solid", "1px solid red", `"s"`, `'s'`, `"a;b}"`, `"\"" `, `'\''`,
@@ -475,15 +478,16 @@ var (
 		"'}'", "\"\\\r\n\"", "\"\\41\r\nx\"", "a\fb", "a\r\nb", "\"é😀\"", "é", "\u2028", "--a", "-->",
 		"url(data:image/png;base64,iVBORw0KGgo=)", `url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>")`,
 		`image-set("data:image/gif;base64,R0lGOD" 1x)`, "url(data:text/html,x)", `"a javascript: tutorial"`,
-		`'expression(1)'`, `url("javascript:x")`, "{}"}
+		`'expression(1)'`, `url("javascript:x")`, "{}", `"İZMİR"`, "K", `"ẞȺſı"`, `"İ"/**/expression(1)`, `url("DATA:İMAGE/png,x")`,
+		"İ(x)", "ſrc(x)"}
 	fuzzNoise = []string{"'", "\"", "(", ")", "[", "]", "{", "}", ";", ":", ",", "\\", "/*", "*/", "/", "*", "<!--",
 		"-->", "<", ">", "@", "@media", "@keyframes x", "$", "$t", "$d", "$f", "url(", "URL(", "u", "rl(", "\f", "\r",
 		"\n", "\r\n", "\t", " ", "\x00", "\x01", "\x0b", "\x7f", "é", "\u2028", "\u00a0", "😀", "\xff", "#", "%", "-",
 		"_", "&", "!", "e", "1", ".", "\\\n", "\\31 ", "\"\\", "'\\\r\n'", "/**/", "\"\n", "}{", "){", "javascript:",
-		"expression(", "image-set(", "src(", "\\)", "\\]", "\\}", "\\{"}
+		"expression(", "image-set(", "src(", "\\)", "\\]", "\\}", "\\{", "İ", "ı", "K", "ẞ", "Ⱥ", "ſ"}
 	// Token values that pass checkToken, then ones that do not.
 	fuzzTokens = [5][]string{
-		{"0 1px 2px red", "1.5", "bold", `"a b"`, "'x'", "fade", `"x.png"`, "'a' 'b'", `"a'b"`, "a-->b", "é", "rgb(0 0 0)"},
+		{"0 1px 2px red", "1.5", "bold", `"a b"`, "'x'", "fade", `"x.png"`, "'a' 'b'", `"a'b"`, "a-->b", "é", "rgb(0 0 0)", `"İZMİR"`, "Kſ"},
 		{"red", "#fff", "rgb(0 0 0 / .1)", "oklch(25% 0.02 260)", "transparent", "currentColor"},
 		{"0", "16px", "-1.5rem", "calc(100% - 2px)", "clamp(1rem, 2vw, 3rem)", "1e3px", "1.5E-1rem"},
 		{"150ms", "1s", "-.5s", "1e3ms", "2E-1S"},

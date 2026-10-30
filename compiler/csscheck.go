@@ -235,7 +235,9 @@ func (t *cssTokenizer) str(quote int) int {
 }
 
 func (t *cssTokenizer) identLike() int {
-	if name := t.identSeq(); strings.EqualFold(name, "url") && t.at(t.i) == '(' {
+	// "url" is an ASCII case-insensitive match, as the spec says; Unicode
+	// folding would also match other letters.
+	if name := t.identSeq(); len(name) == 3 && name[0]|0x20 == 'u' && name[1]|0x20 == 'r' && name[2]|0x20 == 'l' && t.at(t.i) == '(' {
 		t.i++
 		for ctWhite(t.at(t.i)) && ctWhite(t.at(t.i+1)) {
 			t.i++

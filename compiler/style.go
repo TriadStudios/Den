@@ -108,13 +108,50 @@ func stringEscapeEnd(src string, i int) int {
 // functions), and # or @ before it would make it part of a hash or an
 // at-keyword.
 func urlAt(src string, i int) bool {
-	if len(src) < i+4 || !strings.EqualFold(src[i:i+4], "url(") {
+	if !hasPrefixFold(src[i:], "url(") {
 		return false
 	}
 	return i == 0 || !cssNameChar(src[i-1]) && src[i-1] != '#' && src[i-1] != '@'
 }
 
 func isCSSSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
+
+// CSS compares keywords, property, function and at-rule names, and URL
+// schemes, ignoring ASCII case only, and its whitespace is ASCII. So does
+// den: Unicode case mapping matches what CSS does not (İ is not I, and the
+// Kelvin sign K is not K) and changes byte lengths, so offsets into a
+// string do not fit its lowered copy. Never use strings.ToLower, ToUpper,
+// EqualFold, TrimSpace or Fields on CSS.
+
+// asciiLower returns s with A-Z lowered and every other byte as it is.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+// asciiUpper returns s with a-z raised and every other byte as it is.
+func asciiUpper(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'a' <= c && c <= 'z' {
+			b[i] = c - ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// hasPrefixFold reports whether s starts with prefix, ignoring ASCII case.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && asciiLower(s[:len(prefix)]) == asciiLower(prefix)
+}
+
+// trimCSSSpace trims CSS whitespace (space, tab, newlines) from s.
+func trimCSSSpace(s string) string { return strings.Trim(s, " \t\n\r\f") }
 
 func cssNameStart(c byte) bool { return isLetter(c) || c == '-' || c >= 0x80 }
 
@@ -198,7 +235,7 @@ func styles(ck *checked) (map[*Component]string, string, ErrorList) {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		decl := func(n string) string { return "--" + n + ":" + strings.TrimSpace(constant.StringVal(vars[n].Val())) }
+		decl := func(n string) string { return "--" + n + ":" + trimCSSSpace(constant.StringVal(vars[n].Val())) }
 		rule := cssRule{prelude: ":root"}
 		for _, n := range names {
 			rule.decls = append(rule.decls, decl(n))
@@ -348,7 +385,6 @@ func (s *styler) sheet() []cssRule {
 // code: old browsers ran expression(...) and javascript: URLs. Strings
 // are text and may say either, unless they are URLs, which checkURL checks.
 func (s *styler) lex() {
-	lower := strings.ToLower(s.src)
 	var open []int // the ( [ and { not yet closed
 	for i := 0; i < len(s.src); {
 		next, _ := cssAtom(s.src, i)
@@ -356,7 +392,7 @@ func (s *styler) lex() {
 		if !strings.HasPrefix(s.src[i:], "/*") {
 			for j := i; j < next; j++ {
 				for _, bad := range codeInCSS {
-					if c != '"' && c != '\'' && strings.HasPrefix(lower[j:], bad) {
+					if c != '"' && c != '\'' && hasPrefixFold(s.src[j:], bad) {
 						s.errAt(j, "%q is not allowed in a style block", bad)
 					}
 				}
@@ -470,7 +506,7 @@ func (s *styler) atName(i, end int) (int, string) {
 	for j < end && cssNameChar(s.src[j]) {
 		j++
 	}
-	return j, strings.ToLower(s.src[i+1 : j])
+	return j, asciiLower(s.src[i+1 : j])
 }
 
 // keyframes collects the names of the block's @keyframes, so animation
@@ -486,7 +522,7 @@ func (s *styler) keyframes(i, end int) {
 		if s.src[i] == '@' {
 			switch nameEnd, name := s.atName(i, end); name {
 			case "keyframes":
-				if name := strings.TrimSpace(s.src[nameEnd:stop]); !animationKeywords[strings.ToLower(name)] {
+				if name := trimCSSSpace(s.src[nameEnd:stop]); !animationKeywords[asciiLower(name)] {
 					s.kf[name] = true
 				}
 			case "media", "supports", "container":
@@ -545,12 +581,12 @@ func (s *styler) atRule(start, open, close int) (cssRule, bool) {
 		}
 		return cssRule{prelude: "@" + name + prelude, rules: inner}, true
 	case "keyframes":
-		kname := strings.TrimSpace(s.src[nameEnd:open])
+		kname := trimCSSSpace(s.src[nameEnd:open])
 		if !cssIdent(kname) {
 			s.errAt(start, "@keyframes needs a name, like @keyframes fade-in")
 			return cssRule{}, false
 		}
-		if animationKeywords[strings.ToLower(kname)] {
+		if animationKeywords[asciiLower(kname)] {
 			s.errAt(s.skipSpace(nameEnd, open), "%q cannot name @keyframes: animation reads it as a keyword; choose another name", kname)
 			return cssRule{}, false
 		}
@@ -565,7 +601,7 @@ func (s *styler) atRule(start, open, close int) (cssRule, bool) {
 			end := s.matchBrace(stop, close)
 			var sels []string
 			for _, part := range s.splitTop(i, stop) {
-				sel := strings.ToLower(strings.TrimSpace(s.src[part[0]:part[1]]))
+				sel := asciiLower(trimCSSSpace(s.src[part[0]:part[1]]))
 				if sel != "from" && sel != "to" && !isPercentage(sel) {
 					s.errAt(s.skipSpace(part[0], part[1]), "keyframe selectors are from, to or a percentage, not %q", sel)
 				}
@@ -708,7 +744,7 @@ func (s *styler) declaration(i, end int) string {
 			}
 		}
 	} else {
-		name = strings.ToLower(name)
+		name = asciiLower(name)
 	}
 	if name == "behavior" || name == "-moz-binding" {
 		s.errAt(i, "%s is not allowed in a style block: it can run code", name)
@@ -811,7 +847,7 @@ func (s *styler) value(prop string, i, end int) string {
 				for k > start && c == '(' && cssNameChar(s.src[k-1]) {
 					k--
 				}
-				open, fns = append(open, i), append(fns, strings.ToLower(s.src[k:i]))
+				open, fns = append(open, i), append(fns, asciiLower(s.src[k:i]))
 			case ')', ']':
 				want := byte('(')
 				if c == ']' {
@@ -882,7 +918,7 @@ var codeInCSS = []string{"expression(", "javascript:"}
 // URLs as a static href, and data:image/ URLs, which the page's CSP
 // allows as images and an image cannot run code.
 func (s *styler) checkURL(off int, arg, fn string) {
-	lower := strings.ToLower(arg)
+	lower := asciiLower(arg)
 	switch {
 	case strings.Contains(arg, "\\"):
 		s.errAt(off, "escapes are not allowed in %s()", fn)
@@ -902,9 +938,9 @@ func (s *styler) token(off int, name, prop string) string {
 		s.errAt(off, "$%s is not a design token name; write it in kebab case, like $space-4", name)
 		return ""
 	}
-	want := "want a const " + strings.ToUpper(camel[:1]) + camel[1:] + " of type den.Color, den.Length, den.Duration, den.Font or den.Token"
+	want := "want a const " + asciiUpper(camel[:1]) + camel[1:] + " of type den.Color, den.Length, den.Duration, den.Font or den.Token"
 	var found []*types.Const
-	for _, n := range []string{strings.ToLower(camel[:1]) + camel[1:], strings.ToUpper(camel[:1]) + camel[1:]} {
+	for _, n := range []string{asciiLower(camel[:1]) + camel[1:], asciiUpper(camel[:1]) + camel[1:]} {
 		if c, ok := s.ck.pkg.Scope().Lookup(n).(*types.Const); ok && !slices.Contains(found, c) {
 			found = append(found, c)
 		}
@@ -947,7 +983,7 @@ func tokenCamel(name string) (string, bool) {
 			}
 		}
 		if i > 0 {
-			p = strings.ToUpper(p[:1]) + p[1:]
+			p = asciiUpper(p[:1]) + p[1:]
 		}
 		b.WriteString(p)
 	}
@@ -1035,21 +1071,21 @@ func checkToken(kind, v string) string {
 			return fmt.Sprintf("a token cannot contain a control character (U+%04X)", v[i])
 		}
 	}
-	if strings.TrimSpace(v) == "" {
+	if trimCSSSpace(v) == "" {
 		return "a token cannot be empty"
 	}
 	for _, bad := range []string{";", "{", "}", "<", "\\", "url(", "expression(", "/*"} {
-		if strings.Contains(strings.ToLower(v), bad) {
+		if strings.Contains(asciiLower(v), bad) {
 			return fmt.Sprintf("a token cannot contain %q", bad)
 		}
 	}
-	if strings.Contains(strings.ToLower(strings.ReplaceAll(v, " ", "")), "javascript:") {
+	if strings.Contains(asciiLower(strings.ReplaceAll(v, " ", "")), "javascript:") {
 		return `a token cannot contain "javascript:"`
 	}
 	if !balanced(v) {
 		return "its quotes, parentheses or brackets do not balance"
 	}
-	lv := strings.ToLower(strings.TrimSpace(v))
+	lv := asciiLower(trimCSSSpace(v))
 	switch kind {
 	case "Color":
 		if !isColor(lv) {
@@ -1064,7 +1100,7 @@ func checkToken(kind, v string) string {
 			return fmt.Sprintf("%q is not a duration (want a number of ms or s, like 150ms)", v)
 		}
 	case "Font":
-		if !isFont(strings.TrimSpace(v)) {
+		if !isFont(trimCSSSpace(v)) {
 			return fmt.Sprintf("%q is not a list of font families (want names separated by commas, like system-ui, \"Segoe UI\", sans-serif)", v)
 		}
 	}
@@ -1165,7 +1201,7 @@ func trimSign(v string) string {
 // names, each a quoted string or one or more identifiers.
 func isFont(v string) bool {
 	for _, fam := range strings.Split(v, ",") {
-		fam = strings.TrimSpace(fam)
+		fam = trimCSSSpace(fam)
 		if fam == "" {
 			return false
 		}
@@ -1175,7 +1211,7 @@ func isFont(v string) bool {
 			}
 			continue
 		}
-		for _, word := range strings.Fields(fam) {
+		for _, word := range strings.FieldsFunc(fam, func(r rune) bool { return r < 0x80 && isCSSSpace(byte(r)) }) {
 			if !cssIdent(word) {
 				return false
 			}
@@ -1431,7 +1467,7 @@ func pseudoElement(comp string) int {
 		for j < len(comp) && cssNameChar(comp[j]) {
 			j++
 		}
-		switch strings.ToLower(comp[i+1 : j]) {
+		switch asciiLower(comp[i+1 : j]) {
 		case "before", "after", "first-line", "first-letter":
 			at = i
 			return false
@@ -1448,12 +1484,12 @@ func pageCompound(comp string) string {
 	for j < len(comp) && cssNameChar(comp[j]) {
 		j++
 	}
-	if t := strings.ToLower(comp[:j]); t == "html" || t == "body" {
+	if t := asciiLower(comp[:j]); t == "html" || t == "body" {
 		return t
 	}
 	found := ""
 	topLevelBytes(comp, func(i int) bool {
-		if comp[i] == ':' && (i == 0 || comp[i-1] != ':') && len(comp) >= i+5 && strings.EqualFold(comp[i:i+5], ":root") &&
+		if comp[i] == ':' && (i == 0 || comp[i-1] != ':') && hasPrefixFold(comp[i:], ":root") &&
 			(i+5 == len(comp) || !cssNameChar(comp[i+5])) {
 			found = ":root"
 			return false
