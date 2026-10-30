@@ -93,6 +93,9 @@ func Compile(sources []Source) (*Result, error) {
 	}
 	body.WriteString("$mount(App, document.getElementById(\"app\"));\n")
 	code := e.tplOut.String() + body.String()
+	if e.motion {
+		code = handlerTypes(ck) + code
+	}
 	var out strings.Builder
 	out.WriteString("// Built by Den. Do not edit.\n(() => {\n\"use strict\";\n")
 	out.WriteString(runtimeFor(code))
@@ -159,6 +162,8 @@ type emitter struct {
 	results []string              // named results of the function being emitted
 	router  bool                  // route or path is used
 	scopes  map[*Component]string // the scope attribute of each component with a style block
+	motions map[string]string     // shared transitions: JS -> the name of the constant holding it
+	motion  bool                  // a block compiled to $ifm or $form, whose leaving elements need $evs
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -597,6 +602,10 @@ func (e *emitter) bind(ts []*tnode) {
 					continue
 				}
 				pt := e.cc.attrs[a]
+				if pt.kind == partMotion {
+					e.line("%s.%s = %s;", t.v, motionProps[a.Name], e.motionValue(pt.expr))
+					continue
+				}
 				if pt.kind == partHandler {
 					body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
 					switch {
@@ -708,7 +717,13 @@ func (e *emitter) ifNode(t *tnode, n *If) {
 	if len(n.Else) > 0 {
 		els = e.block("", n.Else, t.svg)
 	}
-	e.line("$if(%s, %s, () => %s, %s, %s);", t.v, t.end.v, cond, e.block("", n.Then, t.svg), els)
+	// Branches with transitions need $ifm, which keeps leaving elements
+	// until their exit transitions end.
+	fn := "$if"
+	if motionIn(n.Then, false) || motionIn(n.Else, false) {
+		fn, e.motion = "$ifm", true
+	}
+	e.line("%s(%s, %s, () => %s, %s, %s);", fn, t.v, t.end.v, cond, e.block("", n.Then, t.svg), els)
 }
 
 // forNode emits {for}. A list that reads no signal compiles to a plain JS
@@ -800,7 +815,12 @@ func (e *emitter) forNode(t *tnode, n *For) {
 		}
 	}
 	e.row = outer
-	e.line("$for(%s, %s, () => %s, (%s) => %s, %s, %t%s);", t.v, t.end.v, list, params, e.expr(pt.expr), block, useIndex, table)
+	// Rows with transitions or animate={layout()} need $form.
+	fn := "$for"
+	if motionIn(n.Body, true) {
+		fn, e.motion = "$form", true
+	}
+	e.line("%s(%s, %s, () => %s, (%s) => %s, %s, %t%s);", fn, t.v, t.end.v, list, params, e.expr(pt.expr), block, useIndex, table)
 }
 
 // loopVar returns the JS name of a range variable, or "" if there is none.
@@ -1314,8 +1334,8 @@ func (e *emitter) expr(x ast.Expr) string {
 
 func (e *emitter) compositeLit(x *ast.CompositeLit) string {
 	t := e.ck.info.TypeOf(x)
-	if isChildren(t) {
-		return zeroValue(t) // den.Children{}, the only literal Go allows
+	if isChildren(t) || isOpaque(t) {
+		return zeroValue(t) // den.Children{} or Transition{}, the only literals Go allows
 	}
 	var parts []string
 	switch u := t.Underlying().(type) {
@@ -1450,6 +1470,14 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return obj + ".p.get()"
 		case "Route.Link":
 			return "$linkTo(" + obj + ", " + args() + ")"
+		case "Transition.For":
+			ms := jsNumber(e.ck.durations[x])
+			if js, ok := e.transition(fun.X, ms); ok {
+				return js
+			}
+			// Any other Transition: a copy with d. The zero Transition is
+			// null, and its copy has no keyframes either, so it plays nothing.
+			return "({ ..." + obj + ", d: " + ms + " })"
 		case "error.Error":
 			return obj + ".message"
 		}
@@ -1496,6 +1524,13 @@ func (e *emitter) call(x *ast.CallExpr) string {
 				case "path":
 					e.router = true
 					return "$path()"
+				case "fade", "scale", "slide":
+					js, _ := e.transition(x, strconv.Itoa(defaultMS))
+					return js
+				case "layout":
+					return "1"
+				case "spring":
+					return "$spring(() => " + args() + ")"
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -1719,6 +1754,9 @@ func constString(v constant.Value) string {
 func zeroValue(t types.Type) string {
 	if isChildren(t) {
 		return "$cm" // renders an empty placeholder
+	}
+	if isOpaque(t) {
+		return "null" // a Transition or Layout that plays nothing
 	}
 	switch u := t.Underlying().(type) {
 	case *types.Basic:

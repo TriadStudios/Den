@@ -1,0 +1,57 @@
+:root {
+  --bg: #f6f5f1;
+  --card: #ffffff;
+  --ink: #1d1d1b;
+  --muted: #6b6a64;
+  --line: #e4e2da;
+  --accent: #00758f;
+  --accent-ink: #ffffff;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413;
+    --card: #1f1f1d;
+    --ink: #f1efe8;
+    --muted: #a3a199;
+    --line: #34332f;
+    --accent: #2fb8d6;
+    --accent-ink: #0b1d22;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.app { max-width: 720px; margin: 0 auto; padding: 40px 16px 56px; }
+h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.1; margin: 0 0 6px; letter-spacing: -0.02em; }
+.sub { color: var(--muted); margin: 0 0 28px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px;
+  display: grid; gap: 14px; align-content: start; overflow: hidden;
+}
+.card.wide { grid-column: 1 / -1; }
+.card h2 { font-size: 15px; margin: 0; color: var(--muted); font-weight: 600; }
+.hint { color: var(--muted); margin: 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+button {
+  font: inherit; font-weight: 600; min-width: 44px; height: 40px; padding: 0 14px;
+  border-radius: 10px; border: 1px solid transparent; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink); justify-self: start;
+}
+button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+button.small { height: 32px; min-width: 32px; padding: 0 8px; }
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 6px 6px 6px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+}
+.panel { border-radius: 12px; padding: 14px 16px; background: var(--accent); color: var(--accent-ink); }
+.panel p { margin: 0; }
+.track { width: 100%; height: auto; }
+.track line { stroke: var(--line); stroke-width: 4; stroke-linecap: round; }
+.track circle { fill: var(--accent); }

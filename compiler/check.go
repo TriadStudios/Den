@@ -7,6 +7,7 @@ import (
 	"go/scanner"
 	"go/token"
 	"go/types"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,12 +46,17 @@ func denAttr[T renderable](v T)  {}
 func denHandler(f func(e Event)) {}
 func denKey[T comparable](v T)   {}
 func denMark()                   {}
+func denAny(v any)               {}
 
 // stored is a signal kept in localStorage under key, as JSON.
 func stored[T any](key string, initial T) *Signal[T] { return &Signal[T]{v: initial} }
 
 // hash is a signal holding location.hash, for simple routing.
 func hash() *Signal[string] { return nil }
+
+// denOpaque is the field of den's opaque values (a Transition, a Layout):
+// Go cannot compare them, and their zero value is null in JS.
+type denOpaque func()
 `
 
 // preludeRoute declares the router's typed routes, unless the program
@@ -71,6 +77,47 @@ func route[T any](pattern string) *Route[T] { return nil }
 const preludePath = `
 // path is a signal holding location.pathname; Set navigates.
 func path() *Signal[string] { return nil }
+`
+
+// preludeTransition declares the transitions of enter= and exit=, unless
+// the program declares its own Transition. The zero Transition plays
+// nothing. For takes a den.Duration, or a string in a program with its
+// own den.
+const preludeTransition = `
+// Transition is how an element enters or leaves: fade(), scale() or
+// slide(dir), for 200ms unless .For says otherwise.
+type Transition struct{ _ denOpaque }
+
+// For is the transition taking d, a constant like 150ms.
+func (t Transition) For(d den.Duration) Transition { return t }
+
+func denEnter(t Transition) {}
+func denExit(t Transition)  {}
+`
+
+// preludeFade, preludeScale and preludeSlide declare the transitions,
+// each unless the program has a name of its own for it.
+const (
+	preludeFade  = "\nfunc fade() Transition { return Transition{} }\n"
+	preludeScale = "\nfunc scale() Transition { return Transition{} }\n"
+	preludeSlide = "\nfunc slide(dir string) Transition { return Transition{} }\n"
+)
+
+// preludeLayout declares Layout, the value of animate=, unless the program
+// declares its own; preludeLayoutFn declares layout() unless it has one.
+const preludeLayout = `
+// Layout makes a list row's element glide to its new place.
+type Layout struct{ _ denOpaque }
+
+func denAnimate(l Layout) {}
+`
+
+const preludeLayoutFn = "\nfunc layout() Layout { return Layout{} }\n"
+
+// preludeSpring declares spring, unless the program declares its own.
+const preludeSpring = `
+// spring follows target with spring physics.
+func spring(target float64) *Computed[float64] { return nil }
 `
 
 // preludeDen ends the prelude of a program that imports the built-in
@@ -184,6 +231,7 @@ const (
 	partComponent
 	partIf
 	partFor
+	partMotion // enter=, exit= and animate=
 )
 
 // part links a markup node to the Go AST that the type checker produced for it.
@@ -206,7 +254,8 @@ type checked struct {
 	components  map[string]*Component
 	readsSignal map[types.Object]bool // functions that may read a signal
 	nilTypes    map[*ast.Ident]types.Type
-	routes      map[*ast.CallExpr]string // route[T](...) calls: the pattern to match
+	routes      map[*ast.CallExpr]string  // route[T](...) calls: the pattern to match
+	durations   map[*ast.CallExpr]float64 // Transition.For(d) calls: d in milliseconds
 }
 
 type checkedComponent struct {
@@ -277,6 +326,23 @@ func check(files []*File) (*checked, error) {
 	denTaken := own["den"] != ""
 	// route returns a *Route[T], so the two come and go together.
 	routeTaken := own["route"] != "" || own["Route"] != ""
+	// fade, scale and slide return a Transition and layout a Layout, so
+	// they go when the program has its own; otherwise each goes alone.
+	// motionBy says which name of the program's took each one away.
+	motionBy := map[string]string{}
+	for _, name := range []string{"Transition", "fade", "scale", "slide", "Layout", "layout", "spring"} {
+		if own[name] != "" {
+			motionBy[name] = name
+		}
+	}
+	for _, name := range []string{"fade", "scale", "slide"} {
+		if motionBy["Transition"] != "" {
+			motionBy[name] = "Transition"
+		}
+	}
+	if motionBy["Layout"] != "" {
+		motionBy["layout"] = "Layout"
+	}
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -302,13 +368,24 @@ func check(files []*File) (*checked, error) {
 	if own["path"] == "" {
 		src.WriteString(preludePath)
 	}
+	transition := preludeTransition
+	if denTaken {
+		transition = strings.Replace(transition, "den.Duration", "string", 1)
+	}
+	for _, d := range [][2]string{{"Transition", transition}, {"fade", preludeFade},
+		{"scale", preludeScale}, {"slide", preludeSlide}, {"Layout", preludeLayout},
+		{"layout", preludeLayoutFn}, {"spring", preludeSpring}} {
+		if motionBy[d[0]] == "" {
+			src.WriteString(d[1])
+		}
+	}
 	if denTaken {
 		src.WriteString(preludePlain)
 	} else {
 		src.WriteString(preludeDen)
 	}
 	src.WriteString(declSrc.String())
-	g := &gen{src: &src, byName: byName, errs: &errs}
+	g := &gen{src: &src, byName: byName, errs: &errs, own: own, motionBy: motionBy}
 	for _, f := range files {
 		for _, c := range f.Components {
 			g.file = c.File
@@ -400,6 +477,14 @@ next:
 			}
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[by])
 		}
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && motionBy[name] != "" {
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[motionBy[name]])
+		}
+		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
+		// The value of enter= is checked as an argument to denEnter.
+		for _, a := range motionAttrs {
+			msg = strings.Replace(msg, " in argument to den"+strings.ToUpper(a[:1])+a[1:], " in "+a+"=", 1)
+		}
 		errAt(te.Pos, msg)
 	}
 	// gen took a prop for den.Children by reading its type; go/types must
@@ -427,10 +512,14 @@ next:
 			errAt(id.Pos(), fmt.Sprintf("type %s is based on den.Children, which den does not support; declare an alias instead: type %s = den.Children", id.Name, id.Name))
 		}
 	}
-	// Route patterns and params are checked once Go accepts the program.
+	// Route patterns and params, and the constants motion needs, are
+	// checked once Go accepts the program.
 	var routes map[*ast.CallExpr]string
+	var durations map[*ast.CallExpr]float64
 	if len(typeErrs) == 0 {
 		routes = checkRoutes(file, info, pkg, fset, errAt)
+		durations = checkMotion(file, info, fset, errAt)
+		preludeValues(file, info, fset, byName, errAt)
 	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
@@ -448,7 +537,7 @@ next:
 		return nil, errs.sorted()
 	}
 
-	out := &checked{fset: fset, info: info, pkg: pkg, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes}
+	out := &checked{fset: fset, info: info, pkg: pkg, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes, durations: durations}
 	decls := map[string]*ast.FuncDecl{}
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
@@ -495,6 +584,29 @@ next:
 		return nil, errs.sorted()
 	}
 	return out, nil
+}
+
+// preludeValues reports den's built-in functions used other than by
+// calling them, as in f := slide. They exist only as calls (each call of
+// slide has its direction checked, and signal(v) is $signal(v) in JS).
+func preludeValues(file *ast.File, info *types.Info, fset *token.FileSet, byName map[string]*Component, errAt func(token.Pos, string)) {
+	called := map[*ast.Ident]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if id, ok := callee(info, ast.Unparen(call.Fun)).(*ast.Ident); ok {
+				called[id] = true
+			}
+		}
+		return true
+	})
+	for id, obj := range info.Uses {
+		f, ok := obj.(*types.Func)
+		if !ok || called[id] || f.Signature().Recv() != nil || byName[f.Name()] != nil ||
+			fset.Position(f.Pos()).Filename != preludeFile || fset.Position(id.Pos()).Filename == preludeFile {
+			continue
+		}
+		errAt(id.Pos(), fmt.Sprintf("%s can only be called, not used as a value", id.Name))
+	}
 }
 
 // nilTargets finds the type each nil is converted to. go/types records nil
@@ -748,10 +860,13 @@ func checkImport(file, lit string, pos Pos) *Error {
 // {if} and {for} become real Go if and for statements so their scopes and
 // types are Go's own.
 type gen struct {
-	src    *strings.Builder
-	file   string
-	byName map[string]*Component
-	errs   *ErrorList
+	src      *strings.Builder
+	file     string
+	byName   map[string]*Component
+	errs     *ErrorList
+	own      map[string]string // check's own: the names the program claims, and how
+	motionBy map[string]string // den's motion names the program's own names take away
+	chain    []Node            // the {if} and {for} blocks whose top level is being written
 }
 
 func (g *gen) d(p Pos) string { return lineDirective(g.file, p) }
@@ -762,22 +877,37 @@ func (g *gen) nodes(ns []Node) {
 	}
 }
 
+// body writes the nodes of a body of block b, whose top level they are.
+func (g *gen) body(b Node, ns []Node) {
+	defer func(c []Node) { g.chain = c }(g.chain)
+	g.chain = append(g.chain[:len(g.chain):len(g.chain)], b)
+	g.nodes(ns)
+}
+
+// inside writes nodes that are at the top level of no block, such as the
+// children of an element.
+func (g *gen) inside(ns []Node) {
+	defer func(c []Node) { g.chain = c }(g.chain)
+	g.chain = nil
+	g.nodes(ns)
+}
+
 func (g *gen) node(n Node) {
 	switch n := n.(type) {
 	case *Interp:
 		fmt.Fprintf(g.src, "\t%sdenText(%s%s)\n", g.d(n.Pos_), g.d(n.Pos_), n.Src)
 	case *If:
 		fmt.Fprintf(g.src, "\t%sif %s%s {\n", g.d(n.Pos_), g.d(n.CondPos), n.Cond)
-		g.nodes(n.Then)
+		g.body(n, n.Then)
 		if len(n.Else) > 0 {
 			g.src.WriteString("\t} else {\n")
-			g.nodes(n.Else)
+			g.body(n, n.Else)
 		}
 		g.src.WriteString("\t}\n")
 	case *For:
 		fmt.Fprintf(g.src, "\t%sfor %s%s {\n", g.d(n.Pos_), g.d(n.HeaderPos), n.Header)
 		fmt.Fprintf(g.src, "\t%sdenKey(%s%s)\n", g.d(n.KeyPos), g.d(n.KeyPos), n.Key)
-		g.nodes(n.Body)
+		g.body(n, n.Body)
 		g.src.WriteString("\t}\n")
 	case *Element:
 		if n.IsComponent() {
@@ -796,6 +926,12 @@ func (g *gen) node(n Node) {
 				*g.errs = append(*g.errs, err)
 				continue
 			}
+			if isMotionAttr(a.Name) {
+				if err := g.motionAttr(a); err != nil {
+					*g.errs = append(*g.errs, err)
+				}
+				continue
+			}
 			if a.Kind != AttrExpr {
 				continue
 			}
@@ -806,16 +942,93 @@ func (g *gen) node(n Node) {
 				fmt.Fprintf(g.src, "\t%sdenAttr(%s%s)\n", d, d, a.Value)
 			}
 		}
-		g.nodes(n.Children)
+		g.inside(n.Children)
 	}
+}
+
+// motionAttrs are the attributes that animate an element: enter and exit
+// take a Transition, animate a Layout.
+var motionAttrs = []string{"enter", "exit", "animate"}
+
+func isMotionAttr(name string) bool { return slices.Contains(motionAttrs, name) }
+
+// motionAttr checks what can be checked of an enter, exit or animate
+// attribute before types: that its value is Go, that den's Transition or
+// Layout is there, and that the attribute is where it can play. It writes
+// the call that type-checks the value, denEnter(x) for enter={x}, or
+// denAny(x) when it reports an error: the value is still checked, and the
+// variables it uses still count as used, so that error is the only one.
+// (The pairer, which reads these calls, runs only when gen reported none.)
+func (g *gen) motionAttr(a *Attr) *Error {
+	bad := func(format string, args ...any) *Error {
+		return &Error{File: g.file, Pos: a.Pos, Msg: fmt.Sprintf(format, args...)}
+	}
+	typ, want := "Transition", "a transition in braces, like "+a.Name+"={fade()}"
+	if a.Name == "animate" {
+		typ, want = "Layout", "{layout()}: animate={layout()}"
+	}
+	if a.Kind != AttrExpr {
+		return bad("%s takes %s", a.Name, want)
+	}
+	var err *Error
+	inFor := slices.ContainsFunc(g.chain, func(b Node) bool { _, ok := b.(*For); return ok })
+	switch by := g.motionBy[typ]; {
+	case by != "":
+		err = bad("%s is not available because this program %s; rename it", a.Name, g.own[by])
+	case a.Name == "animate" && !inFor:
+		err = bad("animate works only on an element directly inside a {for} row, whose place it animates when the list changes")
+	case len(g.chain) == 0:
+		err = bad("%s works only on an element directly inside an {if} branch or a {for} row, which add and remove it", a.Name)
+	}
+	fn := "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
+	if err != nil {
+		fn = "denAny"
+	}
+	d := g.d(a.ValuePos)
+	fmt.Fprintf(g.src, "\t%s%s(%s%s)\n", d, fn, d, a.Value)
+	return err
 }
 
 // pairer walks markup in the same order as gen and links each node to the
 // checked Go statements that gen wrote for it.
 type pairer struct {
-	ck   *checked
-	cc   *checkedComponent
-	errs ErrorList
+	ck    *checked
+	cc    *checkedComponent
+	errs  ErrorList
+	chain []Node // as in gen
+}
+
+// body pairs the nodes of a body of block b, as gen.body wrote them.
+func (pr *pairer) body(b Node, ns []Node, stmts []ast.Stmt) {
+	defer func(c []Node) { pr.chain = c }(pr.chain)
+	pr.chain = append(pr.chain[:len(pr.chain):len(pr.chain)], b)
+	pr.nodes(ns, stmts)
+}
+
+// inside pairs nodes that are at the top level of no block, as gen.inside
+// wrote them.
+func (pr *pairer) inside(ns []Node, stmts []ast.Stmt) []ast.Stmt {
+	defer func(c []Node) { pr.chain = c }(pr.chain)
+	pr.chain = nil
+	return pr.nodes(ns, stmts)
+}
+
+// motion checks the value of an enter, exit or animate attribute against
+// the types, and that some block around the element can change.
+func (pr *pairer) motion(el *Element, a *Attr, x ast.Expr) {
+	if pr.ck.reactive(x) {
+		pr.errAt(x, "%s cannot depend on a signal: den reads it once, when it makes the element", a.Name)
+	}
+	for _, b := range pr.chain {
+		if _, isFor := b.(*For); (isFor || a.Name != "animate") && pr.ck.blockReactive(pr.cc.parts[b]) {
+			return
+		}
+	}
+	msg := fmt.Sprintf("%s never plays: the {if} or {for} around <%s> reads no signal, so it never adds or removes it", a.Name, el.Tag)
+	if a.Name == "animate" {
+		msg = fmt.Sprintf("animate never plays: the {for} around <%s> reads no signal, so its rows never move", el.Tag)
+	}
+	pr.errs = append(pr.errs, &Error{File: pr.cc.c.File, Pos: a.Pos, Msg: msg})
 }
 
 func (pr *pairer) errAt(n ast.Node, format string, args ...any) {
@@ -860,9 +1073,9 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 	case *If:
 		is := stmts[0].(*ast.IfStmt)
 		pr.cc.parts[n] = &part{kind: partIf, expr: is.Cond}
-		pr.nodes(n.Then, is.Body.List)
+		pr.body(n, n.Then, is.Body.List)
 		if len(n.Else) > 0 {
-			pr.nodes(n.Else, is.Else.(*ast.BlockStmt).List)
+			pr.body(n, n.Else, is.Else.(*ast.BlockStmt).List)
 		}
 		return stmts[1:]
 	case *For:
@@ -888,7 +1101,7 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 			pr.errAt(key, "list keys must be strings, numbers or bools, not %s", pr.ck.info.TypeOf(key))
 		}
 		pr.cc.parts[n] = &part{kind: partFor, expr: key, rng: rs}
-		pr.nodes(n.Body, rs.Body.List[1:])
+		pr.body(n, n.Body, rs.Body.List[1:])
 		return stmts[1:]
 	case *Element:
 		if n.IsComponent() {
@@ -902,7 +1115,7 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 					// gen wrote denSlot(func() { ... }) around the markup.
 					pt.slots[i] = nodes
 					fn := pt.args[i].(*ast.CallExpr).Args[0].(*ast.FuncLit)
-					pr.nodes(nodes, fn.Body.List)
+					pr.inside(nodes, fn.Body.List)
 				}
 			}
 			pr.cc.parts[n] = pt
@@ -913,16 +1126,29 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 				continue
 			}
 			arg := callArgs(stmts[0])[0]
-			if isEventAttr(a.Name) {
+			switch {
+			case isEventAttr(a.Name):
 				pr.cc.attrs[a] = &part{kind: partHandler, stmts: arg.(*ast.FuncLit).Body.List}
-			} else {
+			case isMotionAttr(a.Name):
+				pr.cc.attrs[a] = &part{kind: partMotion, expr: arg}
+				pr.motion(n, a, arg)
+			default:
 				pr.cc.attrs[a] = &part{kind: partAttr, expr: arg}
 			}
 			stmts = stmts[1:]
 		}
-		return pr.nodes(n.Children, stmts)
+		return pr.inside(n.Children, stmts)
 	}
 	return stmts
+}
+
+// blockReactive reports whether the {if} or {for} with part pt reads a
+// signal, so that its content can change.
+func (ck *checked) blockReactive(pt *part) bool {
+	if pt.kind == partFor {
+		return ck.reactive(pt.rng.X)
+	}
+	return ck.reactive(pt.expr)
 }
 
 func isMark(s ast.Stmt) bool {
@@ -1083,6 +1309,8 @@ func (g *gen) component(el *Element) *Error {
 	for _, a := range el.Attrs {
 		p, ok := param(a.Name)
 		switch {
+		case !ok && isMotionAttr(a.Name):
+			return bad(a.Pos, "%s works on HTML and SVG elements, not on components: <%s> has no prop %q", a.Name, el.Tag, a.Name)
 		case !ok:
 			return bad(a.Pos, "<%s> has no prop %q", el.Tag, a.Name)
 		case p.Children && p.Name == "children":
@@ -1109,7 +1337,7 @@ func (g *gen) component(el *Element) *Error {
 				continue
 			}
 			g.src.WriteString("denSlot(func() {\n")
-			g.nodes(nodes)
+			g.inside(nodes)
 			g.src.WriteString("\t})")
 			continue
 		}

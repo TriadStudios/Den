@@ -48,6 +48,7 @@ class Node {
   get textContent() { return this.childNodes.map((c) => c.textContent).join(""); }
   set textContent(v) { for (const c of [...this.childNodes]) c.remove(); if (v) this.append(String(v)); }
   get ownerDocument() { return document; }
+  contains(n) { for (; n; n = n.parentNode) if (n === this) return true; return false; }
 }
 class Text extends Node {
   constructor(s) { super(); this.data = String(s); }
@@ -72,8 +73,11 @@ class Element extends Node {
     this.namespaceURI = ns;
     this.attributes = new Map();
     this.listeners = {};
+    this.captures = {};
     this.value = "";
     this.checked = false;
+    this.inert = false;
+    this.style = {};
   }
   get nodeType() { return 1; }
   get localName() { return this.tagName; }
@@ -81,20 +85,43 @@ class Element extends Node {
   setAttribute(k, v) { this.attributes.set(k, String(v)); }
   getAttribute(k) { return this.attributes.get(k) ?? null; }
   removeAttribute(k) { this.attributes.delete(k); }
-  addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }
+  addEventListener(type, fn, capture) { ((capture ? this.captures : this.listeners)[type] ??= []).push(fn); }
   focus() { document.activeElement = this; }
-  // dispatch bubbles an event from this element to the document and then
-  // the window. extra overrides fields such as button or ctrlKey.
+  blur() { if (document.activeElement === this) document.activeElement = null; }
+  // animate records each animation in anims; finish() and cancel() end it.
+  animate(k, o) { const a = new Animation(this, k, o); anims.push(a); return a; }
+  // An element is where rect says, or else in a column: 10px down for each
+  // element before it among its parent's children.
+  getBoundingClientRect() {
+    if (this.rect) return this.rect;
+    const s = this.parentNode?.childNodes.filter((c) => c instanceof Element) ?? [];
+    return { left: 0, top: 10 * Math.max(s.indexOf(this), 0), width: 100, height: 10 };
+  }
+  // dispatch runs an event's capture listeners from the top element down
+  // to this one, then bubbles it from this element to the document and
+  // then the window. extra overrides fields such as button or ctrlKey.
   dispatch(type, extra = {}) {
     const ev = {
       type, target: this, button: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
-      defaultPrevented: false, cancelBubble: false, preventDefault() { this.defaultPrevented = true; }, ...extra,
+      defaultPrevented: false, cancelBubble: false, stopped: false, preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.cancelBubble = true; }, stopImmediatePropagation() { this.cancelBubble = this.stopped = true; }, ...extra,
     };
-    for (let n = this; n && !ev.cancelBubble; n = n.parentNode) for (const fn of n.listeners?.[type] ?? []) fn(ev);
-    if (!ev.cancelBubble) for (const fn of docListeners[type] ?? []) fn(ev);
-    if (!ev.cancelBubble) for (const fn of winListeners[type] ?? []) fn(ev);
+    const path = [], call = (fns) => { for (const fn of fns ?? []) if (!ev.stopped) fn(ev); };
+    for (let n = this; n; n = n.parentNode) path.push(n);
+    for (let i = path.length - 1; i >= 0 && !ev.cancelBubble; i--) call(path[i].captures?.[type]);
+    for (let i = 0; i < path.length && !ev.cancelBubble; i++) call(path[i].listeners?.[type]);
+    if (!ev.cancelBubble) call(docListeners[type]);
+    if (!ev.cancelBubble) call(winListeners[type]);
     return ev;
   }
+}
+// An Animation as element.animate returns it: el, its keyframes k and
+// options o. finish() runs onfinish; a cancelled one never finishes.
+let anims = [];
+class Animation {
+  constructor(el, k, o) { this.el = el; this.k = k; this.o = o; this.playState = "running"; this.onfinish = null; }
+  cancel() { if (this.playState === "running") this.playState = "idle"; }
+  finish() { if (this.playState !== "running") return; this.playState = "finished"; this.onfinish?.(); }
 }
 const root = new Element("div", "html");
 const docListeners = {};
@@ -147,6 +174,14 @@ globalThis.history = {
 };
 let scrolls = 0;
 globalThis.scrollTo = () => { scrolls++; };
+// matchMedia answers prefers-reduced-motion from reduced. Animation frames
+// run only on frame(), which moves the clock (now) on by ms.
+let reduced = false;
+globalThis.matchMedia = (q) => ({ matches: q === "(prefers-reduced-motion: reduce)" && reduced });
+const rafs = new Map();
+let rafID = 0, now = 0;
+globalThis.requestAnimationFrame = (f) => { rafs.set(++rafID, f); return rafID; };
+globalThis.cancelAnimationFrame = (id) => { rafs.delete(id); };
 
 // ---- helpers for test scripts ----------------------------------------------
 function html(n = root) {
@@ -190,3 +225,11 @@ function input(el, value) { el.value = value; el.dispatch("input"); }
 function tick() { return new Promise((r) => setTimeout(r, 0)); }
 function ops() { const n = domOps; domOps = 0; return n; }
 function log(...a) { console.log(...a); }
+// running lists the animations still running, as tag:text; finishAll
+// finishes them.
+function running() { return anims.filter((a) => a.playState === "running").map((a) => a.el.tagName + ":" + a.el.textContent); }
+function finishAll() { anims.filter((a) => a.playState === "running").forEach((a) => a.finish()); }
+function frame(ms = 16) { now += ms; const fs = [...rafs.values()]; rafs.clear(); fs.forEach((f) => f(now)); }
+// frames runs frames until none is asked for, at most n, and returns how
+// many ran.
+function frames(n = 1000) { let i = 0; for (; rafs.size && i < n; i++) frame(); return i; }
