@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Pos is a 1-based line/column inside a .den file.
@@ -890,23 +891,32 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 // commentOnly reports whether src, the inside of a {...} in markup, holds
 // nothing but comments and whitespace, which makes it a comment. Checking
 // that it starts with /* and ends with */ was not enough: {/* a */ x /* b */}
-// was dropped with its x.
+// was dropped with its x. Whitespace is what strings.TrimSpace trims, as
+// it always was here, so {U+00A0} is a comment too; an unterminated
+// comment is not, and is left for the Go checker to report.
 func commentOnly(src string) bool {
-	fset := token.NewFileSet()
-	file := fset.AddFile("", -1, len(src))
-	var s scanner.Scanner
-	bad := false
-	s.Init(file, []byte(src), func(token.Position, string) { bad = true }, scanner.ScanComments)
-	for {
-		_, tok, lit := s.Scan()
-		switch {
-		case tok == token.EOF:
-			return !bad // an unterminated comment is left to the Go checker
-		case tok == token.COMMENT, tok == token.SEMICOLON && lit == "\n":
+	for i := 0; i < len(src); {
+		r, n := utf8.DecodeRuneInString(src[i:])
+		switch rest := src[i:]; {
+		case unicode.IsSpace(r):
+			i += n
+		case strings.HasPrefix(rest, "//"):
+			if j := strings.IndexByte(rest, '\n'); j >= 0 {
+				i += j
+			} else {
+				i = len(src)
+			}
+		case strings.HasPrefix(rest, "/*"):
+			j := strings.Index(rest[2:], "*/")
+			if j < 0 {
+				return false
+			}
+			i += j + 4
 		default:
 			return false
 		}
 	}
+	return true
 }
 
 // controlWord returns "if" or "for" when the '{' at p.off opens a

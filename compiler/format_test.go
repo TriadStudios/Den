@@ -306,6 +306,62 @@ func TestSameGo(t *testing.T) {
 	}
 }
 
+// TestCommentOnlyInterps: a {...} in markup holding only comments and
+// whitespace (what strings.TrimSpace trims, U+00A0 and \f included) is a
+// comment and compiles to nothing, as it did before den fmt; one holding
+// anything else is Go. den fmt agrees, formats each the same twice, and
+// never changes what it compiles to.
+func TestCommentOnlyInterps(t *testing.T) {
+	prog := func(inner string) string {
+		return "component App() {\n\tx := \"hi\"\n\t<p>[{" + inner + "}]{x}</p>\n}\n"
+	}
+	js := func(src string) string {
+		t.Helper()
+		res, err := compileOne(src)
+		if err != nil {
+			t.Fatalf("%q: %v", src, err)
+		}
+		return res.JS
+	}
+	none, x, s := js("component App() {\n\tx := \"hi\"\n\t<p>[]{x}</p>\n}\n"), js(prog("x")), js(prog(`"s"`))
+	for _, c := range []struct{ inner, want string }{
+		{"", none}, {" ", none}, {"/* a */", none}, {" /* a */ ", none},
+		{"/* a */ /* b */", none}, {"/* a *//* b */", none}, {"// a\n", none},
+		{"\n// a\n// b\n", none}, {"/**/", none}, {"/* a */ // b\n", none},
+		{" ", none}, {"\f", none}, {"/* a */ ", none}, {"\n", none},
+		{"/* a */\n", none}, {"\t\n\t", none}, {" ", none}, {`/* "}" */`, none},
+		{"\v", none}, {"// a ", none},
+		{"/* a */ x /* b */", x}, {"/* a */ x", x}, {"x /* b */", x}, {"/*a*/x/*b*/", x},
+		{`/* a */ "s" /* b */`, s},
+		{"/* unterminated ", ""}, {"/* a */ ;", ""}, {"x // c\n", ""}, {"/* } */", ""}, {"/* a */ + x", ""},
+	} {
+		src := prog(c.inner)
+		res, err := compileOne(src)
+		switch {
+		case c.want == "" && err == nil:
+			t.Errorf("{%q} compiles, want an error", c.inner)
+		case c.want != "" && err != nil:
+			t.Errorf("{%q}: %v", c.inner, err)
+		case c.want != "" && res.JS != c.want:
+			t.Errorf("{%q} compiles to different JS", c.inner)
+		}
+		if err != nil {
+			continue
+		}
+		once, err := Format("app.den", []byte(src))
+		if err != nil {
+			t.Errorf("{%q}: den fmt: %v", c.inner, err)
+			continue
+		}
+		if twice, err := Format("app.den", once); err != nil || string(twice) != string(once) {
+			t.Errorf("{%q}: den fmt is not idempotent: %v\n%s\n%s", c.inner, err, once, twice)
+		}
+		if got := js(string(once)); got != res.JS {
+			t.Errorf("{%q}: formatted, it compiles differently:\n%s", c.inner, once)
+		}
+	}
+}
+
 // TestRepoFormatted keeps every .den file in the repository formatted, so
 // that go test is the CI check for it.
 func TestRepoFormatted(t *testing.T) {
