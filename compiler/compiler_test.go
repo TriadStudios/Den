@@ -1018,6 +1018,159 @@ component App() {
     x := 1 /* oops
     <p>{x}</p>
 }`, `app.den:3:12: comment not terminated`},
+		{"enter with a string", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p enter="fade">x</p> }}</div>
+}`, `app.den:4:30: enter takes a transition in braces, like enter={fade()}`},
+		{"animate with no value", `
+component App() {
+    xs := signal([]int{1})
+    <ul>{for _, x := range xs.Get() key x { <li animate>{x}</li> }}</ul>
+}`, `app.den:4:49: animate takes {layout()}: animate={layout()}`},
+		{"enter of the wrong type", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p enter={5}>x</p> }}</div>
+}`, `app.den:4:37: cannot use 5 (untyped int constant) as Transition value in enter=`},
+		{"animate of the wrong type", `
+component App() {
+    xs := signal([]int{1})
+    <ul>{for _, x := range xs.Get() key x { <li animate={fade()}>{x}</li> }}</ul>
+}`, `app.den:4:58: cannot use fade() (value of struct type Transition) as Layout value in animate=`},
+		{"exit on a component", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <Card exit={fade()} /> }}</div>
+}
+component Card() {
+    <p>card</p>
+}`, `app.den:4:33: exit works on HTML and SVG elements, not on components: <Card> has no prop "exit"`},
+		{"enter below the top of a branch", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <div><p enter={fade()}>x</p></div> }}</div>
+}`, `app.den:4:35: enter works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+		{"exit on a component's root", `
+component App() {
+    <p exit={fade()}>x</p>
+}`, `app.den:3:8: exit works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+		{"enter in slot markup", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <Card><p enter={fade()}>x</p></Card> }}</div>
+}
+component Card(children den.Children) {
+    <div>{children}</div>
+}`, `app.den:4:36: enter works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+		{"animate in an if", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p animate={layout()}>x</p> }}</div>
+}`, `app.den:4:30: animate works only on an element directly inside a {for} row, whose place it animates when the list changes`},
+		{"slide with a direction that is not constant", `
+component App() {
+    show := signal(true)
+    dir := "left"
+    <div>{if show.Get() { <p exit={slide(dir)}>x</p> }}</div>
+}`, `app.den:5:42: slide needs a constant direction: "left", "right", "up" or "down"`},
+		{"slide with an unknown direction", `
+func out() Transition { return slide("diagonal") }
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={out()}>x</p> }}</div>
+}`, `app.den:2:38: slide takes "left", "right", "up" or "down", not "diagonal"`},
+		{"For with a duration that is not constant", `
+component App() {
+    show := signal(true)
+    d := den.Duration("1s")
+    <div>{if show.Get() { <p exit={fade().For(d)}>x</p> }}</div>
+}`, `app.den:5:47: For needs a constant duration, like 150ms or a den.Duration const`},
+		{"For with a token that is not a duration", `
+const Fast den.Duration = "quick"
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={fade().For(Fast)}>x</p> }}</div>
+}`, `app.den:5:47: "quick" is not a duration (want a number of ms or s, like 150ms)`},
+		{"For with a negative duration", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={fade().For("-5ms")}>x</p> }}</div>
+}`, `app.den:4:47: a transition cannot take a negative time: "-5ms"`},
+		{"For with a duration too long", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={fade().For("1e400s")}>x</p> }}</div>
+}`, `app.den:4:47: "1e400s" is too long for a transition`},
+		{"For with a number", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={fade().For(200)}>x</p> }}</div>
+}`, `app.den:4:47: cannot use 200 (untyped int constant) as den.Duration value in argument to fade().For`},
+		{"transition that reads a signal", `
+func pick(slow bool) Transition {
+    if slow {
+        return fade().For("1s")
+    }
+    return fade()
+}
+component App() {
+    slow := signal(true)
+    <div>{if slow.Get() { <p exit={pick(slow.Get())}>x</p> }}</div>
+}`, `app.den:10:36: exit cannot depend on a signal: den reads it once, when it makes the element`},
+		{"enter in an if that never changes", `
+component App() {
+    <div>{if 1 > 0 { <p enter={fade()}>x</p> }}</div>
+}`, `app.den:3:25: enter never plays: the {if} or {for} around <p> reads no signal, so it never adds or removes it`},
+		{"animate in a for that never changes", `
+component App() {
+    show := signal(true)
+    <ul>{for _, x := range []int{1, 2} key x {
+        {if show.Get() { <li animate={layout()}>{x}</li> }}
+    }}</ul>
+}`, `app.den:5:30: animate never plays: the {for} around <li> reads no signal, so its rows never move`},
+		{"spring of a string", `
+component App() {
+    x := spring("a")
+    <p>{x.Get()}</p>
+}`, `app.den:3:17: cannot use "a" (untyped string constant) as float64 value in argument to spring`},
+		{"comparing transitions", `
+component App() {
+    same := fade() == scale()
+    <p>{same}</p>
+}`, `app.den:3:13: invalid operation: fade() == scale() (a Transition or Layout cannot be compared)`},
+		{"den's function as a value", `
+component App() {
+    show := signal(true)
+    f := slide
+    <div>{if show.Get() { <p exit={f("diagonal")}>x</p> }}</div>
+}`, `app.den:4:10: slide can only be called, not used as a value`},
+		{"enter with the program's own Transition", `
+type Transition int
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p enter={fade()}>x</p> }}</div>
+}`, `app.den:5:30: enter is not available because this program declares its own Transition; rename it`},
+		{"fade with the program's own Transition", `
+type Transition int
+component App() {
+    x := fade()
+    <p>{x}</p>
+}`, `app.den:4:10: fade is not available because this program declares its own Transition; rename it`},
+		{"animate with the program's own Layout", `
+type Layout struct{ W int }
+component App() {
+    xs := signal([]int{1})
+    <ul>{for _, x := range xs.Get() key x { <li animate={layout()}>{x}</li> }}</ul>
+}`, `app.den:5:49: animate is not available because this program declares its own Layout; rename it`},
+		{"layout with a component named Layout", `
+component Layout() {
+    <p>x</p>
+}
+component App() {
+    l := layout()
+    <Layout />
+}`, `app.den:6:10: layout is not available because this program has a component named Layout; rename it`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1258,6 +1411,64 @@ component App() {
 			t.Errorf("%s: Router is %t", c.name, res.Router)
 		}
 		for _, w := range router {
+			if got, want := strings.Contains(res.JS, w), slices.Contains(c.ships, w); got != want {
+				t.Errorf("%s: ships %s: %t, want %t", c.name, w, got, want)
+			}
+		}
+	}
+}
+
+// Motion costs only the apps that use it, and each part ships alone: an
+// {if} with transitions ships no list or spring code, and so on.
+func TestMotionTreeShaking(t *testing.T) {
+	motion := []string{"$ifm", "$form", "$glide", "$spring", "animate(", "requestAnimationFrame", "$m0"}
+	cases := []struct {
+		name, src string
+		ships     []string
+	}{
+		{"if", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={fade()}>x</p> }}</div>
+}`, []string{"$ifm", "animate(", "$m0"}},
+		{"for", `
+component App() {
+    xs := signal([]int{1})
+    <ul>{for _, x := range xs.Get() key x { <li animate={layout()}>{x}</li> }}</ul>
+}`, []string{"$form", "$glide", "animate("}},
+		{"spring", `
+component App() {
+    x := spring(1)
+    <p>{x.Get()}</p>
+}`, []string{"$spring", "requestAnimationFrame"}},
+	}
+	dirs, _ := filepath.Glob("../examples/*")
+	dirs = append(dirs, "../bench/den")
+	for _, dir := range dirs {
+		if filepath.Base(dir) == "motion" {
+			continue
+		}
+		files, _ := filepath.Glob(filepath.Join(dir, "*.den"))
+		var src strings.Builder
+		for _, f := range files {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			src.Write(b)
+			src.WriteString("\n")
+		}
+		cases = append(cases, struct {
+			name, src string
+			ships     []string
+		}{dir, src.String(), nil})
+	}
+	for _, c := range cases {
+		res, err := compileOne(c.src)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		for _, w := range motion {
 			if got, want := strings.Contains(res.JS, w), slices.Contains(c.ships, w); got != want {
 				t.Errorf("%s: ships %s: %t, want %t", c.name, w, got, want)
 			}

@@ -1215,3 +1215,410 @@ component App() {
 		expectLines(t, runApp(t, c.src, `log(html());`), c.want)
 	}
 }
+
+// logAnims logs the animations started since it last ran (anims, from
+// dom.js) as tag:text keyframes options.
+const logAnims = `
+function anim(a) { return a.el.tagName + ":" + a.el.textContent + " " + JSON.stringify(a.k) + " " + JSON.stringify(a.o); }
+let seen = 0;
+function logNew() { anims.slice(seen).forEach((a) => log(anim(a))); seen = anims.length; }
+`
+
+// An {if} whose branches have transitions: nothing animates on the first
+// render; then the new branch enters while the old one leaves, frozen and
+// inert, and its nodes go only when its exit transition ends. Toggling
+// faster than that leaves several branches on their way out at once.
+func TestMotionIf(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    open := signal(false)
+    n := signal(0)
+    <div>
+        <button onclick={open.Set(!open.Get())}>t</button>
+        <button onclick={n.Set(n.Get() + 1)}>n</button>
+        {if open.Get() {
+            <p enter={fade()} exit={scale().For("50ms")}>{n.Get()}</p>
+            text
+        } else {
+            <i exit={fade()}>shut</i>
+        }}
+    </div>
+}`, logAnims+`
+const [t, n] = findAll("button");
+log(html()); logNew();
+click(t); await tick();
+log(html(), find("i").inert, find("p").inert); logNew();
+click(n); await tick();
+log(html());
+click(t); await tick();
+click(n); await tick();
+log(html(), running().join(" "));
+click(t); await tick();
+log(html(), running().join(" "));
+finishAll();
+log(html(), running().length);
+logNew();
+click(t); await tick();
+log(html(), running().join(" "));
+finishAll();
+log(html());`)
+	expectLines(t, got,
+		`<div><button>t</button><button>n</button><i>shut</i></div>`,
+		`<div><button>t</button><button>n</button><i>shut</i><p>0</p>text</div> true false`,
+		`i:shut {"opacity":0} {"duration":200,"easing":"ease-in","fill":"forwards"}`,
+		`p:0 {"opacity":0,"offset":0} {"duration":200,"easing":"ease-out","fill":"none"}`,
+		`<div><button>t</button><button>n</button><i>shut</i><p>1</p>text</div>`,
+		// The first <i> and <p> are still leaving (<p>'s enter, too).
+		`<div><button>t</button><button>n</button><i>shut</i><p>1</p><i>shut</i></div> i:shut p:1 p:1`,
+		`<div><button>t</button><button>n</button><i>shut</i><p>1</p><i>shut</i><p>2</p>text</div> i:shut p:1 p:1 i:shut p:2`,
+		`<div><button>t</button><button>n</button><p>2</p>text</div> 0`,
+		`p:1 {"opacity":0,"transform":"scale(.95)"} {"duration":50,"easing":"ease-in","fill":"forwards"}`,
+		`i:shut {"opacity":0} {"duration":200,"easing":"ease-in","fill":"forwards"}`,
+		`p:2 {"opacity":0,"offset":0} {"duration":200,"easing":"ease-out","fill":"none"}`,
+		`<div><button>t</button><button>n</button><p>2</p><i>shut</i></div> p:2`,
+		`<div><button>t</button><button>n</button><i>shut</i></div>`)
+}
+
+// An else if chain is one block to the eye: each of its branches enters
+// and leaves, though the inner {if} is built anew when the outer one
+// switches to it. A nested block disposed while its elements leave
+// cancels their transitions and removes them.
+func TestMotionNested(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    n := signal(0)
+    outer := signal(true)
+    inner := signal(true)
+    <div>
+        <button onclick={n.Set((n.Get() + 1) % 3)}>n</button>
+        <button onclick={outer.Set(!outer.Get())}>outer</button>
+        <button onclick={inner.Set(!inner.Get())}>inner</button>
+        {if n.Get() == 0 {
+            <b enter={fade()} exit={fade()}>zero</b>
+        } else if n.Get() == 1 {
+            <i enter={fade()} exit={fade()}>one</i>
+        }}
+        {if outer.Get() {
+            <section>{if inner.Get() { <p exit={fade()}>p</p> }}</section>
+        }}
+    </div>
+}`, `
+const [n, outer, inner] = findAll("button");
+click(n); await tick();
+log(html(), running().join(" "));
+finishAll();
+click(n); await tick();
+log(html(), running().join(" "));
+finishAll();
+click(n); await tick();
+log(html(), running().join(" "));
+finishAll();
+click(inner); await tick();
+const p = find("p"), a = anims.at(-1);
+log(running().join(" "), p.inert);
+click(outer); await tick();
+log(a.playState, p.parentNode === null, findAll("section").length, running().length);
+click(outer); await tick();
+log(html(find("section")), running().length);`)
+	expectLines(t, got,
+		`<div><button>n</button><button>outer</button><button>inner</button><b>zero</b><i>one</i><section><p>p</p></section></div> b:zero i:one`,
+		`<div><button>n</button><button>outer</button><button>inner</button><i>one</i><section><p>p</p></section></div> i:one`,
+		`<div><button>n</button><button>outer</button><button>inner</button><b>zero</b><section><p>p</p></section></div> b:zero`,
+		`p:p true`,
+		`idle true 0 0`,
+		`<section></section> 0`)
+}
+
+// testList is a list whose items come from location.hash, "#a,b,c". With
+// struct items ("#1=a,2=b"), every row is rebuilt on each change.
+const testList = `
+import "strings"
+
+type It struct {
+    K string
+    V string
+}
+
+func items(h string) []string {
+    var out []string
+    for _, s := range strings.Split(strings.TrimPrefix(h, "#"), ",") {
+        if s != "" {
+            out = append(out, s)
+        }
+    }
+    return out
+}
+
+func structs(h string) []It {
+    var out []It
+    for _, s := range items(h) {
+        if kv := strings.Split(s, "="); len(kv) == 2 {
+            out = append(out, It{kv[0], kv[1]})
+        }
+    }
+    return out
+}
+
+func pick(s string) Transition {
+    if s == "x" {
+        return Transition{}
+    }
+    return fade().For("1s")
+}
+`
+
+// A {for} whose rows have transitions: removed rows leave in place, frozen,
+// while the rest of the list moves on; a key added again while its old row
+// leaves gets a new row; and rows rebuilt for a changed item neither
+// leave nor enter.
+func TestMotionFor(t *testing.T) {
+	got := runAppWith(t, testList+`
+component App() {
+    h := hash()
+    <div>
+        <ul>
+            {for _, s := range items(h.Get()) key s {
+                <li enter={fade()} exit={pick(s)}>{s}</li>.
+            }}
+        </ul>
+        <ol>
+            {for _, it := range structs(h.Get()) key it.K {
+                <li exit={slide("up")}>{it.V}</li>
+            }}
+        </ol>
+    </div>
+}`, `location.hash = "#a,b,c";`, `
+const ul = find("ul"), ol = find("ol");
+const show = (msg) => log(msg + ":", html(ul), "|", running().join(" "));
+const go = async (h) => { location.hash = h; await tick(); await tick(); };
+show("first");
+await go("#a,c"); show("remove b");
+await go("#a,b,c"); show("b again");
+finishAll(); show("done");
+await go("#a,x,b,c"); finishAll(); show("add x");
+await go("#a,b,c"); show("x has no exit");
+await go("#"); show("clear");
+await go("#d"); show("d during exits");
+finishAll(); show("done");
+const inOl = () => anims.filter((a) => a.playState === "running" && a.el.parentNode === ol).map((a) => a.el.textContent).join(" ");
+await go("#1=a,2=b,3=c"); log(html(ol), "|", inOl());
+await go("#1=A,3=c"); log(html(ol), "|", inOl());
+await go("#1=A,3=C"); log(html(ol), "|", inOl());
+await go("#"); log(html(ol), "|", inOl());
+finishAll(); log(html(ol));`)
+	expectLines(t, got,
+		`first: <ul><li>a</li>.<li>b</li>.<li>c</li>.</ul> | `,
+		`remove b: <ul><li>a</li>.<li>b</li><li>c</li>.</ul> | li:b`,
+		`b again: <ul><li>a</li>.<li>b</li><li>b</li>.<li>c</li>.</ul> | li:b li:b`,
+		`done: <ul><li>a</li>.<li>b</li>.<li>c</li>.</ul> | `,
+		`add x: <ul><li>a</li>.<li>x</li>.<li>b</li>.<li>c</li>.</ul> | `,
+		`x has no exit: <ul><li>a</li>.<li>b</li>.<li>c</li>.</ul> | `,
+		`clear: <ul><li>a</li><li>b</li><li>c</li></ul> | li:a li:b li:c`,
+		`d during exits: <ul><li>a</li><li>b</li><li>c</li><li>d</li>.</ul> | li:a li:b li:c li:d`,
+		`done: <ul><li>d</li>.</ul> | `,
+		// Struct items are new on every change, so every row is rebuilt,
+		// in its place, even while one leaves.
+		`<ol><li>a</li><li>b</li><li>c</li></ol> | `,
+		`<ol><li>A</li><li>b</li><li>c</li></ol> | b`,
+		`<ol><li>A</li><li>b</li><li>C</li></ol> | b`,
+		`<ol><li>A</li><li>b</li><li>C</li></ol> | b A C`,
+		`<ol></ol>`)
+}
+
+// animate={layout()}: rows that move glide from where they were, and the
+// rows after a leaving row glide up when it is finally removed.
+func TestMotionLayout(t *testing.T) {
+	got := runAppWith(t, testList+`
+component App() {
+    h := hash()
+    <ul>
+        {for _, s := range items(h.Get()) key s {
+            <li exit={fade()} animate={layout()}>{s}</li>
+        }}
+    </ul>
+}`, `location.hash = "#a,b,c";`, logAnims+`
+const go = async (h) => { location.hash = h; await tick(); await tick(); };
+await go("#c,a,b"); logNew();
+await go("#c,b"); logNew();
+finishAll(); logNew();
+log(html());`)
+	expectLines(t, got,
+		`li:c {"transform":"translate(0px, 20px)","offset":0} {"duration":200,"easing":"ease-out"}`,
+		`li:a {"transform":"translate(0px, -10px)","offset":0} {"duration":200,"easing":"ease-out"}`,
+		`li:b {"transform":"translate(0px, -10px)","offset":0} {"duration":200,"easing":"ease-out"}`,
+		`li:a {"opacity":0} {"duration":200,"easing":"ease-in","fill":"forwards"}`,
+		`li:b {"transform":"translate(0px, 10px)","offset":0} {"duration":200,"easing":"ease-out"}`,
+		`<ul><li>c</li><li>b</li></ul>`)
+}
+
+// Under prefers-reduced-motion, and in a browser without element.animate,
+// nothing animates: leaving nodes go at once and lists do not glide.
+func TestMotionReduced(t *testing.T) {
+	src := testList + `
+component App() {
+    h := hash()
+    <div>
+        {if h.Get() != "#a" {
+            <p enter={fade()} exit={fade()}>p</p>
+        }}
+        <ul>
+            {for _, s := range items(h.Get()) key s {
+                <li enter={scale()} exit={fade()} animate={layout()}>{s}</li>
+            }}
+        </ul>
+    </div>
+}`
+	script := `
+const go = async (h) => { location.hash = h; await tick(); await tick(); };
+await go("#a"); log(html());
+await go("#b,a"); log(html());
+await go("#a,b"); log(html(), anims.length);`
+	for _, before := range []string{`location.hash = "#b"; reduced = true;`, `location.hash = "#b"; delete Element.prototype.animate;`} {
+		got := runAppWith(t, src, before, script)
+		expectLines(t, got,
+			`<div><ul><li>a</li></ul></div>`,
+			`<div><p>p</p><ul><li>b</li><li>a</li></ul></div>`,
+			`<div><p>p</p><ul><li>a</li><li>b</li></ul></div> 0`)
+	}
+}
+
+// spring(x) starts at x and follows it, stepping once a frame only while
+// it moves; it settles exactly on its target. It stops with the branch
+// that made it, and jumps under reduced motion.
+func TestSpring(t *testing.T) {
+	src := `
+component App() {
+    to := signal(0.0)
+    show := signal(true)
+    <div>
+        <button onclick={to.Set(to.Get() + 100)}>go</button>
+        <button onclick={show.Set(false)}>hide</button>
+        {if show.Get() {
+            <Dot to={to} />
+        }}
+    </div>
+}
+
+component Dot(to *Signal[float64]) {
+    x := spring(to.Get() * 2)
+    <p>{x.Get()}</p>
+}`
+	got := runApp(t, src, `
+const [go, hide] = findAll("button");
+log(find("p").textContent, rafs.size);
+click(go); await tick();
+log(rafs.size);
+frame(); await tick();
+const v1 = Number(find("p").textContent);
+frame(); await tick();
+const v2 = Number(find("p").textContent);
+log(v1 > 0 && v1 < v2 && v2 < 200);
+const n = frames(); await tick();
+log(find("p").textContent, rafs.size, n > 20 && n < 120);
+click(go); await tick(); frame(); await tick();
+log(rafs.size);
+click(hide); await tick();
+log(rafs.size);`)
+	expectLines(t, got, `0 0`, `1`, `true`, `200 0 true`, `1`, `0`)
+
+	got = runAppWith(t, src, `reduced = true;`, `
+click(findAll("button")[0]); await tick();
+log(find("p").textContent, rafs.size);`)
+	expectLines(t, got, `200 0`)
+}
+
+// Transitions are values: a variable, a prop or a function's result
+// works as well as a call in the attribute. The zero Transition plays
+// nothing, and a copy of it with .For neither.
+func TestMotionValues(t *testing.T) {
+	got := runApp(t, `
+const Slow den.Duration = "0.5s"
+
+component App() {
+    show := signal(true)
+    out := slide("right").For(Slow)
+    <div>
+        <button onclick={show.Set(!show.Get())}>t</button>
+        <List show={show} out={out} none={Transition{}} />
+        <svg>{if show.Get() { <circle exit={out.For("1e2ms")} r="1" /> }}</svg>
+    </div>
+}
+
+component List(show *Signal[bool], out Transition, none Transition) {
+    var zero Transition
+    <ul>
+        {if show.Get() {
+            <li exit={out}>a</li>
+            <li exit={none}>b</li>
+            <li exit={zero.For("1s")}>c</li>
+        }}
+    </ul>
+}`, `
+click(find("button")); await tick();
+log(html());
+log(anims.map((a) => a.el.tagName + " " + JSON.stringify(a.k) + " " + a.o.duration).join("\n"));`)
+	expectLines(t, got,
+		`<div><button>t</button><ul><li>a</li></ul><svg><circle r="1"></circle></svg></div>`,
+		`li {"opacity":0,"transform":"translateX(100%)"} 500`,
+		`circle {"opacity":0,"transform":"translateX(100%)"} 100`)
+}
+
+// Programs keep their own Transition, Layout, scale and so on; den's then
+// give way, and the others still work. A program with its own den writes
+// .For's duration as a string.
+func TestRunOwnMotionNames(t *testing.T) {
+	for _, c := range []struct{ src, want string }{{`
+func scale(x int) int { return x * 2 }
+
+type Layout struct{ W int }
+
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p enter={fade()} exit={slide("up")}>{scale(2)} {Layout{W: 3}.W}</p> }}</div>
+}`, `<div><p>4 3</p></div>`}, {`
+type den struct{ N int }
+
+component App() {
+    show := signal(true)
+    xs := signal([]int{1})
+    <div>
+        {if show.Get() { <p exit={fade().For("2s")}>{den{N: 5}.N}</p> }}
+        <ul>{for _, x := range xs.Get() key x { <li animate={layout()}>{x}</li> }}</ul>
+    </div>
+}`, `<div><p>5</p><ul><li>1</li></ul></div>`}, {`
+func spring(n int) int { return n + 1 }
+
+component App() {
+    <p>{spring(1)}</p>
+}`, `<p>2</p>`}} {
+		expectLines(t, runApp(t, c.src, `log(html());`), c.want)
+	}
+}
+
+// The rows of a list directly in an {if} branch are elements that branch
+// adds and removes: they enter and leave with it.
+func TestMotionListInBranch(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    show := signal(true)
+    xs := signal([]string{"a", "b"})
+    <div>
+        <button onclick={show.Set(!show.Get())}>t</button>
+        {if show.Get() {
+            {for _, x := range xs.Get() key x {
+                <i enter={fade()} exit={fade()}>{x}</i>
+            }}
+        }}
+    </div>
+}`, `
+log(running().length);
+click(find("button")); await tick();
+log(html(), running().join(" "));
+finishAll();
+click(find("button")); await tick();
+log(html(), running().join(" "));`)
+	expectLines(t, got,
+		`0`,
+		`<div><button>t</button><i>a</i><i>b</i></div> i:a i:b`,
+		`<div><button>t</button><i>a</i><i>b</i></div> i:a i:b`)
+}
