@@ -110,3 +110,157 @@ function $linkTo(r, v) {
   const u = "/" + r.s.map((s) => (s[0] === ":" ? encodeURIComponent(v[s.slice(1)]) : s[0] === "*" ? v[s.slice(1)].split("/").map(encodeURIComponent).join("/") : encodeURIComponent(s))).join("/");
   return u[1] === "/" ? "/." + u : u;
 }
+// Motion: enter and exit transitions, layout animation and springs, all
+// with the Web Animations API: keyframe objects, never style attributes,
+// so they run under style-src 'self'. A transition is {k, d}: k the
+// keyframe of the hidden state, d the duration in ms. Elements carry
+// theirs as $in and $out, and $lay when they glide to a new place in a
+// list. Nothing animates under prefers-reduced-motion, or in a browser
+// without element.animate.
+function $fade(d) { return { k: { opacity: 0 }, d }; }
+function $scale(d) { return { k: { opacity: 0, transform: "scale(.95)" }, d }; }
+function $slide(dir, d) { return { k: { opacity: 0, transform: $slides[dir] }, d }; }
+const $slides = { left: "translateX(-100%)", right: "translateX(100%)", up: "translateY(-100%)", down: "translateY(100%)" };
+function $still() { return !!globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches; }
+// $play runs transition s on element m: from the hidden state when m
+// enters, and to it (held until m is removed) when m leaves (out). It
+// returns the animation, or null when nothing plays.
+function $play(m, s, out) {
+  if (!s?.k || !m.animate || $still()) return null;
+  return m.animate(out ? s.k : { ...s.k, offset: 0 }, { duration: s.d, easing: out ? "ease-in" : "ease-out", fill: out ? "forwards" : "none" });
+}
+function $enter(ns) { ns.forEach((m) => $play(m, m.$in)); }
+// $exit takes nodes ns out of their block. An element with an exit
+// transition is made inert and kept in out (node -> animation) until the
+// transition ends, and then rm removes it; every other node goes at once.
+function $exit(ns, out, rm = (m) => m.remove()) {
+  for (const m of ns) {
+    const x = $play(m, m.$out, 1);
+    if (!x) { m.remove(); continue; }
+    m.inert = true;
+    out.set(m, x);
+    x.onfinish = () => { out.delete(m); rm(m); };
+  }
+}
+// $gone removes the nodes still leaving when their block is disposed.
+function $gone(out) { out.forEach((x, m) => { x.cancel(); m.remove(); }); out.clear(); }
+// $ifm is $if for blocks whose branches have enter or exit transitions.
+// The branch it leaves is freed at once, so its bindings stop, but its
+// elements with exit transitions stay (in out) until they have played,
+// and are never part of a branch again. The new branch goes in at once,
+// after them, and plays its enter transitions, except on the first run:
+// a block that is built with its page or its parent does not animate.
+function $ifm(a, b, cond, yes, no) {
+  let cur, own;
+  const out = new Map();
+  $effect(() => {
+    const v = !!cond();
+    if (v === cur) return;
+    const re = cur !== undefined, old = [];
+    if (re) {
+      $free(own);
+      own = null;
+      for (let m = a.nextSibling; m !== b; m = m.nextSibling) out.has(m) || old.push(m);
+      $exit(old, out);
+    }
+    cur = v;
+    const f = v ? yes : no;
+    if (f) {
+      let n;
+      [n, own] = $scope(f);
+      const ns = n.nodeType === 11 ? [...n.childNodes] : [n];
+      b.before(n);
+      if (re) $enter(ns);
+    }
+  });
+  $cleanup(() => { $free(own); $gone(out); });
+}
+// $form is $for for lists whose rows have transitions or animate={layout()}.
+// Rows whose keys are gone are freed and kept from $reconcile, so it never
+// removes them: they play their exit transitions and leave on their own.
+// Rows with new keys play their enter transitions (not on the first run),
+// and elements with $lay glide from where they were to where the change
+// put them, and again when leaving rows go.
+function $form(a, b, list, key, row, ui, hs) {
+  let rows = [], ran = false;
+  const out = new Map(), rm = (m) => { const p = $where(rows); m.remove(); $glide(p, rows); };
+  $effect(() => {
+    const items = list(), l = $listener;
+    $listener = null;
+    try {
+      const ix = items.$k, now = new Map();
+      items.forEach((v, n) => { const i = ix ? ix[n] : n, k = key(v, i); now.has(k) || now.set(k, [v, i]); });
+      const keep = rows.filter((r) => now.has(r.k));
+      const gone = rows.filter((r) => !now.has(r.k)), had = new Set(keep.map((r) => r.k)), p = $where(keep);
+      gone.forEach((r) => $free(r.d));
+      // When $reconcile can reuse no row it clears the whole list at once,
+      // leaving nodes too. Building the first row again here, in its
+      // place, gives it one to reuse.
+      if ((gone.length || out.size) && keep.length && !keep.some((r) => { const [v, i] = now.get(r.k); return Object.is(v, r.v) && (!ui || i === r.i); })) {
+        const r = keep[0], [v, i] = now.get(r.k), [f, d] = $scope(() => row(v, i)), g = f.nodeType === 11;
+        keep[0] = { k: r.k, v, i, d, p: -1, h: hs, a: g ? f.firstChild : f, b: g ? f.lastChild : f };
+        if (hs) f.$r = keep[0];
+        r.a.before(f);
+        $free(r.d);
+        $nodes(r).forEach((m) => m.remove());
+      }
+      const ns = gone.flatMap($nodes);
+      rows = $reconcile(a, b, keep, items, key, row, ui, hs);
+      $exit(ns, out, rm);
+      if (ran) rows.forEach((r) => had.has(r.k) || $enter($nodes(r)));
+      $glide(p, rows);
+      ran = true;
+    } finally { $listener = l; }
+  });
+  $cleanup(() => { rows.forEach((r) => $free(r.d)); $gone(out); });
+}
+// $where returns where the elements with $lay in rows rs are, by row key.
+function $where(rs) {
+  const p = new Map();
+  if (!$still()) for (const r of rs) {
+    const ms = $nodes(r).filter((m) => m.$lay);
+    if (ms.length) p.set(r.k, ms.map((m) => m.getBoundingClientRect()));
+  }
+  return p;
+}
+// $glide moves the elements with $lay in rows rs from where p says they
+// were to where they are now, starting them translated back by the
+// difference. A glide still running is replaced by one from where the
+// element is seen now.
+function $glide(p, rs) {
+  if (p.size) for (const r of rs) {
+    const was = p.get(r.k);
+    if (was) $nodes(r).filter((m) => m.$lay).forEach((m, i) => {
+      if (!was[i] || !m.animate) return;
+      m.$f?.cancel();
+      const n = m.getBoundingClientRect(), x = was[i].left - n.left, y = was[i].top - n.top;
+      if (x || y) m.$f = m.animate({ transform: `translate(${x}px, ${y}px)`, offset: 0 }, { duration: 200, easing: "ease-out" });
+    });
+  }
+}
+// $spring is spring(target): a signal that follows f() with a damped
+// spring (stiffness 170, damping 26, mass 1), stepped once a frame only
+// while it moves. It starts at its target, and jumps to each new target
+// under reduced motion. It stops with the scope that made it.
+function $spring(f) {
+  const s = $signal(0);
+  let x, v = 0, to, id = 0, t;
+  const step = (now) => {
+    for (let d, r = Math.min(now - (t ?? now - 16), 64) / 1e3; r > 0; r -= d) {
+      d = Math.min(r, 0.004);
+      v += (170 * (to - x) - 26 * v) * d;
+      x += v * d;
+    }
+    t = now;
+    if (Math.abs(to - x) > 1e-3 || Math.abs(v) > 1e-3) id = requestAnimationFrame(step);
+    else { x = to; v = id = 0; t = undefined; }
+    s.set(x);
+  };
+  $effect(() => {
+    to = f();
+    if (x !== undefined && globalThis.requestAnimationFrame && !$still()) id ||= requestAnimationFrame(step);
+    else { if (id) cancelAnimationFrame(id); v = id = 0; t = undefined; s.set((x = to)); }
+  });
+  $cleanup(() => { if (id) cancelAnimationFrame(id); });
+  return s;
+}
