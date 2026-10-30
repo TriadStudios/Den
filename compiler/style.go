@@ -141,33 +141,44 @@ func styles(ck *checked) (map[*Component]string, string, ErrorList) {
 		}
 	}
 	scopes := scopeNames(styled)
-	vars := map[string]string{}
+	vars := map[string]*types.Const{}
 	var body strings.Builder
 	for _, c := range styled {
 		s := &styler{ck: ck, c: c, src: c.Style.Src, attr: scopes[c], vars: vars, errs: &errs}
-		s.sheet(&body)
+		body.WriteString(s.css())
 	}
 	if len(errs) > 0 {
 		return nil, "", errs
 	}
-	var out strings.Builder
+	var root string
 	if len(vars) > 0 {
 		names := make([]string, 0, len(vars))
 		for n := range vars {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		out.WriteString(":root{")
-		for i, n := range names {
-			if i > 0 {
-				out.WriteByte(';')
-			}
-			out.WriteString("--" + n + ":" + vars[n])
+		decl := func(n string) string { return "--" + n + ":" + strings.TrimSpace(constant.StringVal(vars[n].Val())) }
+		rule := cssRule{prelude: ":root"}
+		for _, n := range names {
+			rule.decls = append(rule.decls, decl(n))
 		}
-		out.WriteString("}\n")
+		root = cssText([]cssRule{rule})
+		if !readsAsWritten(root, []cssRule{rule}) {
+			// checkToken should have made this impossible.
+			bad := vars[names[0]]
+			for _, n := range names {
+				one := []cssRule{{prelude: ":root", decls: []string{decl(n)}}}
+				if !readsAsWritten(cssText(one), one) {
+					bad = vars[n]
+					break
+				}
+			}
+			p := ck.fset.Position(bad.Pos())
+			return nil, "", ErrorList{{File: p.Filename, Pos: Pos{p.Line, p.Column},
+				Msg: fmt.Sprintf("internal error: generated CSS for design token %s does not parse as written; please report", bad.Name())}}
+		}
 	}
-	out.WriteString(body.String())
-	return scopes, out.String(), nil
+	return scopes, root + body.String(), nil
 }
 
 // styler compiles one component's style block.
@@ -175,10 +186,87 @@ type styler struct {
 	ck   *checked
 	c    *Component
 	src  string
-	attr string            // the scope attribute
-	kf   map[string]bool   // the block's @keyframes names
-	vars map[string]string // the custom properties tokens use, and their values
+	attr string                  // the scope attribute
+	kf   map[string]bool         // the block's @keyframes names
+	vars map[string]*types.Const // the custom properties tokens use, and their constants
 	errs *ErrorList
+}
+
+// cssRule is a rule as den writes it: a selector or at-rule prelude, and
+// a block of declarations, or of rules for @media and the like.
+type cssRule struct {
+	prelude string
+	decls   []string
+	rules   []cssRule
+}
+
+func (r cssRule) write(b *strings.Builder) {
+	b.WriteString(r.prelude)
+	b.WriteByte('{')
+	b.WriteString(strings.Join(r.decls, ";"))
+	for _, c := range r.rules {
+		c.write(b)
+	}
+	b.WriteByte('}')
+}
+
+// cssText writes rules one per line.
+func cssText(rules []cssRule) string {
+	var b strings.Builder
+	for _, r := range rules {
+		r.write(&b)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// readsAsWritten reports whether a browser reads css, the text of rules,
+// as exactly those rules: each with the same prelude, and the same
+// declarations or rules in its block (see readCSS).
+func readsAsWritten(css string, rules []cssRule) bool {
+	items, problem := readCSS(css)
+	return problem == "" && sameRules(rules, items)
+}
+
+func sameRules(rules []cssRule, items []cssItem) bool {
+	if len(rules) != len(items) {
+		return false
+	}
+	for i, r := range rules {
+		it := items[i]
+		if !it.rule || it.text != r.prelude || len(it.items) != len(r.decls)+len(r.rules) {
+			return false
+		}
+		for j, d := range r.decls {
+			if it.items[j].rule || it.items[j].text != d {
+				return false
+			}
+		}
+		if !sameRules(r.rules, it.items[len(r.decls):]) {
+			return false
+		}
+	}
+	return true
+}
+
+// css compiles the block and returns its CSS, one top-level rule per line,
+// or "" when it has errors. Before the CSS is returned it is read again as
+// a browser reads it (readCSS), and if that finds anything but the rules
+// den meant to write, it is an error: den's own scanner got the block
+// wrong, and the rules would have broken the CSS that follows them.
+func (s *styler) css() string {
+	errs := len(*s.errs)
+	rules := s.sheet()
+	if len(*s.errs) > errs {
+		return ""
+	}
+	css := cssText(rules)
+	if !readsAsWritten(css, rules) {
+		*s.errs = append(*s.errs, &Error{File: s.c.File, Pos: s.c.Style.Pos,
+			Msg: fmt.Sprintf("internal error: generated CSS for %s does not parse as written; please report", s.c.Name)})
+		return ""
+	}
+	return css
 }
 
 // pos returns the position in the .den file of src[off].
@@ -195,8 +283,8 @@ func (s *styler) errAt(off int, format string, args ...any) {
 	*s.errs = append(*s.errs, &Error{File: s.c.File, Pos: s.pos(off), Msg: fmt.Sprintf(format, args...)})
 }
 
-// sheet writes the block's rules, one top-level rule per line.
-func (s *styler) sheet(w *strings.Builder) {
+// sheet compiles the block's rules.
+func (s *styler) sheet() []cssRule {
 	// Code in CSS: old browsers ran expression(...) and javascript: URLs.
 	lower := strings.ToLower(s.src)
 	for i := 0; i < len(s.src); {
@@ -212,7 +300,7 @@ func (s *styler) sheet(w *strings.Builder) {
 	}
 	s.kf = map[string]bool{}
 	s.keyframes(0, len(s.src))
-	s.rules(0, len(s.src), w, true)
+	return s.rules(0, len(s.src))
 }
 
 // skipSpace moves past whitespace and comments.
@@ -315,7 +403,8 @@ func (s *styler) keyframes(i, end int) {
 
 // rules compiles the rules in src[i:end]: the whole block, or the body of
 // an @media, @supports or @container rule.
-func (s *styler) rules(i, end int, w *strings.Builder, top bool) {
+func (s *styler) rules(i, end int) []cssRule {
+	var out []cssRule
 	for i = s.skipSpace(i, end); i < end; i = s.skipSpace(i, end) {
 		start := i
 		stop := s.preludeEnd(i, end)
@@ -331,51 +420,45 @@ func (s *styler) rules(i, end int, w *strings.Builder, top bool) {
 		}
 		close := s.matchBrace(stop, end)
 		i = close + 1
-		var rule string
 		if s.src[start] == '@' {
-			rule = s.atRule(start, stop, close)
-		} else {
-			sel, ok := s.selectorList(start, stop)
-			decls := s.declarations(stop+1, close)
-			if ok && decls != "" {
-				rule = sel + "{" + decls + "}"
+			if r, ok := s.atRule(start, stop, close); ok {
+				out = append(out, r)
 			}
+			continue
 		}
-		if rule != "" {
-			w.WriteString(rule)
-			if top {
-				w.WriteByte('\n')
-			}
+		sel, ok := s.selectorList(start, stop)
+		if decls := s.declarations(stop+1, close); ok && len(decls) > 0 {
+			out = append(out, cssRule{prelude: sel, decls: decls})
 		}
 	}
+	return out
 }
 
 // atRule compiles the at-rule at start whose block is src[open:close+1].
-func (s *styler) atRule(start, open, close int) string {
+func (s *styler) atRule(start, open, close int) (cssRule, bool) {
 	nameEnd, name := s.atName(start, open)
 	switch name {
 	case "media", "supports", "container":
 		prelude := s.value("@"+name, nameEnd, open)
-		var inner strings.Builder
-		s.rules(open+1, close, &inner, false)
-		if inner.Len() == 0 {
-			return ""
+		inner := s.rules(open+1, close)
+		if len(inner) == 0 {
+			return cssRule{}, false
 		}
 		if prelude != "" {
 			prelude = " " + prelude
 		}
-		return "@" + name + prelude + "{" + inner.String() + "}"
+		return cssRule{prelude: "@" + name + prelude, rules: inner}, true
 	case "keyframes":
 		kname := strings.TrimSpace(s.src[nameEnd:open])
 		if !cssIdent(kname) {
 			s.errAt(start, "@keyframes needs a name, like @keyframes fade-in")
-			return ""
+			return cssRule{}, false
 		}
 		if animationKeywords[strings.ToLower(kname)] {
 			s.errAt(s.skipSpace(nameEnd, open), "%q cannot name @keyframes: animation reads it as a keyword; choose another name", kname)
-			return ""
+			return cssRule{}, false
 		}
-		var frames []string
+		var frames []cssRule
 		for i := s.skipSpace(open+1, close); i < close; i = s.skipSpace(i, close) {
 			stop := s.preludeEnd(i, close)
 			if stop >= close || s.src[stop] == ';' {
@@ -392,13 +475,13 @@ func (s *styler) atRule(start, open, close int) string {
 				}
 				sels = append(sels, sel)
 			}
-			frames = append(frames, strings.Join(sels, ",")+"{"+s.declarations(stop+1, end)+"}")
+			frames = append(frames, cssRule{prelude: strings.Join(sels, ","), decls: s.declarations(stop+1, end)})
 			i = end + 1
 		}
-		return "@keyframes " + kname + "-" + s.attr + "{" + strings.Join(frames, "") + "}"
+		return cssRule{prelude: "@keyframes " + kname + "-" + s.attr, rules: frames}, true
 	}
 	s.errAt(start, "@%s is not allowed in a style block; put it in style.css", name)
-	return ""
+	return cssRule{}, false
 }
 
 // animationKeywords are the words the animation properties read as
@@ -462,7 +545,7 @@ func (s *styler) splitTop(i, end int) [][2]int {
 }
 
 // declarations compiles the declarations in src[i:end].
-func (s *styler) declarations(i, end int) string {
+func (s *styler) declarations(i, end int) []string {
 	var out []string
 	for i < end {
 		stop := s.find(i, end, ";{")
@@ -475,7 +558,7 @@ func (s *styler) declarations(i, end int) string {
 		}
 		i = stop + 1
 	}
-	return strings.Join(out, ";")
+	return out
 }
 
 // declaration compiles `property: value` in src[i:end].
@@ -709,7 +792,7 @@ func (s *styler) token(off int, name, prop string) string {
 		return ""
 	}
 	v := kebab(c.Name())
-	s.vars[v] = strings.TrimSpace(constant.StringVal(c.Val()))
+	s.vars[v] = c
 	return "var(--" + v + ")"
 }
 

@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"go/types"
 	"strings"
 	"testing"
 )
@@ -10,10 +11,8 @@ import (
 // d-x would, without tokens.
 func scopeBlock(src string) (string, ErrorList) {
 	var errs ErrorList
-	s := &styler{c: &Component{File: "app.den", Style: &Style{Src: src, Pos: Pos{1, 1}}}, src: src, attr: "d-x", vars: map[string]string{}, errs: &errs}
-	var w strings.Builder
-	s.sheet(&w)
-	return w.String(), errs
+	s := &styler{c: &Component{File: "app.den", Style: &Style{Src: src, Pos: Pos{1, 1}}}, src: src, attr: "d-x", vars: map[string]*types.Const{}, errs: &errs}
+	return s.css(), errs
 }
 
 func TestScopeSelectors(t *testing.T) {
@@ -364,4 +363,90 @@ log(html());`)
 	expectLines(t, got,
 		`<div APP="" class="a"><p APP="">top</p><section CARD=""><h2 CARD="">card</h2><i APP="">slot 2</i><svg CARD=""><circle r="1" CARD=""></circle></svg></section><span><i APP="">plain</i></span><b APP="">if</b><ul APP=""><li den-click="0" APP="">1</li><li den-click="0" APP="">2</li></ul><button APP="">class</button></div>`,
 		`<div APP="" class="b"><p APP="">top</p><section CARD=""><h2 CARD="">card</h2><i APP="">slot 1</i><svg CARD=""><circle r="1" CARD=""></circle></svg></section><span><i APP="">plain</i></span><b APP="">if</b><ul APP=""><li den-click="0" APP="">2</li></ul><button APP="">class</button></div>`)
+}
+
+// sentinelCheck reads css, with a sentinel rule after it, as a browser
+// would, and returns what is wrong.
+func sentinelCheck(css, scope string) string {
+	items, problem := readCSS(css)
+	if problem != "" {
+		return "the CSS does not read as written: " + problem
+	}
+	const sentinel = ".sentinel{color:red}"
+	all, problem := readCSS(css + sentinel)
+	if problem != "" {
+		return "the CSS and the sentinel do not read as written: " + problem
+	}
+	if last := all[len(all)-1]; len(all) != len(items)+1 || !last.rule || last.text != ".sentinel" ||
+		len(last.items) != 1 || last.items[0].text != "color:red" {
+		return "the sentinel rule is not read as a rule of its own"
+	}
+	var scoped func(items []cssItem, top bool) string
+	scoped = func(items []cssItem, top bool) string {
+		for _, it := range items {
+			switch {
+			case !it.rule:
+				return "a declaration outside every rule: " + it.text
+			case strings.HasPrefix(it.text, "@keyframes "):
+			case strings.HasPrefix(it.text, "@"):
+				if msg := scoped(it.items, false); msg != "" {
+					return msg
+				}
+			case top && it.text == ":root":
+			case !strings.Contains(it.text, "["+scope+"]"):
+				return "a rule that is not narrowed to the component: " + it.text
+			}
+		}
+		return ""
+	}
+	return scoped(items, true)
+}
+
+// readCSS must read CSS as a browser does: it is what catches den's own
+// mistakes.
+func TestReadCSS(t *testing.T) {
+	good := []struct {
+		css   string
+		rules []cssRule
+	}{
+		{"@media (a: b){.a[d-x]{b:c;d:e}.f[d-x]{g:h}}\n.i[d-x]{j:\"k;}\"}\n", []cssRule{
+			{prelude: "@media (a: b)", rules: []cssRule{{prelude: ".a[d-x]", decls: []string{"b:c", "d:e"}}, {prelude: ".f[d-x]", decls: []string{"g:h"}}}},
+			{prelude: ".i[d-x]", decls: []string{`j:"k;}"`}}}},
+		{".a[d-x]{b:f(;{});c:[x]}\n", []cssRule{{prelude: ".a[d-x]", decls: []string{"b:f(;{})", "c:[x]"}}}},
+		{".a[d-x]{content:\"a\\\nb\\41\r\nc\\\r\nd\";x:url(a/*b)}\n", []cssRule{{prelude: ".a[d-x]", decls: []string{"content:\"a\\\nb\\41\r\nc\\\r\nd\"", "x:url(a/*b)"}}}},
+		{"@keyframes a-d-x{from{}to{b:c}}\n:root{--a:;--b:x}\n", []cssRule{
+			{prelude: "@keyframes a-d-x", rules: []cssRule{{prelude: "from"}, {prelude: "to", decls: []string{"b:c"}}}},
+			{prelude: ":root", decls: []string{"--a:", "--b:x"}}}},
+		{".a/**/.b[d-x],a[d-x]>b[d-x]{c:-->}\n", []cssRule{{prelude: ".a/**/.b[d-x],a[d-x]>b[d-x]", decls: []string{"c:-->"}}}},
+	}
+	for _, c := range good {
+		if items, problem := readCSS(c.css); problem != "" || !sameRules(c.rules, items) {
+			t.Errorf("%q: %s %+v", c.css, problem, items)
+		}
+	}
+	// CSS that breaks the CSS after it, among it what den once wrote for
+	// blocks with backslash escapes.
+	bad := []string{
+		".a[x\\][d-x]{color:red}\n.z[d-x]{color:blue}\n",
+		":is(.a\\)[d-x] .b[d-x]{color:red}\n.z[d-x]{color:blue}\n",
+		"@media (min-width: 1px){.a[d-x]::after\\{color:red}}\n.z[d-x]{color:blue}\n",
+		".a[d-x]::before\\{color:red}\n.z[d-x]{color:blue}\n",
+		":root{--t:'a\fb'}\n",
+		".a[d-x]{content:\"a\\41\"}\n.b[d-x]{content:\"\n\"}\n",
+		".a[d-x]{b:url(a b)}\n",
+		".a[d-x]{b:u\\72l(a\"b)}\n",
+		".a[d-x]{b:url(a\\\n)}\n",
+		"<!--.a[d-x]{b:c}\n",
+		"-->.a[d-x]{b:c}\n",
+		".a[d-x]{b:c}}\n",
+		".a[d-x]{b:c\n",
+		".a[d-x]{b:(]}\n",
+		".a[d-x]{b:c}/*\n",
+		".a[d-x]{b:\"c}\n",
+	}
+	for _, css := range bad {
+		if msg := sentinelCheck(css, "d-x"); msg == "" {
+			t.Errorf("%q passed", css)
+		}
+	}
 }
