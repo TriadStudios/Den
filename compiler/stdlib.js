@@ -212,10 +212,10 @@ function $form(a, b, list, key, row, ui, hs) {
       items.forEach((v, n) => { const i = ix ? ix[n] : n, k = key(v, i); now.has(k) || now.set(k, [v, i]); });
       const keep = rows.filter((r) => now.has(r.k));
       const gone = rows.filter((r) => !now.has(r.k)), had = new Set(keep.map((r) => r.k)), p = $where(keep);
-      gone.forEach((r) => $free(r.d));
       // When $reconcile can reuse no row it clears the whole list at once,
       // leaving nodes too. Building the first row again here, in its
-      // place, gives it one to reuse.
+      // place, gives it one to reuse. It is built before anything is freed,
+      // so if building it throws, the rows are as they were.
       if ((gone.length || out.size) && keep.length && !keep.some((r) => { const [v, i] = now.get(r.k); return Object.is(v, r.v) && (!ui || i === r.i); })) {
         const r = keep[0], [v, i] = now.get(r.k), [f, d] = $scope(() => row(v, i)), g = f.nodeType === 11;
         keep[0] = { k: r.k, v, i, d, p: -1, h: hs, a: g ? f.firstChild : f, b: g ? f.lastChild : f };
@@ -224,9 +224,12 @@ function $form(a, b, list, key, row, ui, hs) {
         $free(r.d);
         $nodes(r).forEach((m) => m.remove());
       }
+      gone.forEach((r) => $free(r.d));
       const ns = gone.flatMap($nodes);
-      rows = $reconcile(a, b, keep, items, key, row, ui, hs);
-      $exit(ns, out, rm);
+      // If $reconcile throws, it has freed the rows it built and moved no
+      // nodes, so the rows kept are the list, and the gone ones still leave.
+      rows = keep;
+      try { rows = $reconcile(a, b, keep, items, key, row, ui, hs); } finally { $exit(ns, out, rm); }
       if (ran) rows.forEach((r) => had.has(r.k) || $enter($nodes(r)));
       $glide(p, rows);
       ran = true;

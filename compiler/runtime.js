@@ -214,6 +214,8 @@ function $reconcile(a, b, old, xs, key, row, ui, h) {
       const [f, d] = $scope(() => row(its[j], idx[j])), g = f.nodeType === 11;
       r = { k: keys[j], v: its[j], i: idx[j], d, p: -1, h, a: g ? f.firstChild : f, b: g ? f.lastChild : f };
       if (h) f.$r = r;
+      // If a later row throws, the $scope this pass runs in frees this one.
+      $cleanup(() => $free(d));
     }
     out[j] = r;
   }

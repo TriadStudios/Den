@@ -2154,36 +2154,97 @@ click(find("button", "grow")); await tick(); show();`)
 		`<div><s>is f</s><p>zf</p><b>f</b>`)
 }
 
-// A binding that panics in a new row is reported, and the row is shown
-// without it until the binding can run.
+// A {for} whose new row panics while it is built (here in a prop, outside
+// any binding) keeps its old rows and frees the rows it built before that
+// one in the same pass, so none of them keeps running out of sight (their
+// bindings would report when vals shrinks), and it tries again when its
+// list changes. A binding that panics in a new row is reported and its row
+// is shown, as in a branch.
 func TestRunThrowingRow(t *testing.T) {
 	got := runApp(t, `
+component Item(v string, vals *Signal[[]string]) {
+    <li>{v}{vals.Get()[1]}</li>
+}
+
 component App() {
     keys := signal([]int{0})
-    vals := signal([]string{"a"})
+    vals := signal([]string{"a", "b"})
     <div>
         <ul>
             {for _, k := range keys.Get() key k {
-                <li>{vals.Get()[k]}</li>
+                <Item v={vals.Get()[k]} vals={vals} />
             }}
         </ul>
-        <p>{len(keys.Get())}</p>
-        <button onclick={keys.Set([]int{0, 1})}>two</button>
-        <button onclick={vals.Set([]string{"a", "b"})}>vals</button>
-        <button onclick={keys.Set([]int{1, 0})}>swap</button>
+        <ol>
+            {for _, k := range keys.Get() key k {
+                <li>{vals.Get()[k]}</li>
+            }}
+        </ol>
+        <button onclick={keys.Set([]int{0, 1, 2})}>three</button>
+        <button onclick={vals.Set([]string{"a"})}>one</button>
+        <button onclick={vals.Set([]string{"a", "b", "c"})}>vals3</button>
     </div>
 }`, `
-const show = () => log(html(find("ul")), find("p").textContent);
+const show = () => log(html(find("ul")), html(find("ol")));
 show();
-click(find("button", "two")); await tick(); show();
-click(find("button", "vals")); await tick(); show();
-click(find("button", "swap")); await tick(); show();`)
+for (const b of ["three", "one", "vals3", "three"]) { click(find("button", b)); await tick(); show(); }`)
+	const oob = `reportError: den: index out of range`
 	expectLines(t, got,
-		`<ul><li>a</li></ul> 1`,
-		`reportError: den: index out of range`,
-		`<ul><li>a</li><li></li></ul> 2`,
-		`<ul><li>a</li><li>b</li></ul> 2`,
-		`<ul><li>b</li><li>a</li></ul> 2`)
+		`<ul><li>ab</li></ul> <ol><li>a</li></ol>`,
+		oob, oob,
+		`<ul><li>ab</li></ul> <ol><li>a</li><li>b</li><li></li></ol>`,
+		oob, oob, oob,
+		`<ul><li>ab</li></ul> <ol><li>a</li><li>b</li><li></li></ol>`,
+		`<ul><li>ab</li></ul> <ol><li>a</li><li>b</li><li>c</li></ol>`,
+		`<ul><li>ab</li><li>bb</li><li>cb</li></ul> <ol><li>a</li><li>b</li><li>c</li></ol>`)
+}
+
+// The same with transitions: a row that panics while it is built frees
+// the rows built before it in that pass, the rows kept stay, and rows
+// whose keys are gone still leave.
+func TestMotionThrowingRow(t *testing.T) {
+	got := runApp(t, `
+component Val(v string, vals *Signal[[]string]) {
+    <b>{v}{vals.Get()[1]}</b>
+}
+
+component App() {
+    keys := signal([]int{0, 1})
+    vals := signal([]string{"a", "b"})
+    <div>
+        <ul>
+            {for _, k := range keys.Get() key k {
+                <li exit={fade()}><Val v={vals.Get()[k]} vals={vals} /></li>
+            }}
+        </ul>
+        <button onclick={keys.Set([]int{1, 2})}>shift</button>
+        <button onclick={keys.Set([]int{1, 0, 2, 3})}>more</button>
+        <button onclick={vals.Set([]string{"a"})}>one</button>
+        <button onclick={vals.Set([]string{"a", "b", "c", "d"})}>four</button>
+    </div>
+}`, `
+const show = () => log(html(find("ul")), running().join(" "));
+show();
+click(find("button", "shift")); await tick(); show();
+finishAll(); show();
+click(find("button", "more")); await tick(); show();
+click(find("button", "one")); await tick(); show();
+click(find("button", "four")); await tick(); show();
+click(find("button", "shift")); await tick(); finishAll(); show();
+click(find("button", "more")); await tick(); finishAll(); show();`)
+	const oob = `reportError: den: index out of range`
+	expectLines(t, got,
+		`<ul><li><b>ab</b></li><li><b>bb</b></li></ul> `,
+		oob,
+		`<ul><li><b>ab</b></li><li><b>bb</b></li></ul> li:ab`,
+		`<ul><li><b>bb</b></li></ul> `,
+		oob,
+		`<ul><li><b>bb</b></li></ul> `,
+		oob,
+		`<ul><li><b>bb</b></li></ul> `,
+		`<ul><li><b>bb</b></li></ul> `,
+		`<ul><li><b>bb</b></li><li><b>cb</b></li></ul> `,
+		`<ul><li><b>bb</b></li><li><b>ab</b></li><li><b>cb</b></li><li><b>db</b></li></ul>`)
 }
 
 // stored and hash save each write as it is made, Update included: a
