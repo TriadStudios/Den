@@ -18,11 +18,11 @@ import (
 // component nor into the components it uses. `$name` in a value is a
 // design token: a package-level Go constant of type den.Color, den.Length,
 // den.Duration, den.Font or den.Token, checked at compile time and emitted
-// as a CSS custom property so style.css can theme it.
+// as a CSS custom property so the app's style.css can theme it.
 //
-// The CSS of every block, scoped, goes into style.css ahead of the app's
-// own: the page's CSP allows no inline styles, and none of it needs any
-// JavaScript at run time.
+// The CSS of every block, scoped, goes into den.css, which the page links
+// before the app's own style.css: the page's CSP allows no inline styles,
+// and none of it needs any JavaScript at run time.
 
 // cssAtom returns the end of the CSS string, comment or unquoted url(...)
 // that starts at i, or i+1 for anything else, and a message if it is not
@@ -723,7 +723,7 @@ func (s *styler) value(prop string, i, end int) string {
 		b.WriteString(t)
 	}
 	anim := strings.TrimPrefix(prop, "-webkit-") == "animation" || strings.TrimPrefix(prop, "-webkit-") == "animation-name"
-	// An open ( or [ would make the browser read the rest of style.css as
+	// An open ( or [ would make the browser read the rest of the CSS as
 	// part of this value, so they must balance.
 	var open []int
 	var fns []string // the function each open ( belongs to, in lower case
@@ -999,7 +999,7 @@ func colorOnly(p string) bool {
 func checkToken(kind, v string) string {
 	// Control characters include \n, \r and \f, which end a CSS string:
 	// one in a quoted token would leave the string open and turn the rest
-	// of style.css into part of the :root rule.
+	// of the CSS into part of the :root rule.
 	for i := 0; i < len(v); i++ {
 		if v[i] < 0x20 || v[i] == 0x7f {
 			return fmt.Sprintf("a token cannot contain a control character (U+%04X)", v[i])

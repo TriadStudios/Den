@@ -20,7 +20,7 @@ var runtimeJS string
 // Result is a compiled program.
 type Result struct {
 	JS         string   // complete, self-contained app.js
-	CSS        string   // the scoped CSS of the style blocks, for style.css; empty without any
+	CSS        string   // the scoped CSS of the style blocks, for den.css; empty without any
 	Components []string // component names, in source order
 	Router     bool     // the app uses route or path, so it routes by URL path
 }

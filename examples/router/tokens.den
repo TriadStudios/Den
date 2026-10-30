@@ -1,8 +1,9 @@
 // Design tokens: typed constants that style blocks use as $surface,
 // $radius-lg and so on. den checks each value when it builds (a den.Color
-// must be a color) and writes the tokens in use into style.css as custom
-// properties (--surface), so the app's own style.css can give them other
-// values, as it does for dark mode.
+// must be a color) and writes the tokens in use into den.css as custom
+// properties (--surface), so the app's own style.css, which the page
+// loads after den.css, can give them other values, as it does for dark
+// mode.
 
 const (
     Surface   den.Color = "#ffffff"

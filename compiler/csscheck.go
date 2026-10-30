@@ -10,11 +10,11 @@ import (
 //
 // Den's own scanner (cssAtom and the styler) decides where strings,
 // comments, blocks and declarations end. Wherever it disagreed with a
-// browser, one rule could swallow the rules after it: another component's,
-// or the app's own style.css. So the CSS den writes for each block is
-// read again here, by a tokenizer that follows the consume-a-token
-// algorithm of CSS Syntax Level 3 and shares no code with den's scanner,
-// and its rules and declarations must come out exactly as den wrote them.
+// browser, one rule could swallow the rules after it, other components'
+// rules among them. So the CSS den writes for each block is read again
+// here, by a tokenizer that follows the consume-a-token algorithm of CSS
+// Syntax Level 3 and shares no code with den's scanner, and its rules and
+// declarations must come out exactly as den wrote them.
 // If they do not, the build fails instead of shipping CSS that a browser
 // reads differently.
 

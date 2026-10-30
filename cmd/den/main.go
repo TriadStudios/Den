@@ -113,8 +113,9 @@ const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 's
 // indexHTML is the page that loads the app. An app that routes by path is
 // served at each of its paths (/users/7 as well as /), so it finds its
 // files from the site root; others keep relative URLs and can live in any
-// directory.
-func indexHTML(hasCSS, dev, router bool) string {
+// directory. den.css, the CSS of the components' style blocks, comes before
+// the app's own style.css, whose rules then win.
+func indexHTML(denCSS, hasCSS, dev, router bool) string {
 	root := ""
 	if router {
 		root = "/"
@@ -124,6 +125,9 @@ func indexHTML(hasCSS, dev, router bool) string {
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
 	fmt.Fprintf(&b, "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">\n", csp)
 	b.WriteString("<title>den app</title>\n")
+	if denCSS {
+		fmt.Fprintf(&b, "<link rel=\"stylesheet\" href=\"%sden.css\">\n", root)
+	}
 	if hasCSS {
 		fmt.Fprintf(&b, "<link rel=\"stylesheet\" href=\"%sstyle.css\">\n", root)
 	}
@@ -135,10 +139,13 @@ func indexHTML(hasCSS, dev, router bool) string {
 	return b.String()
 }
 
-// writeDist writes app.js, index.html and style.css: the CSS of the
-// components' style blocks, then the app's own style.css as it is, so the
-// app's rules come later and can override the components' design tokens.
-// The page's CSP allows no inline styles, so all of it goes in the file.
+// writeDist writes app.js, index.html, the app's own style.css as it is,
+// and den.css, the CSS of the components' style blocks, when there is any.
+// den.css is a file of its own, linked first: the app's rules come later
+// and can give the design tokens other values, and its style.css keeps
+// what only works at the start of a file, such as @import, @charset or a
+// byte order mark. The page's CSP allows no inline styles, so all CSS
+// goes in files.
 func writeDist(dir, out string, res *compiler.Result, dev bool) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
@@ -146,15 +153,22 @@ func writeDist(dir, out string, res *compiler.Result, dev bool) error {
 	if err := os.WriteFile(filepath.Join(out, "app.js"), []byte(res.JS), 0o644); err != nil {
 		return err
 	}
-	own, err := os.ReadFile(filepath.Join(dir, "style.css"))
-	hasCSS := err == nil || res.CSS != ""
+	denCSS := res.CSS != ""
+	if denCSS {
+		if err := os.WriteFile(filepath.Join(out, "den.css"), []byte(res.CSS), 0o644); err != nil {
+			return err
+		}
+	} else if err := os.Remove(filepath.Join(out, "den.css")); err != nil && !os.IsNotExist(err) {
+		return err // the app had style blocks before, but has none now
+	}
+	css, err := os.ReadFile(filepath.Join(dir, "style.css"))
+	hasCSS := err == nil
 	if hasCSS {
-		css := append([]byte(res.CSS), own...)
 		if err := os.WriteFile(filepath.Join(out, "style.css"), css, 0o644); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(filepath.Join(out, "index.html"), []byte(indexHTML(hasCSS, dev, res.Router)), 0o644)
+	return os.WriteFile(filepath.Join(out, "index.html"), []byte(indexHTML(denCSS, hasCSS, dev, res.Router)), 0o644)
 }
 
 func gzipSize(b []byte) int {
@@ -170,7 +184,7 @@ func report(out string, res *compiler.Result) {
 	fmt.Printf("built %d components → %s\n", len(res.Components), out)
 	fmt.Printf("  app.js  %.1f KB  (%.1f KB gzip)\n", float64(len(js))/1024, float64(gzipSize(js))/1024)
 	if css := []byte(res.CSS); len(css) > 0 {
-		fmt.Printf("  scoped CSS  %s  (%s gzip), at the top of style.css\n", size(len(css)), size(gzipSize(css)))
+		fmt.Printf("  den.css  %s  (%s gzip)\n", size(len(css)), size(gzipSize(css)))
 	}
 }
 

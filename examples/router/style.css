@@ -1,6 +1,7 @@
-/* Page-wide styles. den build puts the components' style blocks, and the
-   design tokens they use (tokens.den), ahead of this file, so the rules
-   here come later and can give the tokens other values. */
+/* Page-wide styles. den build writes the components' style blocks, and
+   the design tokens they use (tokens.den), to den.css, which the page
+   loads before this file, so the rules here come later and can give the
+   tokens other values. */
 :root {
   --bg: #f6f5f1;
   color-scheme: light dark;

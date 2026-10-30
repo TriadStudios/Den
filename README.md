@@ -85,7 +85,7 @@ plus an optional `style.css` for page-wide styles.
      functions of the row's item, so a row costs almost nothing beyond its
      DOM. Their elements carry a small `den-click="0"`-style attribute that
      names the handler.
-   - Each component's `style` block becomes scoped CSS in `style.css`, and
+   - Each component's `style` block becomes scoped CSS in `den.css`, and
      its elements get their scope attribute in the template, so styles cost
      no JavaScript at all.
 4. **Runtime.** `compiler/runtime.js` is a push-pull signal graph (computed
@@ -263,7 +263,8 @@ component User(user *Route[UserParams]) {
 - Hosting: the server must answer paths it has no file for with
   `index.html` (`den dev` does, for paths whose last segment has no `.`),
   and the app must be served from the site root, since its `index.html`
-  then loads `/app.js` and `/style.css`. A base path is not supported yet.
+  then loads `/app.js`, `/den.css` and `/style.css`. A base path is not
+  supported yet.
 - `route`, `Route` and `path` are ordinary names. A program that has its
   own at the top level, as a declaration, a component or an import, keeps
   it. `route` and `Route` go together: a program with either has neither
@@ -321,10 +322,11 @@ component Card(title string, children den.Children) {
   `font` and `font-family`.
 - Tokens become CSS custom properties: `$surface` is `var(--surface)`, and
   the CSS starts with `:root{--surface:#ffffff;...}`, giving every token
-  the style blocks use. `den build` writes the CSS of all style blocks at
-  the top of `style.css`, followed by the app's own `style.css`, whose
-  rules come later and can give the tokens other values, for a dark theme
-  for instance:
+  the style blocks use. `den build` writes the CSS of all style blocks to
+  `den.css`, which the page links before the app's own `style.css`. That
+  file is copied as it is (`@import` and the like still work at its top),
+  and its rules come later, so they can give the tokens other values, for
+  a dark theme for instance:
 
   ```css
   @media (prefers-color-scheme: dark) {
