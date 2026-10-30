@@ -420,8 +420,11 @@ component Dot(target *Signal[float64]) {
   branch leave with it.
 - When the block changes, new elements enter while the old ones leave. A
   leaving element's bindings and handlers stop at once, so it keeps
-  showing what it showed last; it becomes `inert`, and goes when its exit
-  transition ends. Other nodes go at once. Transitions play only when the
+  showing what it showed last. It takes no more input: it is made `inert`
+  and gets `pointer-events: none` (SVG elements have no `inert`), focus
+  inside it is dropped, and events inside it never reach its handlers. It
+  goes when its exit transition ends. Other nodes go at once. Transitions
+  play only when the
   block itself changes: not when the page is built, nor when a block is
   built along with the branch or row around it. A row whose key stays but
   whose item changed is rebuilt in place, without transitions; a key that
@@ -440,8 +443,9 @@ component Dot(target *Signal[float64]) {
   element is made, so they cannot depend on a signal, and they cannot be
   compared.
 - Everything runs on the Web Animations API (`element.animate` with
-  keyframe objects), which the strict CSP allows: no style attributes, no
-  injected CSS. Under `prefers-reduced-motion: reduce`, or in a browser
+  keyframe objects) and one CSSOM property (`style.pointerEvents`), which
+  the strict CSP allows: no CSS text is written, as a `style` attribute or
+  otherwise. Under `prefers-reduced-motion: reduce`, or in a browser
   without `element.animate`, nothing animates: leaving elements go at
   once, rows do not glide, and springs jump to their targets. A browser
   may hold animations in a hidden tab, and an element leaving there can

@@ -1556,7 +1556,8 @@ component List(show *Signal[bool], out Transition, none Transition) {
 }`, `
 click(find("button")); await tick();
 log(html());
-log(anims.map((a) => a.el.tagName + " " + JSON.stringify(a.k) + " " + a.o.duration).join("\n"));`)
+log(anims.map((a) => a.el.tagName + " " + JSON.stringify(a.k) + " " + a.o.duration).join("\n"));
+finishAll();`)
 	expectLines(t, got,
 		`<div><button>t</button><ul><li>a</li></ul><svg><circle r="1"></circle></svg></div>`,
 		`li {"opacity":0,"transform":"translateX(100%)"} 500`,
@@ -1621,4 +1622,56 @@ log(html(), running().join(" "));`)
 		`0`,
 		`<div><button>t</button><i>a</i><i>b</i></div> i:a i:b`,
 		`<div><button>t</button><i>a</i><i>b</i></div> i:a i:b`)
+}
+
+// A leaving element takes no input. SVG has no inert, so it also gets
+// pointer-events: none; focus inside it is dropped, and an event that
+// still reaches it (here dispatched straight at it) stops before den's
+// handlers see it, delegated row handlers included.
+func TestMotionLeavingTakesNoInput(t *testing.T) {
+	got := runApp(t, `
+func without(xs []string, x string) []string {
+    var out []string
+    for _, y := range xs {
+        if y != x {
+            out = append(out, y)
+        }
+    }
+    return out
+}
+
+component App() {
+    xs := signal([]string{"a", "b"})
+    seen := signal("")
+    <div>
+        <p>{seen.Get()}</p>
+        <svg>
+            {for _, x := range xs.Get() key x {
+                <rect exit={fade()} onclick={
+                    seen.Set(seen.Get() + "svg:" + x + ";")
+                    xs.Set(without(xs.Get(), x))
+                } />
+            }}
+        </svg>
+        <ul>
+            {for _, x := range xs.Get() key x {
+                <li exit={fade()}><button onclick={seen.Set(seen.Get() + "html:" + x + ";")} onkeydown={seen.Set(seen.Get() + "key:" + x + ";")}>{x}</button></li>
+            }}
+        </ul>
+    </div>
+}`, `
+const ra = findAll("rect")[0], ba = find("button", "a"), la = find("li");
+ba.focus();
+click(ra); await tick();
+log(find("p").textContent, ra.style.pointerEvents, ra.inert, la.style.pointerEvents, la.inert, document.activeElement === null);
+click(ra); click(ba); key(ba, "Enter"); await tick();
+ba.focus(); ba.dispatch("focusin");
+log(find("p").textContent, document.activeElement === null, findAll("rect").length);
+click(findAll("rect")[1]); await tick();
+log(find("p").textContent);
+finishAll();`)
+	expectLines(t, got,
+		`svg:a; none true none true true`,
+		`svg:a; true 2`,
+		`svg:a;svg:b;`)
 }

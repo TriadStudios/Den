@@ -111,12 +111,12 @@ function $linkTo(r, v) {
   return u[1] === "/" ? "/." + u : u;
 }
 // Motion: enter and exit transitions, layout animation and springs, all
-// with the Web Animations API: keyframe objects, never style attributes,
-// so they run under style-src 'self'. A transition is {k, d}: k the
-// keyframe of the hidden state, d the duration in ms. Elements carry
-// theirs as $in and $out, and $lay when they glide to a new place in a
-// list. Nothing animates under prefers-reduced-motion, or in a browser
-// without element.animate.
+// with the Web Animations API: keyframe objects (and one CSSOM property),
+// never CSS text, so they run under style-src 'self'. A transition is
+// {k, d}: k the keyframe of the hidden state, d the duration in ms.
+// Elements carry theirs as $in and $out, and $lay when they glide to a
+// new place in a list. Nothing animates under prefers-reduced-motion, or
+// in a browser without element.animate.
 function $fade(d) { return { k: { opacity: 0 }, d }; }
 function $scale(d) { return { k: { opacity: 0, transform: "scale(.95)" }, d }; }
 function $slide(dir, d) { return { k: { opacity: 0, transform: $slides[dir] }, d }; }
@@ -131,17 +131,25 @@ function $play(m, s, out) {
 }
 function $enter(ns) { ns.forEach((m) => $play(m, m.$in)); }
 // $exit takes nodes ns out of their block. An element with an exit
-// transition is made inert and kept in out (node -> animation) until the
-// transition ends, and then rm removes it; every other node goes at once.
+// transition is kept in out (node -> animation) until the transition ends,
+// and then rm removes it; every other node goes at once. A leaving element
+// takes no input: it is inert, and has pointer-events: none (SVG elements
+// have no inert), focus inside it is dropped, and events inside it stop
+// before den's handlers on the document see them.
 function $exit(ns, out, rm = (m) => m.remove()) {
   for (const m of ns) {
     const x = $play(m, m.$out, 1);
     if (!x) { m.remove(); continue; }
     m.inert = true;
+    m.style.pointerEvents = "none";
+    if (m.contains(document.activeElement)) document.activeElement.blur();
+    for (const t in $delegated) m.addEventListener(t, $halt, true);
+    m.addEventListener("focusin", $halt, true);
     out.set(m, x);
     x.onfinish = () => { out.delete(m); rm(m); };
   }
 }
+function $halt(e) { e.stopImmediatePropagation(); e.preventDefault(); e.target.blur?.(); }
 // $gone removes the nodes still leaving when their block is disposed.
 function $gone(out) { out.forEach((x, m) => { x.cancel(); m.remove(); }); out.clear(); }
 // $ifm is $if for blocks whose branches have enter or exit transitions.
