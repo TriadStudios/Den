@@ -44,15 +44,16 @@ class $Node extends $Sig {
 }
 function $each(o, f) { o?.forEach ? o.forEach(f) : o && f(o); }
 function $has(o, n) { return o === n || !!o?.includes?.(n); }
-function $link(d, n) { const o = d.o; d.o = !o || o === n ? n : o instanceof Set ? o.add(n) : new Set([o, n]); }
-function $unlink(d, n) { if (d.o === n) d.o = null; else if (d.o instanceof Set) d.o.delete(n); }
+function $link(d, n) { const o = d.o; d.o = !o || o === n ? n : o.add ? o.add(n) : new Set([o, n]); }
+function $unlink(d, n) { d.o === n ? (d.o = null) : d.o?.delete?.(n); }
 // Maps and slices change in place, so setting one always notifies.
 function $mutable(v) { return v instanceof Map || v instanceof $Slice; }
 function $stale(n, s) {
-  if (n.s >= s) return;
-  if (!n.s && n.e && $queue.push(n) === 1) queueMicrotask($flush);
-  n.s = s;
-  $each(n.o, (m) => $stale(m, 1));
+  if (n.s < s) {
+    if (!n.s && n.e && $queue.push(n) === 1) queueMicrotask($flush);
+    n.s = s;
+    $each(n.o, (m) => $stale(m, 1));
+  }
 }
 function $fresh(n) {
   if (n.s === 1) $each(n.d, (d) => n.s === 1 && d.f && $fresh(d));
