@@ -402,7 +402,11 @@ func (s *slotter) goCode(at, end int) {
 			text = tok.String()
 		}
 		off := at + file.Offset(pos)
-		s.existing(prev, off)
+		// go/printer re-indents the lines of a /* */ comment from the
+		// column it starts at (stripCommonPrefix), so that column counts.
+		if tok != token.COMMENT || !strings.Contains(text, "\n") {
+			s.existing(prev, off)
+		}
 		prev = off + len(text)
 	}
 	s.existing(prev, end)
