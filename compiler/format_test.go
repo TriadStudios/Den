@@ -61,10 +61,23 @@ func repoPrograms(t *testing.T) []program {
 	for _, f := range inputs {
 		out = append(out, program{f, readSources(t, f)})
 	}
+	for i, src := range formatRepros {
+		out = append(out, program{"formatRepros[" + strconv.Itoa(i) + "]", []Source{{Name: "app.den", Code: src}}})
+	}
 	if len(dirs) < 5 || len(conform) == 0 || len(inputs) == 0 {
 		t.Fatalf("found %d examples, %d conformance programs and %d golden inputs", len(dirs), len(conform), len(inputs))
 	}
 	return append(out, inlinePrograms(t)...)
+}
+
+// formatRepros are programs that once compiled differently after den fmt:
+// gofmt dropped the parentheses of their if, for and range headers, which
+// den used to write into the JS.
+var formatRepros = []string{
+	"component App() {\n\tx := 1\n\tif (x > 0) {\n\t\tx++\n\t}\n\t<p>{if (x > 1) {<b>y</b>}}</p>\n}\n",
+	"func g() int {\n\ts := 0\n\tfor i := 0; (i < 3); i++ {\n\t\ts += i\n\t}\n\treturn s\n}\n\n" +
+		"component App() {\n\txs := []int{1}\n\tfor _, v := range (xs) {\n\t\txs[0] += v\n\t}\n" +
+		"\t<ul>{for _, v := range (xs) key v {<li>{v}{g()}</li>}}</ul>\n}\n",
 }
 
 // inlinePrograms returns the string literals in the compiler's tests that
