@@ -8,10 +8,23 @@ import (
 )
 
 // hundredComponents is an app of 100 components of a realistic size: props,
-// signals, a computed value, a keyed list, a conditional and handlers.
+// signals, a computed value, a keyed list, a conditional, handlers and a
+// style block that uses design tokens.
 func hundredComponents() []Source {
 	var b strings.Builder
 	b.WriteString("type Item struct {\n    ID   int\n    Name string\n}\n\n")
+	b.WriteString(`const (
+    Surface den.Color    = "#ffffff"
+    Ink     den.Color    = "oklch(25% 0.02 260)"
+    Hover   den.Color    = "rgb(0 0 0 / 0.05)"
+    Space2  den.Length   = "8px"
+    Space4  den.Length   = "16px"
+    Radius  den.Length   = "12px"
+    Fast    den.Duration = "150ms"
+    Body    den.Font     = "system-ui, sans-serif"
+)
+
+`)
 	b.WriteString("component App() {\n    <main>\n")
 	for i := 0; i < 99; i++ {
 		fmt.Fprintf(&b, "        <C%d title=\"c%d\" start={%d} />\n", i, i, i)
@@ -23,6 +36,12 @@ component C%d(title string, start int) {
     n := signal(start)
     items := signal([]Item{{1, "a"}, {2, "b"}})
     total := computed(n.Get() * 2)
+    style {
+        .card { padding: $space-4; border-radius: $radius; background: $surface; font-family: $body; }
+        .card h2 { color: $ink; margin: 0 0 $space-2; }
+        li:hover, li:focus-visible { background: $hover; transition: background $fast; }
+        @media (min-width: 40rem) { .card { padding: calc($space-4 * 2); } }
+    }
     <section class="card">
         <h2>{title}: {n.Get()} / {total.Get()}</h2>
         <ul>
@@ -51,8 +70,8 @@ func TestRebuildBudget(t *testing.T) {
 		t.Skip("timing is not meaningful under the race detector")
 	}
 	src := hundredComponents()
-	if _, err := Compile(src); err != nil {
-		t.Fatal(err)
+	if res, err := Compile(src); err != nil || !strings.Contains(res.CSS, ":root{") {
+		t.Fatal(err, "or no CSS")
 	}
 	best := time.Hour
 	for i := 0; i < 5; i++ {

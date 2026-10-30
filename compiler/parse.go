@@ -32,6 +32,8 @@ type Error struct {
 	File string
 	Pos  Pos
 	Msg  string
+
+	styleScan bool // the CSS of a style block did not scan
 }
 
 func (e *Error) Error() string {
@@ -89,6 +91,15 @@ type Component struct {
 	StmtsSrc  string
 	StmtsPos  Pos
 	Root      *Element
+	Style     *Style // the component's style block, if it has one
+}
+
+// Style is the CSS of a component's `style { ... }` block, between its
+// braces. It is cut out of StmtsSrc (blanked, keeping every newline), so
+// Go positions stay exact.
+type Style struct {
+	Src string
+	Pos Pos // the position of Src[0]
 }
 
 // Param is one component parameter (prop). Children is set by the checker
@@ -203,7 +214,8 @@ type parser_ struct {
 
 type bailout struct{ err *Error }
 
-// Parse parses a .den source file.
+// Parse parses a .den source file. On an error it also returns what it
+// parsed before it.
 func Parse(name, src string) (f *File, err error) {
 	p := &parser_{file: name, src: src}
 	p.lines = append(p.lines, 0)
@@ -218,7 +230,7 @@ func Parse(name, src string) (f *File, err error) {
 			if !ok {
 				panic(r)
 			}
-			f, err = nil, ErrorList{b.err}
+			err = ErrorList{b.err}
 		}
 	}()
 	f = &File{Name: name}
@@ -456,17 +468,32 @@ func (p *parser_) parseComponent() *Component {
 	p.skipSpace()
 	p.expect("{")
 	bodyStart := p.off
-	markup := p.findMarkupStart(bodyStart)
+	markup, styles := p.findMarkupStart(bodyStart)
 	if markup < 0 {
 		p.failAt(c.NamePos, "component %s has no markup; end it with one root element", c.Name)
 	}
-	c.StmtsSrc = p.src[bodyStart:markup]
+	stmts := []byte(p.src[bodyStart:markup])
+	for i, s := range styles {
+		if i > 0 {
+			p.failAt(p.posAt(s.kw), "component %s has a second style block; put all of its CSS in one", c.Name)
+		}
+		c.Style = &Style{Src: p.src[s.open+1 : s.end-1], Pos: p.posAt(s.open + 1)}
+		for j := s.kw; j < s.end; j++ {
+			if stmts[j-bodyStart] != '\n' {
+				stmts[j-bodyStart] = ' '
+			}
+		}
+	}
+	c.StmtsSrc = string(stmts)
 	c.StmtsPos = p.posAt(bodyStart)
 	p.off = markup
 	c.Root = p.parseElement(false)
 	p.skipSpaceAndComments()
 	if p.peek() == '<' {
 		p.fail("component %s must have exactly one root element; wrap these in a <div>", c.Name)
+	}
+	if p.styleAt(p.off) {
+		p.fail("the style block of %s must come before its markup", c.Name)
 	}
 	p.expect("}")
 	return c
@@ -503,12 +530,22 @@ func stripPos(msg string) string {
 	return msg
 }
 
+// styleSpan is a style block in a component body: the offsets of its
+// style keyword and its '{', and the offset just past its '}'.
+type styleSpan struct{ kw, open, end int }
+
 // findMarkupStart finds the first line in the body that starts with `<tag`.
-// Everything before it is Go statements.
-func (p *parser_) findMarkupStart(from int) int {
+// Everything before it is Go statements, apart from the style blocks it
+// also returns: a line that starts a statement at the top of the body with
+// `style {` starts one, which no Go statement can. Their CSS is skipped
+// with CSS rules for strings and comments, never Go's.
+func (p *parser_) findMarkupStart(from int) (int, []styleSpan) {
 	i := from
 	lineStart := true
 	inStr := byte(0)
+	depth := 0
+	last := byte(';') // the last byte of Go code, outside comments
+	var styles []styleSpan
 	for i < len(p.src) {
 		c := p.src[i]
 		if inStr != 0 {
@@ -518,6 +555,7 @@ func (p *parser_) findMarkupStart(from int) int {
 			}
 			if c == inStr {
 				inStr = 0
+				last = c
 			}
 			i++
 			continue
@@ -531,7 +569,12 @@ func (p *parser_) findMarkupStart(from int) int {
 			i++
 			continue
 		case lineStart && c == '<' && i+1 < len(p.src) && isLetter(p.src[i+1]):
-			return i
+			return i, styles
+		case lineStart && depth == 0 && endsStmt(last) && p.styleAt(i):
+			s := p.scanStyle(i)
+			styles = append(styles, s)
+			i, last, lineStart = s.end, '}', false
+			continue
 		case c == '"' || c == '`' || c == '\'':
 			inStr = c
 		case c == '/' && i+1 < len(p.src) && p.src[i+1] == '/':
@@ -539,12 +582,105 @@ func (p *parser_) findMarkupStart(from int) int {
 				i++
 			}
 			continue
+		case c == '/' && i+1 < len(p.src) && p.src[i+1] == '*':
+			if end := strings.Index(p.src[i+2:], "*/"); end >= 0 {
+				i += end + 4
+				lineStart = false
+				continue
+			}
+			// It would hide the markup and the end of the component.
+			p.failAt(p.posAt(i), "comment not terminated")
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		}
+		last = c
+		if (c == '+' || c == '-') && i > from && p.src[i-1] == c {
+			last = ';' // x++ and x-- end a statement
 		}
 		lineStart = false
 		i++
 	}
-	return -1
+	return -1, styles
 }
+
+// endsStmt reports whether a line whose last byte of code is c ends a Go
+// statement there, as Go's semicolon rule has it.
+func endsStmt(c byte) bool {
+	return isLetter(c) || isDigit(c) || strings.IndexByte(";)]}\"'`", c) >= 0
+}
+
+// styleAt reports whether `style {` starts at off.
+func (p *parser_) styleAt(off int) bool {
+	if !strings.HasPrefix(p.src[off:], "style") {
+		return false
+	}
+	i := off + len("style")
+	for i < len(p.src) && (p.src[i] == ' ' || p.src[i] == '\t') {
+		i++
+	}
+	return i < len(p.src) && p.src[i] == '{'
+}
+
+// scanStyle finds the end of the style block at kw. The CSS in it is
+// read as CSS: strings, comments and url(...) may hold anything. A line
+// that starts with `<tag` is markup, which CSS never has, so a block that
+// reaches one was not closed.
+//
+// Go allows a statement line to start `style {` only for a composite
+// literal of a type named style, used as in `style{1, 2}[0] = 5`, so a
+// block followed by '.', '[' or '(' gets an error saying how to write one.
+func (p *parser_) scanStyle(kw int) styleSpan {
+	fail := func(off int, msg string) {
+		panic(bailout{&Error{File: p.file, Pos: p.posAt(off), Msg: msg, styleScan: true}})
+	}
+	open := strings.IndexByte(p.src[kw:], '{') + kw
+	depth := 0
+	lineStart := false
+	for i := open; i < len(p.src); {
+		switch c := p.src[i]; {
+		case lineStart && c == '<' && i+1 < len(p.src) && isLetter(p.src[i+1]):
+			fail(kw, "unterminated style block")
+		case c == '\n':
+			lineStart = true
+		case c != ' ' && c != '\t' && c != '\r':
+			lineStart = false
+		}
+		next, err := cssAtom(p.src, i)
+		if err != "" {
+			fail(i, err+" in style block")
+		}
+		// cssAtom reads no escapes outside strings: a \} would end the
+		// block here and not in a browser.
+		if c := p.src[i]; c != '"' && c != '\'' && !strings.HasPrefix(p.src[i:], "/*") {
+			if k := strings.IndexByte(p.src[i:next], '\\'); k >= 0 {
+				fail(i+k, backslashMsg)
+			}
+		}
+		switch p.src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				j := i + 1
+				for j < len(p.src) && (p.src[j] == ' ' || p.src[j] == '\t') {
+					j++
+				}
+				if j < len(p.src) && strings.IndexByte(".[(", p.src[j]) >= 0 {
+					p.failAt(p.posAt(kw), "%s", literalHint)
+				}
+				return styleSpan{kw, open, i + 1}
+			}
+		}
+		i = next
+	}
+	fail(kw, "unterminated style block")
+	panic("unreachable")
+}
+
+const literalHint = "style { opens a style block; write (style{...}) for a composite literal of type style"
 
 func (p *parser_) parseElement(inSVG bool) *Element {
 	el := &Element{Pos: p.posAt(p.off)}

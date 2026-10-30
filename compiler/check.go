@@ -99,6 +99,17 @@ const denPackage = `package den
 // Children is markup passed to a component: its default content, or a
 // named slot. Markup renders it with {x}.
 type Children struct{ _ func() }
+
+// Design token types. A package-level constant of one of them is a token
+// that style blocks use as $name: const RadiusLg den.Length = "12px" is
+// $radius-lg.
+type (
+	Color    string
+	Length   string
+	Duration string
+	Font     string
+	Token    string
+)
 `
 
 // isChildren reports whether t is den.Children.
@@ -189,6 +200,7 @@ type part struct {
 type checked struct {
 	fset        *token.FileSet
 	info        *types.Info
+	pkg         *types.Package
 	comps       []*checkedComponent
 	funcs       []*ast.FuncDecl // top-level Go functions
 	components  map[string]*Component
@@ -436,7 +448,7 @@ next:
 		return nil, errs.sorted()
 	}
 
-	out := &checked{fset: fset, info: info, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes}
+	out := &checked{fset: fset, info: info, pkg: pkg, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes}
 	decls := map[string]*ast.FuncDecl{}
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
@@ -683,6 +695,29 @@ func screenDecl(file string, d *GoDecl) (string, []importSpec, *Error) {
 		}
 		_ = lit
 	}
+}
+
+// declaresStyle reports whether the program gives the name style a meaning
+// at the top level, through a declaration or an import, as check's own
+// map records it. Components never take it: their names are capitalized.
+func declaresStyle(files []*File) bool {
+	var src strings.Builder
+	for _, f := range files {
+		for _, d := range f.Decls {
+			code, imps, err := screenDecl(f.Name, d)
+			if err != nil {
+				continue
+			}
+			for _, im := range imps {
+				if name, _ := importName(im.spec); name == "style" {
+					return true
+				}
+			}
+			src.WriteString(code + "\n")
+		}
+	}
+	top, _ := topLevel(src.String())
+	return top["style"]
 }
 
 // importName returns the name an import spec (`"strings"` or `s "strings"`)

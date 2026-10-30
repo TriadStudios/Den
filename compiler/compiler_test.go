@@ -467,6 +467,557 @@ component App() {
     f := path
     <p>{f().Get()}</p>
 }`, `app.den:3:10: path can only be called, not used as a value`},
+		{"second style block", `
+component App() {
+    style { p { color: red; } }
+    style { a { color: blue; } }
+    <p>x</p>
+}`, `app.den:4:5: component App has a second style block; put all of its CSS in one`},
+		{"style block after the markup", `
+component App() {
+    <p>x</p>
+    style { p { color: red; } }
+}`, `app.den:4:5: the style block of App must come before its markup`},
+		{"unterminated style block", `
+component App() {
+    style { p { color: red; }
+    <p>x</p>
+}`, `app.den:3:5: unterminated style block`},
+		{"unterminated string in a style block", `
+component App() {
+    style { p::after { content: "x; } }
+    <p>x</p>
+}`, `app.den:3:33: unterminated string in style block`},
+		{"unknown token", `
+component App() {
+    style { p { color: $ink; } }
+    <p>x</p>
+}`, `app.den:3:24: unknown token $ink (want a const Ink of type den.Color, den.Length, den.Duration, den.Font or den.Token)`},
+		{"unknown token on a later line", `
+component App() {
+    style {
+        p {
+            margin: 0;
+            color: $nope;
+        }
+    }
+    <p>x</p>
+}`, `app.den:6:20: unknown token $nope`},
+		{"ambiguous token", `
+const ink den.Color = "#000"
+const Ink den.Color = "#111"
+component App() {
+    style { p { color: $ink; } }
+    <p>x</p>
+}`, `app.den:5:24: design token $ink is ambiguous: both ink and Ink are constants`},
+		{"token that is not a token type", `
+const Ink string = "#000"
+component App() {
+    style { p { color: $ink; } }
+    <p>x</p>
+}`, `app.den:4:24: $ink is string, not a design token type`},
+		{"local const is not a token", `
+component App() {
+    const ink den.Color = "#000"
+    style { p { color: $ink; } }
+    <p>{string(ink)}</p>
+}`, `app.den:4:24: unknown token $ink`},
+		{"bad color token", `
+const Ink den.Color = "#12"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Ink: "#12" is not a color`},
+		{"bad length token", `
+const Gap den.Length = "16"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: "16" is not a length`},
+		{"bad duration token", `
+const Fast den.Duration = "fast"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Fast: "fast" is not a duration`},
+		{"bad font token", `
+const Body den.Font = "serif,,sans-serif"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Body: "serif,,sans-serif" is not a list of font families`},
+		{"token that breaks out of its declaration", `
+const Shadow den.Token = "0 0 1px red; color: blue"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Shadow: a token cannot contain ";"`},
+		{"color token that closes the rule", `
+const (
+    Ink den.Color = "red}*"
+)
+component App() {
+    <p>x</p>
+}`, `app.den:3:5: design token Ink: unexpected }`},
+		{"token with an open string", `
+const Quote den.Token = "\"x"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Quote: unterminated string`},
+		// A token's text goes wherever var() takes it, so it cannot hold a
+		// URL at all: den checks URLs where a style block writes them.
+		{"token holding image-set", `
+const U den.Token = "image-set(\"vbscript:x\" 1x)"
+component App() {
+    style { p { background-image: $u; } }
+    <p>x</p>
+}`, `app.den:2:7: design token U: a token cannot contain image-set(); write the URL in the style block`},
+		{"token holding -webkit-image-set", `
+const U den.Token = "-webkit-image-set(\"blob:https://x/y\" 1x)"
+component App() {
+    style { p { background-image: $u; } }
+    <p>x</p>
+}`, `app.den:2:7: design token U: a token cannot contain -webkit-image-set()`},
+		{"token holding IMAGE-SET in capitals", `
+const T den.Token = "IMAGE-SET('ftp://x/y' 2x)"
+component App() {
+    style { p { list-style-image: $t; } }
+    <p>x</p>
+}`, `app.den:2:7: design token T: a token cannot contain image-set()`},
+		{"token holding a data:text/html image-set, used in content", `
+const T den.Token = "image-set(\"data:text/html,x\" 1x)"
+component App() {
+    style { p::after { content: $t; } }
+    <p>x</p>
+}`, `app.den:2:7: design token T: a token cannot contain image-set()`},
+		{"token reaching image-set through a custom property", `
+const T den.Token = "image-set(\"vbscript:x\" 1x)"
+component App() {
+    style {
+        .a { --q: $t; }
+        .b { background-image: var(--q); }
+    }
+    <p class="a"><b class="b">x</b></p>
+}`, `app.den:2:7: design token T: a token cannot contain image-set()`},
+		{"length token hiding image-set in calc", `
+const L den.Length = "calc(1px + image-set(\"vbscript:x\" 1x))"
+component App() {
+    style { p { background: $l; } }
+    <p>x</p>
+}`, `app.den:2:7: design token L: a token cannot contain image-set()`},
+		{"token holding a safe url", `
+const Img den.Token = "URL(a.png)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Img: a token cannot contain url(); write the URL in the style block`},
+		{"token holding cross-fade", `
+const Img den.Token = "cross-fade(red, blue)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Img: a token cannot contain cross-fade()`},
+		{"token calling a custom function", `
+const Img den.Token = "--img(\"x\")"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Img: custom CSS functions are not supported in design tokens`},
+		{"token using another token", `
+const Gap den.Token = "$space-4"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: a token cannot contain $: tokens cannot use other tokens`},
+		{"color token where a length goes", `
+const Ink den.Color = "#000"
+component App() {
+    style { p { padding: $ink; } }
+    <p>x</p>
+}`, `app.den:4:26: $ink is a den.Color, but padding takes a length`},
+		{"length token where a color goes", `
+const Gap den.Length = "4px"
+component App() {
+    style { p { border-top-color: $gap; } }
+    <p>x</p>
+}`, `app.den:4:35: $gap is a den.Length, but border-top-color takes a color`},
+		{"duration token outside a transition", `
+const Fast den.Duration = "1s"
+component App() {
+    style { p { width: $fast; } }
+    <p>x</p>
+}`, `app.den:4:24: $fast is a den.Duration, which only transition and animation properties take`},
+		{"font token outside font", `
+const Body den.Font = "serif"
+component App() {
+    style { p { color: $body; } }
+    <p>x</p>
+}`, `app.den:4:24: $body is a den.Font, which only font-family and font take`},
+		{"token in a media condition", `
+const Wide den.Length = "40rem"
+component App() {
+    style { @media (min-width: $wide) { p { color: red; } } }
+    <p>x</p>
+}`, `app.den:4:32: design tokens cannot be used in @media conditions: CSS custom properties do not work there`},
+		{"import in a style block", `
+component App() {
+    style { @import "x.css"; }
+    <p>x</p>
+}`, `app.den:3:13: @import is not allowed in a style block; put it in style.css`},
+		{"font-face in a style block", `
+component App() {
+    style { @font-face { font-family: x; } }
+    <p>x</p>
+}`, `app.den:3:13: @font-face is not allowed in a style block; put it in style.css`},
+		{":root in a style block", `
+component App() {
+    style { :root { color: red; } }
+    <p>x</p>
+}`, `app.den:3:13: :root is outside every component, so a component's style can never match it; put page-wide styles in style.css`},
+		{"body in a style block", `
+component App() {
+    style { body p { color: red; } }
+    <p>x</p>
+}`, `app.den:3:13: body is outside every component`},
+		{"html in a selector list", `
+component App() {
+    style { p, HTML > a { color: red; } }
+    <p>x</p>
+}`, `app.den:3:16: html is outside every component`},
+		{"unsafe url scheme", `
+component App() {
+    style { p { background: url("vbscript:x"); } }
+    <p>x</p>
+}`, `app.den:3:29: unsafe URL in url(): only http, https, mailto, tel, data:image/ and relative URLs are allowed`},
+		{"unsafe unquoted url", `
+component App() {
+    style { p { background: url(data:text/html,xx); } }
+    <p>x</p>
+}`, `app.den:3:29: unsafe URL in url()`},
+		{"javascript in a style block", `
+component App() {
+    style { p::after { content: JavaScript:x; } }
+    <p>x</p>
+}`, `app.den:3:33: "javascript:" is not allowed in a style block`},
+		{"javascript in a url string", `
+component App() {
+    style { p { background: url("JavaScript:alert(1)"); } }
+    <p>x</p>
+}`, `app.den:3:29: url() cannot contain "expression(" or "javascript:"`},
+		{"data URL that is not an image", `
+component App() {
+    style { p { background-image: image-set("data:text/html,x" 1x); } }
+    <p>x</p>
+}`, `app.den:3:45: unsafe URL in image-set()`},
+		{"block in a custom property", `
+component App() {
+    style { p { --x: {}; } }
+    <p>x</p>
+}`, `app.den:3:22: {} blocks in custom property values are not supported`},
+		// Case is ASCII-only in CSS. Unicode lowering once changed byte
+		// offsets (İ is two bytes, its lower case one), so this panicked or
+		// let expression( through.
+		{"expression after a dotted capital I", `
+component App() {
+    style { p::after { content: "İ"/**/expression(1); } }
+    <p>x</p>
+}`, `app.den:3:41: "expression(" is not allowed in a style block`},
+		{"data URL whose type is not ASCII image", `
+component App() {
+    style { p { background: url("DATA:İMAGE/png,x"); } }
+    <p>x</p>
+}`, `app.den:3:29: unsafe URL in url()`},
+		{"at-rule name with a dotted capital I", `
+component App() {
+    style { @MEDİA screen { p { color: red; } } }
+    <p>x</p>
+}`, `app.den:3:13: @medİa is not allowed in a style block`},
+		// var(), env() and attr() would hand a URL function a value den
+		// never checked.
+		{"var in image-set", `
+component App() {
+    style { .k { background-image: image-set(var(--nope, "javascript:alert(2)") 1x); } }
+    <p>x</p>
+}`, `app.den:3:46: var() cannot be used in image-set(): its URLs are checked when the app builds`},
+		{"var in a prefixed image-set, any case", `
+component App() {
+    style { .k { --u: "javascript:alert(1)"; background-image: -WEBKIT-IMAGE-SET(VAR(--u) 1x); } }
+    <p>x</p>
+}`, `app.den:3:82: var() cannot be used in -webkit-image-set()`},
+		{"env in image", `
+component App() {
+    style { p { background-image: image(ENV(safe-area)); } }
+    <p>x</p>
+}`, `app.den:3:41: env() cannot be used in image()`},
+		{"attr in src", `
+component App() {
+    style { p { background-image: image-set(src(attr(data-x)) 1x); } }
+    <p>x</p>
+}`, `app.den:3:49: attr() cannot be used in image-set()`},
+		{"string in parentheses in image-set", `
+component App() {
+    style { p { background-image: image-set(("javascript:x") 1x); } }
+    <p>x</p>
+}`, `app.den:3:46: image-set() cannot contain "expression(" or "javascript:"`},
+		{"expression in a style block", `
+component App() {
+    style { p { width: expression(1); } }
+    <p>x</p>
+}`, `app.den:3:24: "expression(" is not allowed in a style block`},
+		{"behavior in a style block", `
+component App() {
+    style { p { behavior: url(x.htc); } }
+    <p>x</p>
+}`, `app.den:3:17: behavior is not allowed in a style block: it can run code`},
+		{"stray dollar", `
+component App() {
+    style { p { margin: $ 1px; } }
+    <p>x</p>
+}`, `app.den:3:25: stray $: a design token is written $name, like $space-4`},
+		{"dollar in a selector", `
+component App() {
+    style { p$x { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:14: design tokens cannot be used in selectors`},
+		{"nested rule", `
+component App() {
+    style { p { margin: 0; a { color: red; } } }
+    <p>x</p>
+}`, `app.den:3:30: nested rules are not supported in a style block; write each rule with its full selector`},
+		{"nesting selector", `
+component App() {
+    style { &.on { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:13: & (CSS nesting) is not supported in a style block`},
+		{"selector ending in a combinator", `
+component App() {
+    style { p > { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:13: a selector cannot end with a combinator`},
+		{"declaration without a colon", `
+component App() {
+    style { p { margin; } }
+    <p>x</p>
+}`, `app.den:3:17: expected property: value`},
+		{"unclosed parenthesis in a value", `
+component App() {
+    style { p { color: rgb(0 0 0; margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:27: unclosed (`},
+		{"extra parenthesis in a value", `
+component App() {
+    style { p { width: calc(1px)); } }
+    <p>x</p>
+}`, `app.den:3:33: unexpected )`},
+		{"unclosed parenthesis in a selector", `
+component App() {
+    style { a:not(.b { margin: 0; } }
+    <p>x</p>
+}`, `app.den:3:18: unclosed (`},
+		// A form feed ends a CSS string, so a token holding one in quotes
+		// would turn the rest of style.css into part of the :root rule.
+		{"form feed in a token", `
+const Odd den.Token = "'a\fb'"
+component App() {
+    style { q { quotes: $odd; } }
+    <q>x</q>
+}`, `app.den:2:7: design token Odd: a token cannot contain a control character (U+000C)`},
+		{"form feed in a token made by concatenation", `
+const ff = "\f"
+const Odd den.Token = "'a" + ff + "b'"
+component App() {
+    style { q { quotes: $odd; } }
+    <q>x</q>
+}`, `app.den:3:7: design token Odd: a token cannot contain a control character (U+000C)`},
+		{"carriage return in a token", `
+const Gap den.Length = "1px\r"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: a token cannot contain a control character (U+000D)`},
+		{"NUL in a token", `
+const Ink den.Color = "red\x00"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Ink: a token cannot contain a control character (U+0000)`},
+		{"DEL in a token", `
+const Body den.Font = "serif\x7f"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Body: a token cannot contain a control character (U+007F)`},
+		{"javascript in a token", `
+const Odd den.Token = "JavaScript :alert(1)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Odd: a token cannot contain "javascript:"`},
+		{"form feed in a style block string", "\ncomponent App() {\n    style { p::after { content: \"a\fb\"; } }\n    <p>x</p>\n}",
+			`app.den:3:33: unterminated string in style block`},
+		{"carriage return in a style block string", "\ncomponent App() {\n    style { p::after { content: \"a\rb\"; } }\n    <p>x</p>\n}",
+			`app.den:3:33: unterminated string in style block`},
+		// Outside strings a backslash is an error: escapes there are where
+		// den and browsers once disagreed about where a selector ends.
+		{"escaped line end in a selector", "\ncomponent App() {\n    style { .a\\\fb { margin: 0; } }\n    <p>x</p>\n}",
+			`app.den:3:15: backslash escapes are only allowed inside strings in style blocks`},
+		{"escaped bracket in an attribute selector", `
+component App() {
+    style { .a[x\] { color: red; } .z { color: blue; } }
+    <p>x</p>
+}`, `app.den:3:17: backslash escapes are only allowed inside strings in style blocks`},
+		{"escaped colon in a class", `
+component App() {
+    style { .a\:b { color: red; } }
+    <p>x</p>
+}`, `app.den:3:15: backslash escapes are only allowed inside strings in style blocks`},
+		{"escaped brace after a pseudo-element", `
+component App() {
+    style { .a::before\{ color: red; } .z { color: blue; } }
+    <p>x</p>
+}`, `app.den:3:23: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in a media condition", `
+component App() {
+    style { @media (min-width: 1px\)) { p { color: red; } } }
+    <p>x</p>
+}`, `app.den:3:35: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in a property name", `
+component App() {
+    style { p { col\or: red; } }
+    <p>x</p>
+}`, `app.den:3:20: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in an unquoted url", `
+component App() {
+    style { p { background: url(a\)b.png); } }
+    <p>x</p>
+}`, `app.den:3:34: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in a value", `
+component App() {
+    style { p { margin: 1px\9; } }
+    <p>x</p>
+}`, `app.den:3:28: backslash escapes are only allowed inside strings in style blocks`},
+		{"control character in a style block", "\ncomponent App() {\n    style { p { margin: 1px\x01; } }\n    <p>x</p>\n}",
+			`app.den:3:28: a style block cannot contain the control character U+0001`},
+		{"bracket closed by a parenthesis", `
+component App() {
+    style { a[x=y) { color: red; } }
+    <p>x</p>
+}`, `app.den:3:14: unclosed [`},
+		{"unquoted url with a space", `
+component App() {
+    style { p { background: url(a b.png); } }
+    <p>x</p>
+}`, `app.den:3:34: unquoted url() cannot contain spaces, quotes or (; put the URL in quotes`},
+		{"url in a selector", `
+component App() {
+    style { :is(url(x)) { color: red; } }
+    <p>x</p>
+}`, `app.den:3:17: url() cannot be used in a selector`},
+		{"HTML comment opener in a style block", `
+component App() {
+    style { p { background: <!--url(x); } }
+    <p>x</p>
+}`, `app.den:3:29: <!-- is not allowed in a style block`},
+		{"less-than in a selector", `
+component App() {
+    style { a < b { color: red; } }
+    <p>x</p>
+}`, `app.den:3:15: unexpected < in selector`},
+		{"keyframes named auto", `
+component App() {
+    style { @keyframes auto { to { opacity: 1; } } }
+    <p>x</p>
+}`, `app.den:3:24: "auto" cannot name @keyframes: animation reads it as a keyword; choose another name`},
+		{"token in image-set", `
+const Img den.Token = "\"x.png\""
+component App() {
+    style { p { background-image: image-set($img 1x); } }
+    <p>x</p>
+}`, `app.den:4:45: design tokens cannot be used in image-set(): its URLs are checked when the app builds`},
+		{"token in src", `
+const Img den.Token = "\"x.png\""
+component App() {
+    style { p { background: src(type("image/png") $img); } }
+    <p>x</p>
+}`, `app.den:4:51: design tokens cannot be used in src()`},
+		{"keyframes named like an animation keyword", `
+component App() {
+    style { @keyframes ease { to { opacity: 1; } } }
+    <p>x</p>
+}`, `app.den:3:24: "ease" cannot name @keyframes: animation reads it as a keyword; choose another name`},
+		{"keyframes named like a CSS-wide keyword", `
+component App() {
+    style { @keyframes  NONE { to { opacity: 1; } } }
+    <p>x</p>
+}`, `app.den:3:25: "NONE" cannot name @keyframes`},
+		{"unsafe URL in image-set", `
+component App() {
+    style { p { background-image: image-set("vbscript:x" 1x, "a.png" 2x); } }
+    <p>x</p>
+}`, `app.den:3:45: unsafe URL in image-set(): only http, https, mailto, tel, data:image/ and relative URLs are allowed`},
+		{"unsafe URL in src", `
+component App() {
+    style { p { background: src("vbscript:x"); } }
+    <p>x</p>
+}`, `app.den:3:33: unsafe URL in src()`},
+		// An @function in the app's own style.css could wrap a string into
+		// image-set(), where den would never see it as a URL.
+		{"custom function call in a style block", `
+component App() {
+    style { p { background-image: --img("vbscript:x"); } }
+    <p>x</p>
+}`, `app.den:3:35: custom CSS functions are not supported in style blocks`},
+		// Chromium 152 reads a nested inherit() in a stylesheet built with
+		// replaceSync as running past every later rule.
+		{"inherit() in a style block", `
+component App() {
+    style { p { width: calc(inherit(--w) + 1px); } }
+    <p>x</p>
+}`, `app.den:3:29: inherit() is not supported in style blocks`},
+		{"INHERIT( in a style block", `
+component App() {
+    style { p { color: INHERIT(--c); } }
+    <p>x</p>
+}`, `app.den:3:24: inherit() is not supported in style blocks`},
+		{"inherit() in image-set", `
+component App() {
+    style { p { background-image: image-set(inherit(--a) 1x); } }
+    <p>x</p>
+}`, `app.den:3:45: inherit() is not supported in style blocks`},
+		{"inherit() in a token", `
+const Gap den.Token = "calc(inherit(--gap) * 2)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: inherit() is not supported in design tokens`},
+		{"important token", `
+const Ink den.Token = "red ! IMPORTANT"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Ink: a token cannot contain "!important": style.css could not give it another value`},
+		{"custom function call with _ in its name", `
+component App() {
+    style { p { width: calc(--Gap_x(2) * 1px); } }
+    <p>x</p>
+}`, `app.den:3:29: custom CSS functions are not supported in style blocks`},
+		{"composite literal of type style, indexed", `
+type style []int
+component App() {
+    style{1, 2}[0] = 5
+    <p>x</p>
+}`, `app.den:4:5: style { opens a style block; write (style{...}) for a composite literal of type style`},
+		{"composite literal of type style, called", `
+type style struct{ F func() }
+func f() {}
+component App() {
+    style{F: f}.F()
+    <p>x</p>
+}`, `app.den:5:5: style { opens a style block; write (style{...}) for a composite literal of type style`},
+		{"composite literal of type style that is not CSS", `
+type style []int
+component App() {
+    style{
+        1, // it's
+        2,
+    }[0] = 5
+    <p>x</p>
+}`, `app.den:5:17: unterminated string in style block; style { opens a style block; write (style{...}) for a composite literal of type style`},
+		{"bad keyframe selector", `
+component App() {
+    style { @keyframes spin { start { opacity: 0; } } }
+    <p>x</p>
+}`, `app.den:3:31: keyframe selectors are from, to or a percentage, not "start"`},
+		{"unterminated comment in statements", `
+component App() {
+    x := 1 /* oops
+    <p>{x}</p>
+}`, `app.den:3:12: comment not terminated`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

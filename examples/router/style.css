@@ -1,17 +1,15 @@
+/* Page-wide styles. den build writes the components' style blocks, and
+   the design tokens they use (tokens.den), to den.css, which the page
+   loads before this file, so the rules here come later and can give the
+   tokens other values. */
 :root {
   --bg: #f6f5f1;
-  --card: #ffffff;
-  --ink: #1d1d1b;
-  --muted: #6b6a64;
-  --line: #e4e2da;
-  --accent: #00758f;
-  --accent-ink: #ffffff;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #141413;
-    --card: #1f1f1d;
+    --surface: #1f1f1d;
     --ink: #f1efe8;
     --muted: #a3a199;
     --line: #34332f;
@@ -20,28 +18,13 @@
   }
 }
 * { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-.app { max-width: 720px; margin: 0 auto; padding: 24px 16px 56px; }
-nav { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 32px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
-nav a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 8px; }
-nav a:hover { color: var(--ink); }
-nav a.active { color: var(--accent-ink); background: var(--accent); }
+body { margin: 0; background: var(--bg); color: var(--ink); font-size: 16px; line-height: 1.5; }
 h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; }
 p { margin: 0 0 16px; }
 a { color: var(--accent); }
-.people { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-.people li { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; color: var(--muted); }
-.people li a { font-weight: 600; margin-right: 6px; }
-.row { display: flex; flex-wrap: wrap; gap: 8px; }
 button, .button {
   font: inherit; font-weight: 600; min-width: 44px; height: 40px; padding: 0 14px;
   display: inline-flex; align-items: center; text-decoration: none;
   border-radius: 10px; border: 1px solid transparent; cursor: pointer;
   background: var(--accent); color: var(--accent-ink);
 }
-button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
