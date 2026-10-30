@@ -194,8 +194,9 @@ What it changes:
   that fits. Otherwise children go on lines of their own, wherever that
   changes nothing (below). A start tag that does not fit has one
   attribute per line. Quoted attribute values keep their text, in `"`
-  unless they hold one; tags close as `<x />`; at most one blank line is
-  kept.
+  unless they hold one, except that a carriage return in one is written
+  `&#13;`, the same character to den, so the file can end its lines with
+  LF alone. Tags close as `<x />`, and at most one blank line is kept.
 - Style blocks get a line per rule and per declaration, `prop: value;`,
   with each run of whitespace collapsed to one space, apart from strings,
   comments and `url()`. A selector list longer than 80 columns gets a
@@ -224,7 +225,9 @@ different behavior.
 - `component Name(props) { statements; <markup> }` with exactly one root
   element; props are a Go parameter list, checked at every use.
 - `{expr}` in text and attributes; `onevent={statements}` handlers, with
-  `e.Value()`, `e.Checked()`, `e.Key()` and `e.PreventDefault()`.
+  `e.Value()`, `e.Checked()`, `e.Key()` and `e.PreventDefault()`. A
+  `{...}` with nothing but Go comments in it, like `{/* note */}`, is a
+  comment; `<!-- ... -->` works too.
 - `{if cond { ... } else if ... { ... } else { ... }}`.
 - `{for i, x := range xs key x.ID { ... }}` over slices, arrays, maps and
   ints. The key is required and must be a string, number or bool.
@@ -564,8 +567,9 @@ The tests compile apps and run them under node against a small fake DOM
 programs against Go, and hold the runtime to 3 KB and every example to
 10 KB gzipped. They also fail when a `.den` file in the repository is not
 formatted, and hold `den fmt` to compiling every program in the
-repository and its tests to the same JavaScript and CSS once formatted. `examples/todomvc/e2e.js` and `bench/run.js` drive Chromium
-with Playwright; they are optional development tools.
+repository and its tests to the same JavaScript and CSS once formatted.
+`examples/todomvc/e2e.js` and `bench/run.js` drive Chromium with
+Playwright; they are optional development tools.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
 [SECURITY.md](SECURITY.md) to report a vulnerability.
