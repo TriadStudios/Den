@@ -6,21 +6,21 @@
 // mode.
 
 const (
-    Surface   den.Color = "#ffffff"
-    Ink       den.Color = "#1d1d1b"
-    Muted     den.Color = "#6b6a64"
-    Line      den.Color = "#e4e2da"
-    Accent    den.Color = "#00758f"
-    AccentInk den.Color = "#ffffff"
+	Surface   den.Color = "#ffffff"
+	Ink       den.Color = "#1d1d1b"
+	Muted     den.Color = "#6b6a64"
+	Line      den.Color = "#e4e2da"
+	Accent    den.Color = "#00758f"
+	AccentInk den.Color = "#ffffff"
 
-    Space1   den.Length = "4px"
-    Space2   den.Length = "8px"
-    Space3   den.Length = "12px"
-    Space4   den.Length = "16px"
-    Radius   den.Length = "8px"
-    RadiusLg den.Length = "12px"
+	Space1   den.Length = "4px"
+	Space2   den.Length = "8px"
+	Space3   den.Length = "12px"
+	Space4   den.Length = "16px"
+	Radius   den.Length = "8px"
+	RadiusLg den.Length = "12px"
 
-    Fast den.Duration = "120ms"
+	Fast den.Duration = "120ms"
 
-    Sans den.Font = "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif"
+	Sans den.Font = "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif"
 )

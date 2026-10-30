@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/scanner"
 	"go/token"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -252,6 +253,45 @@ func TestFormatErrors(t *testing.T) {
 		if got := strings.Split(err.Error(), "\n")[0]; got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
 		}
+	}
+}
+
+// TestRepoFormatted keeps every .den file in the repository formatted, so
+// that go test is the CI check for it.
+func TestRepoFormatted(t *testing.T) {
+	n := 0
+	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if path != ".." && (strings.HasPrefix(name, ".") || name == "dist" || name == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, ".den") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		n++
+		got, err := Format(path, b)
+		if err != nil {
+			t.Errorf("%s: %v", path, err)
+		} else if string(got) != lf(string(b)) {
+			t.Errorf("%s is not formatted; run den fmt -w %s", path, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 10 {
+		t.Fatalf("found only %d .den files", n)
 	}
 }
 

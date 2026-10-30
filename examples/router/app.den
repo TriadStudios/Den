@@ -3,134 +3,173 @@
 // with index.html for unknown paths (den dev does both).
 
 type Person struct {
-    ID   int
-    Name string
-    Role string
+	ID   int
+	Name string
+	Role string
 }
 
 type PersonParams struct {
-    ID int
+	ID int
 }
 
 func people() []Person {
-    return []Person{
-        {1, "Ada Lovelace", "Wrote the first program"},
-        {2, "Grace Hopper", "Built the first compiler"},
-        {7, "Ken Thompson", "Co-created Unix and Go"},
-    }
+	return []Person{
+		{1, "Ada Lovelace", "Wrote the first program"},
+		{2, "Grace Hopper", "Built the first compiler"},
+		{7, "Ken Thompson", "Co-created Unix and Go"},
+	}
 }
 
 // lookup returns the person with id, or the zero Person.
 func lookup(id int) Person {
-    for _, p := range people() {
-        if p.ID == id {
-            return p
-        }
-    }
-    return Person{}
+	for _, p := range people() {
+		if p.ID == id {
+			return p
+		}
+	}
+	return Person{}
 }
 
 func active(on bool) string {
-    if on {
-        return "active"
-    }
-    return ""
+	if on {
+		return "active"
+	}
+	return ""
 }
 
 component App() {
-    home := route[struct{}]("/")
-    list := route[struct{}]("/people")
-    one := route[PersonParams]("/people/:id")
-    // A style block applies only to this component's own elements: the
-    // nav links below, but not the links on the pages it shows.
-    style {
-        .app { max-width: 720px; margin: 0 auto; padding: 24px $space-4 56px; font-family: $sans; }
-        nav {
-            display: flex; flex-wrap: wrap; gap: $space-1;
-            margin-bottom: 32px; padding-bottom: $space-3; border-bottom: 1px solid $line;
-        }
-        nav a {
-            color: $muted; text-decoration: none; padding: 6px $space-3; border-radius: $radius;
-            transition: color $fast, background-color $fast;
-        }
-        nav a:hover { color: $ink; }
-        nav a.active { color: $accent-ink; background: $accent; }
-    }
-    <div class="app">
-        <nav>
-            <a href="/" class={active(home.Matches())}>Home</a>
-            <a href="/people" class={active(list.Matches() || one.Matches())}>People</a>
-            <a href="/nowhere">A broken link</a>
-        </nav>
-        <main>
-            {if home.Matches() {
-                <Home />
-            } else if list.Matches() {
-                <People one={one} />
-            } else if one.Matches() {
-                <Profile one={one} />
-            } else {
-                <NotFound />
-            }}
-        </main>
-    </div>
+	home := route[struct{}]("/")
+	list := route[struct{}]("/people")
+	one := route[PersonParams]("/people/:id")
+	// A style block applies only to this component's own elements: the
+	// nav links below, but not the links on the pages it shows.
+	style {
+		.app {
+			max-width: 720px;
+			margin: 0 auto;
+			padding: 24px $space-4 56px;
+			font-family: $sans;
+		}
+		nav {
+			display: flex;
+			flex-wrap: wrap;
+			gap: $space-1;
+			margin-bottom: 32px;
+			padding-bottom: $space-3;
+			border-bottom: 1px solid $line;
+		}
+		nav a {
+			color: $muted;
+			text-decoration: none;
+			padding: 6px $space-3;
+			border-radius: $radius;
+			transition: color $fast, background-color $fast;
+		}
+		nav a:hover {
+			color: $ink;
+		}
+		nav a.active {
+			color: $accent-ink;
+			background: $accent;
+		}
+	}
+	<div class="app">
+		<nav>
+			<a href="/" class={active(home.Matches())}>Home</a>
+			<a href="/people" class={active(list.Matches() || one.Matches())}>People</a>
+			<a href="/nowhere">A broken link</a>
+		</nav>
+		<main>
+			{if home.Matches() {
+				<Home />
+			} else if list.Matches() {
+				<People one={one} />
+			} else if one.Matches() {
+				<Profile one={one} />
+			} else {
+				<NotFound />
+			}}
+		</main>
+	</div>
 }
 
 component Home() {
-    <section>
-        <h1>Routing in den</h1>
-        <p>The URL path picks the page. Links within the site change it without reloading, and back and forward work as usual.</p>
-        <p>Every page has its own address, like <a href="/people/7">this profile</a>.</p>
-    </section>
+	<section>
+		<h1>Routing in den</h1>
+		<p>
+			The URL path picks the page. Links within the site change it without reloading, and back and forward work as usual.
+		</p>
+		<p>Every page has its own address, like <a href="/people/7">this profile</a>.</p>
+	</section>
 }
 
 component People(one *Route[PersonParams]) {
-    style {
-        .people { list-style: none; padding: 0; margin: 0; display: grid; gap: $space-2; }
-        .people li {
-            background: $surface; border: 1px solid $line; border-radius: $radius-lg;
-            padding: $space-3 $space-4; color: $muted;
-        }
-        .people li a { font-weight: 600; margin-right: 6px; }
-    }
-    <section>
-        <h1>People</h1>
-        <ul class="people">
-            {for _, p := range people() key p.ID {
-                <li><a href={one.Link(PersonParams{ID: p.ID})}>{p.Name}</a> {p.Role}</li>
-            }}
-        </ul>
-    </section>
+	style {
+		.people {
+			list-style: none;
+			padding: 0;
+			margin: 0;
+			display: grid;
+			gap: $space-2;
+		}
+		.people li {
+			background: $surface;
+			border: 1px solid $line;
+			border-radius: $radius-lg;
+			padding: $space-3 $space-4;
+			color: $muted;
+		}
+		.people li a {
+			font-weight: 600;
+			margin-right: 6px;
+		}
+	}
+	<section>
+		<h1>People</h1>
+		<ul class="people">
+			{for _, p := range people() key p.ID {
+				<li><a href={one.Link(PersonParams{ID: p.ID})}>{p.Name}</a> {p.Role}</li>
+			}}
+		</ul>
+	</section>
 }
 
 // Profile takes the route rather than the id, so it follows the URL from
 // one profile to the next without being rebuilt.
 component Profile(one *Route[PersonParams]) {
-    who := computed(lookup(one.Params().ID))
-    at := path()
-    style {
-        .row { display: flex; flex-wrap: wrap; gap: $space-2; }
-        button.ghost { background: transparent; color: $ink; border-color: $line; }
-    }
-    <section>
-        {if who.Get().Name == "" {
-            <h1>No person {one.Params().ID}</h1>
-        } else {
-            <h1>{who.Get().Name}</h1>
-            <p>{who.Get().Role}</p>
-        }}
-        <div class="row">
-            <a class="button" href={one.Link(PersonParams{ID: one.Params().ID + 1})}>Next id</a>
-            <button class="ghost" onclick={at.Set("/people")}>All people</button>
-        </div>
-    </section>
+	who := computed(lookup(one.Params().ID))
+	at := path()
+	style {
+		.row {
+			display: flex;
+			flex-wrap: wrap;
+			gap: $space-2;
+		}
+		button.ghost {
+			background: transparent;
+			color: $ink;
+			border-color: $line;
+		}
+	}
+	<section>
+		{if who.Get().Name == "" {
+			<h1>No person {one.Params().ID}</h1>
+		} else {
+			<h1>{who.Get().Name}</h1>
+			<p>{who.Get().Role}</p>
+		}}
+		<div class="row">
+			<a class="button" href={one.Link(PersonParams{ID: one.Params().ID + 1})}>Next id</a>
+			<button class="ghost" onclick={at.Set("/people")}>All people</button>
+		</div>
+	</section>
 }
 
 component NotFound() {
-    at := path()
-    <section>
-        <h1>Not found</h1>
-        <p>Nothing lives at {at.Get()}.</p>
-        <button onclick={at.Set("/")}>Go home</button>
-    </section>
+	at := path()
+	<section>
+		<h1>Not found</h1>
+		<p>Nothing lives at {at.Get()}.</p>
+		<button onclick={at.Set("/")}>Go home</button>
+	</section>
 }
