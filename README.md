@@ -423,8 +423,10 @@ component Dot(target *Signal[float64]) {
   showing what it showed last. It takes no more input: it is made `inert`
   and gets `pointer-events: none` (SVG elements have no `inert`), focus
   inside it is dropped, and events inside it never reach its handlers. It
-  goes when its exit transition ends. Other nodes go at once. Transitions
-  play only when the
+  goes when its exit transition ends. Other nodes go at once. A browser
+  that runs no animation frames, as in a hidden tab, never ends a
+  transition; den then removes the element 100ms after its transition
+  should have ended. Transitions play only when the
   block itself changes: not when the page is built, nor when a block is
   built along with the branch or row around it. A row whose key stays but
   whose item changed is rebuilt in place, without transitions; a key that
@@ -447,9 +449,7 @@ component Dot(target *Signal[float64]) {
   the strict CSP allows: no CSS text is written, as a `style` attribute or
   otherwise. Under `prefers-reduced-motion: reduce`, or in a browser
   without `element.animate`, nothing animates: leaving elements go at
-  once, rows do not glide, and springs jump to their targets. A browser
-  may hold animations in a hidden tab, and an element leaving there can
-  stay (inert) until the tab is shown again.
+  once, rows do not glide, and springs jump to their targets.
 - An app ships the code for motion only when it uses it, and only the
   parts it uses: an `{if}` with transitions ships no list or spring code.
 - These are compile errors: `enter`, `exit` or `animate` given a string,

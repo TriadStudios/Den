@@ -1675,3 +1675,51 @@ finishAll();`)
 		`svg:a; true 2`,
 		`svg:a;svg:b;`)
 }
+
+// Without animation frames (a hidden tab) an exit animation never
+// finishes; a timer then ends it 100ms after it should have finished,
+// as a finish would, layout glide included, and only once.
+func TestMotionNoFrames(t *testing.T) {
+	got := runAppWith(t, testList+`
+component App() {
+    h := hash()
+    show := signal(true)
+    <div>
+        <button onclick={show.Set(false)}>hide</button>
+        {if show.Get() {
+            <ul>
+                {for _, s := range items(h.Get()) key s {
+                    <li exit={fade().For("0ms")} animate={layout()}>{s}</li>
+                }}
+            </ul>
+        }}
+    </div>
+}`, `location.hash = "#a,b,c";`, `
+const go = async (h) => { location.hash = h; await tick(); await tick(); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const state = () => anims.map((a) => a.el.textContent + ":" + a.playState + (a.k.transform ? ":" + a.k.transform : "")).join(" ");
+await go("#a,c");
+log(html(find("ul")), state());
+await wait(150);
+log(html(find("ul")), state());
+anims.find((a) => a.el.textContent === "b").onfinish(); // a finish event that comes late
+log(state());
+anims.length = 0;
+await go("#a");
+finishAll();
+log(html(find("ul")), state());
+await wait(150);
+log(html(find("ul")), state());
+anims.length = 0;
+await go("#");
+click(find("button")); await tick();
+await wait(150);
+log(html(), state());`)
+	expectLines(t, got,
+		`<ul><li>a</li><li>b</li><li>c</li></ul> b:running`,
+		`<ul><li>a</li><li>c</li></ul> b:idle c:running:translate(0px, 10px)`,
+		`b:idle c:running:translate(0px, 10px)`,
+		`<ul><li>a</li></ul> c:finished`,
+		`<ul><li>a</li></ul> c:finished`,
+		`<div><button>hide</button></div> a:idle`)
+}
