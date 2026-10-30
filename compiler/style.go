@@ -146,8 +146,24 @@ func asciiUpper(s string) string {
 }
 
 // hasPrefixFold reports whether s starts with prefix, ignoring ASCII case.
+// lex calls it at every byte of a block, so it compares in place.
 func hasPrefixFold(s, prefix string) bool {
-	return len(s) >= len(prefix) && asciiLower(s[:len(prefix)]) == asciiLower(prefix)
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		a, b := s[i], prefix[i]
+		if 'A' <= a && a <= 'Z' {
+			a += 'a' - 'A'
+		}
+		if 'A' <= b && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 // trimCSSSpace trims CSS whitespace (space, tab, newlines) from s.
