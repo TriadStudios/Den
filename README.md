@@ -39,7 +39,7 @@ field or method Titel)` before any JavaScript is written.
 | | JS shipped, gzipped |
 | --- | --- |
 | `examples/counter` (two counters, a computed value, a bound input) | 2.3 KB |
-| `examples/todos` (add, toggle, remove, filter) | 3.9 KB |
+| `examples/todos` (add, toggle, remove, filter) | 4.0 KB |
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.3 KB |
 | `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.1 KB |
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
