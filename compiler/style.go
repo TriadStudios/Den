@@ -26,8 +26,8 @@ import (
 
 // cssAtom returns the end of the CSS string, comment or unquoted url(...)
 // that starts at i, or i+1 for anything else, and a message if it is not
-// terminated. As in CSS, a newline (\n, \r or \f) that is not escaped ends
-// a string that is still open.
+// terminated ("unterminated string"). As in CSS, a newline (\n, \r or \f)
+// that is not escaped ends a string that is still open.
 //
 // Backslashes are allowed only inside strings (styler.lex), so only
 // strings have escapes to read.
@@ -41,17 +41,17 @@ func cssAtom(src string, i int) (int, string) {
 			case c:
 				return j + 1, ""
 			case '\n', '\r', '\f':
-				return len(src), "unterminated string in style block"
+				return len(src), "unterminated string"
 			default:
 				j++
 			}
 		}
-		return len(src), "unterminated string in style block"
+		return len(src), "unterminated string"
 	case c == '/' && strings.HasPrefix(src[i:], "/*"):
 		if end := strings.Index(src[i+2:], "*/"); end >= 0 {
 			return i + end + 4, ""
 		}
-		return len(src), "unterminated comment in style block"
+		return len(src), "unterminated comment"
 	case urlAt(src, i):
 		j := i + 4
 		for j < len(src) && isCSSSpace(src[j]) {
@@ -67,10 +67,10 @@ func cssAtom(src string, i int) (int, string) {
 			case ')':
 				return j + 1, ""
 			case '\n', '\r', '\f':
-				return len(src), "unterminated url( in style block"
+				return len(src), "unterminated url("
 			}
 		}
-		return len(src), "unterminated url( in style block"
+		return len(src), "unterminated url("
 	}
 	return i + 1, ""
 }
@@ -288,15 +288,17 @@ func styles(ck *checked) (map[*Component]string, string, ErrorList) {
 	return scopes, root + body.String(), nil
 }
 
-// styler compiles one component's style block.
+// styler compiles one component's style block, or checks the value of a
+// design token (see checkToken).
 type styler struct {
-	ck   *checked
-	c    *Component
-	src  string
-	attr string                  // the scope attribute
-	kf   map[string]bool         // the block's @keyframes names
-	vars map[string]*types.Const // the custom properties tokens use, and their constants
-	errs *ErrorList
+	ck         *checked
+	c          *Component
+	tokenValue bool // src is a design token's value, not a style block
+	src        string
+	attr       string                  // the scope attribute
+	kf         map[string]bool         // the block's @keyframes names
+	vars       map[string]*types.Const // the custom properties tokens use, and their constants
+	errs       *ErrorList
 }
 
 // cssRule is a rule as den writes it: a selector or at-rule prelude, and
@@ -386,8 +388,14 @@ func (s *styler) pos(off int) Pos {
 	return Pos{base.Line + strings.Count(s.src[:off], "\n"), off - nl}
 }
 
+// errAt reports an error at src[off]. A design token's errors have no
+// position: styles reports them at the token's declaration.
 func (s *styler) errAt(off int, format string, args ...any) {
-	*s.errs = append(*s.errs, &Error{File: s.c.File, Pos: s.pos(off), Msg: fmt.Sprintf(format, args...)})
+	e := &Error{Msg: fmt.Sprintf(format, args...)}
+	if !s.tokenValue {
+		e.File, e.Pos = s.c.File, s.pos(off)
+	}
+	*s.errs = append(*s.errs, e)
 }
 
 const backslashMsg = "backslash escapes are only allowed inside strings in style blocks"
@@ -416,10 +424,16 @@ func (s *styler) sheet() []cssRule {
 // Nor are there calls of custom functions (--name(...)), which an
 // @function in the app's unchecked style.css could define to wrap their
 // arguments into a URL: image-set(--img("vbscript:x")).
+//
+// A string, comment or url( that is not closed is reported too, though in
+// a style block scanStyle has found every one already.
 func (s *styler) lex() {
 	var open []int // the ( [ and { not yet closed
 	for i := 0; i < len(s.src); {
-		next, _ := cssAtom(s.src, i)
+		next, msg := cssAtom(s.src, i)
+		if msg != "" {
+			s.errAt(i, "%s", msg)
+		}
 		c := s.src[i]
 		if !strings.HasPrefix(s.src[i:], "/*") {
 			for j := i; j < next; j++ {
@@ -445,7 +459,11 @@ func (s *styler) lex() {
 		case '(', '[', '{':
 			if c == '(' {
 				if k, fn := funcName(s.src, 0, i); strings.HasPrefix(fn, "--") {
-					s.errAt(k, "custom CSS functions are not supported in style blocks")
+					where := "style blocks"
+					if s.tokenValue {
+						where = "design tokens"
+					}
+					s.errAt(k, "custom CSS functions are not supported in %s", where)
 				}
 			}
 			open = append(open, i)
@@ -800,7 +818,8 @@ func (s *styler) declaration(i, end int) string {
 // condition of an at-rule when prop is "@media" and the like: comments are
 // dropped, whitespace collapsed, tokens replaced by custom properties and
 // URLs checked. In animation values, the names of the block's @keyframes
-// become their scoped names.
+// become their scoped names. In a design token's value, $ and functions
+// that take URLs (tokenURLFuncs) are errors.
 func (s *styler) value(prop string, i, end int) string {
 	var b strings.Builder
 	space := false
@@ -855,6 +874,8 @@ func (s *styler) value(prop string, i, end int) string {
 			name := s.src[i+1 : j]
 			fn := slices.IndexFunc(fns, func(f string) bool { return urlFuncs[f] })
 			switch {
+			case s.tokenValue:
+				s.errAt(i, "a token cannot contain $: tokens cannot use other tokens")
 			case name == "":
 				s.errAt(i, "stray $: a design token is written $name, like $space-4")
 			case strings.HasPrefix(prop, "@"):
@@ -868,6 +889,11 @@ func (s *styler) value(prop string, i, end int) string {
 			}
 			i = j
 		case end-i >= 4 && urlAt(s.src, i):
+			if s.tokenValue {
+				s.errAt(i, tokenURLMsg, "url")
+				open = nil
+				return ""
+			}
 			write(s.url(i, end, &i))
 		case cssNameStart(c) || c == '_' || c == '#' || isDigit(c) || (c == '.' && i+1 < end && isDigit(s.src[i+1])):
 			j := i + 1
@@ -886,6 +912,11 @@ func (s *styler) value(prop string, i, end int) string {
 				k, fn := i, ""
 				if c == '(' {
 					k, fn = funcName(s.src, start, i)
+				}
+				if s.tokenValue && tokenURLFuncs[fn] {
+					s.errAt(k, tokenURLMsg, fn)
+					open = nil
+					return ""
 				}
 				// var(--u) with --u: "javascript:x" would hand image-set() a
 				// URL that was never checked.
@@ -957,6 +988,15 @@ func (s *styler) url(i, end int, next *int) string {
 // urlFuncs are the functions other than url() whose string arguments are
 // URLs.
 var urlFuncs = map[string]bool{"image-set": true, "-webkit-image-set": true, "src": true, "image": true}
+
+// tokenURLFuncs are the functions that take a URL or an image. A design
+// token cannot hold one at all, whatever it holds: den checks URLs where
+// they are written in a style block, and a token's text goes wherever
+// var() takes it, into properties den cannot know.
+var tokenURLFuncs = map[string]bool{"url": true, "image-set": true, "-webkit-image-set": true, "image": true, "src": true,
+	"cross-fade": true, "-webkit-cross-fade": true, "element": true, "-moz-element": true}
+
+const tokenURLMsg = "a token cannot contain %s(); write the URL in the style block"
 
 // codeInCSS is what old browsers ran as code in CSS.
 var codeInCSS = []string{"expression(", "javascript:"}
@@ -1107,8 +1147,24 @@ func colorOnly(p string) bool {
 	return strings.HasPrefix(p, "border") && strings.HasSuffix(p, "-color")
 }
 
-// checkToken checks the value of a design token of type kind, which is
-// written into the CSS as it is. It returns what is wrong, or "".
+// checkToken checks the value of a design token of type kind, and returns
+// what is wrong, or "".
+//
+// The value is written into den.css as it is, as a custom property
+// (--name:value), and var() puts it into declarations of properties den
+// cannot know: a token used in color can reach background-image through
+// a custom property. So it is checked as a value written in a style block
+// is, by the same code (lex, then value, which checks a value the same
+// way whatever its property), and more strictly than one, since nothing
+// about it may depend on where it ends up:
+//   - no function that takes a URL or an image, not even url() with a
+//     good URL (tokenURLFuncs): den checks URLs where they are written;
+//   - no control characters, ";", "<", backslashes or comments, so it can
+//     never end its string, declaration or rule, even in a string;
+//   - no "javascript:" or "expression(", not even in strings;
+//   - no $: the value is written as it is, so a token cannot use another.
+//
+// Then it must be a value of its type: a color, a length and so on.
 func checkToken(kind, v string) string {
 	// Control characters include \n, \r and \f, which end a CSS string:
 	// one in a quoted token would leave the string open and turn the rest
@@ -1121,18 +1177,24 @@ func checkToken(kind, v string) string {
 	if trimCSSSpace(v) == "" {
 		return "a token cannot be empty"
 	}
-	for _, bad := range []string{";", "{", "}", "<", "\\", "url(", "expression(", "/*"} {
-		if strings.Contains(asciiLower(v), bad) {
+	lv := asciiLower(v)
+	for _, bad := range []string{";", "<", "\\", "expression(", "/*"} {
+		if strings.Contains(lv, bad) {
 			return fmt.Sprintf("a token cannot contain %q", bad)
 		}
 	}
-	if strings.Contains(asciiLower(strings.ReplaceAll(v, " ", "")), "javascript:") {
+	if strings.Contains(strings.ReplaceAll(lv, " ", ""), "javascript:") {
 		return `a token cannot contain "javascript:"`
 	}
-	if !balanced(v) {
-		return "its quotes, parentheses or brackets do not balance"
+	var errs ErrorList
+	s := &styler{tokenValue: true, src: v, errs: &errs}
+	if s.lex(); len(errs) == 0 {
+		s.value("--token", 0, len(v))
 	}
-	lv := asciiLower(trimCSSSpace(v))
+	if len(errs) > 0 {
+		return errs[0].Msg
+	}
+	lv = trimCSSSpace(lv)
 	switch kind {
 	case "Color":
 		if !isColor(lv) {
@@ -1152,32 +1214,6 @@ func checkToken(kind, v string) string {
 		}
 	}
 	return ""
-}
-
-// balanced reports whether the strings in v are closed and its
-// parentheses and brackets balance.
-func balanced(v string) bool {
-	var stack []byte
-	for i := 0; i < len(v); i++ {
-		switch c := v[i]; c {
-		case '"', '\'':
-			j := strings.IndexByte(v[i+1:], c)
-			if j < 0 {
-				return false
-			}
-			i += j + 1
-		case '(':
-			stack = append(stack, ')')
-		case '[':
-			stack = append(stack, ']')
-		case ')', ']':
-			if len(stack) == 0 || stack[len(stack)-1] != c {
-				return false
-			}
-			stack = stack[:len(stack)-1]
-		}
-	}
-	return len(stack) == 0
 }
 
 // cssFunc reports whether v is one call of a function in names, such as

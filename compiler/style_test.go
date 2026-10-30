@@ -140,15 +140,18 @@ func TestCheckToken(t *testing.T) {
 			"rgb(0 0 0 / 0.1)", "rgba(0,0,0,.5)", "hsl(200 50% 50%)", "oklch(25% 0.02 260)", "color-mix(in oklch, red 40%, blue)", "color(display-p3 1 0 0)"},
 		"Length":   {"0", "16px", "-4px", "+1.5rem", ".5em", "1e3px", "1.5E-1rem", "-2e+1em", "1ex", "100%", "50vw", "10dvh", "2cqi", "calc(100% - 2rem)", "clamp(1rem, 2vw, 3rem)", "min(10px, 1em)"},
 		"Duration": {"150ms", "1s", ".2s", "0s", "-1s", "1e3ms", "1.5E-1S"},
-		"Font":     {"system-ui", "system-ui, sans-serif", `ui-sans-serif, -apple-system, "Segoe UI", sans-serif`, "'Fira Code', monospace", "Times New Roman"},
-		"Token":    {"0 1px 2px rgb(0 0 0 / 0.1)", "1.5", "bold", `"a b"`},
+		"Font":     {"system-ui", "system-ui, sans-serif", `ui-sans-serif, -apple-system, "Segoe UI", sans-serif`, "'Fira Code', monospace", "Times New Roman", `"image-set(" , x`},
+		// Strings are text, and a_image-set( calls a_image-set, as in CSS.
+		"Token": {"0 1px 2px rgb(0 0 0 / 0.1)", "1.5", "bold", `"a b"`, `"url(x)"`, `'a}' "{"`, "var(--x)", "attr(data-x)", "a_image-set(1)", "a-->b", "x--y(1)", `"$5"`},
 	}
 	bad := map[string][]string{
-		"Color":    {"#ff", "#ggg", "blu", "rgb(0 0 0", "rgb(0 0 0) red", "evil(1)", "var(--x)", ""},
-		"Length":   {"16", "px", "1.5.5px", "16 px", "--4px", "calc(1px", "calc(1px) 2px", "auto", "1e3", "e3px", "1e+px", "1.px"},
+		"Color":    {"#ff", "#ggg", "blu", "rgb(0 0 0", "rgb(0 0 0) red", "evil(1)", "var(--x)", "", "rgb(0 0 0 / image(red))"},
+		"Length":   {"16", "px", "1.5.5px", "16 px", "--4px", "calc(1px", "calc(1px) 2px", "auto", "1e3", "e3px", "1e+px", "1.px", `calc(1px + image-set("x" 1x))`, "calc(1px + url(x))", "min(1px, --f(2))"},
 		"Duration": {"150", "ms", "1 s", "fast", "1es", "1e", "1e3"},
 		"Font":     {"a,,b", `"unclosed`, `"a"b"`, "1font", "a, "},
-		"Token":    {"'a\fb'", "a\tb", "\x00", "a\x7f", "a\x1b", "JAVA script:x", "a;b", `"a;b"`, "a{", "}", "<x", `a\b`, "url(x)", "EXPRESSION(1)", "a /* b", "a\nb", "(a", `"a`, "  "},
+		"Token": {"'a\fb'", "a\tb", "\x00", "a\x7f", "a\x1b", "JAVA script:x", "a;b", `"a;b"`, "a{", "}", "a{}b", "<x", `a\b`, "url(x)", `url("x")`, "EXPRESSION(1)", `"expression("`, "a /* b", "a\nb", "(a", "a)", "[a)", `"a`, "  ",
+			`image-set("a.png" 1x)`, `-WEBKIT-IMAGE-SET("x" 1x)`, `IMAGE("x")`, `src("x")`, "cross-fade(red, blue)", "-webkit-cross-fade(red, blue, 50%)",
+			"element(#x)", "-moz-element(#x)", `rgb(0 0 0) image-set("x" 1x)`, `--img("x")`, "--A_b(1)", "a $b", "$"},
 	}
 	for kind, vs := range ok {
 		for _, v := range vs {
@@ -482,7 +485,9 @@ var (
 		`'expression(1)'`, `url("javascript:x")`, "{}", `"İZMİR"`, "K", `"ẞȺſı"`, `"İ"/**/expression(1)`, `url("DATA:İMAGE/png,x")`,
 		`image-set(var(--q) 1x)`, `src(VAR(--q))`, `image(attr(data-x))`, `-webkit-image-set(Env(x) 1x)`,
 		`image-set(type(var(--q)) "a.png" 1x)`, `var(--q, "javascript:x")`, "İ(x)", "ſrc(x)",
-		`--img("x")`, "--a_b(1)", `image-set(--img("x") 1x)`, "a_var(--q)", "--(x)"}
+		`--img("x")`, "--a_b(1)", `image-set(--img("x") 1x)`, "a_var(--q)", "--(x)",
+		"cross-fade(red, blue)", "element(#x)", "-webkit-cross-fade(url(a.png), url(b.png), 50%)", `IMAGE("a.png")`,
+		"x_image-set(1)", `"url(x)"`, `"image-set("`, "-MOZ-ELEMENT(#x)"}
 	fuzzNoise = []string{"'", "\"", "(", ")", "[", "]", "{", "}", ";", ":", ",", "\\", "/*", "*/", "/", "*", "<!--",
 		"-->", "<", ">", "@", "@media", "@keyframes x", "$", "$t", "$d", "$f", "url(", "URL(", "u", "rl(", "\f", "\r",
 		"\n", "\r\n", "\t", " ", "\x00", "\x01", "\x0b", "\x7f", "é", "\u2028", "\u00a0", "😀", "\xff", "#", "%", "-",
@@ -497,7 +502,8 @@ var (
 		{"system-ui", "system-ui, sans-serif", `"Segoe UI", serif`, "'a b'"},
 	}
 	fuzzBadTokens = []string{"", "a;b", "a}", `"a`, "(a", "a)", "x\fy", "url(x)", "<x", `\`, "a/*b", "nope", "#ff",
-		"rgb((0)", "16", "calc(1px", "fast", "1 s", "a,,b", "1x", "'\"'", "[a", "javascript:x"}
+		"rgb((0)", "16", "calc(1px", "fast", "1 s", "a,,b", "1x", "'\"'", "[a", "javascript:x",
+		`image-set("x.png" 1x)`, `--f("x")`, "$c", "calc(1px + url(x))"}
 )
 
 func pick(r *rand.Rand, xs []string) string { return xs[r.Intn(len(xs))] }
@@ -563,13 +569,123 @@ func fuzzToks(r *rand.Rand) [5]string {
 		toks[i] = pick(r, vs)
 	}
 	// Every token is checked, used or not, so one bad value is an error.
-	switch r.Intn(6) {
+	switch r.Intn(10) {
 	case 0:
 		toks[r.Intn(5)] = pick(r, fuzzBadTokens)
 	case 1:
 		toks[0] += pick(r, fuzzNoise)
+	case 2:
+		toks[0] = fuzzTokenValue(r)
+	case 3:
+		toks[1+r.Intn(4)] = fuzzTokenValue(r)
 	}
 	return toks
+}
+
+// fuzzTokenValue writes a token value from the pieces inline values are
+// made of, sometimes inside a function that a den.Color or den.Length may
+// be, and sometimes broken with noise.
+func fuzzTokenValue(r *rand.Rand) string {
+	var b strings.Builder
+	for n := 1 + r.Intn(3); n > 0; n-- {
+		if b.Len() > 0 {
+			b.WriteString(pick(r, []string{" ", ", ", "", " / "}))
+		}
+		b.WriteString(pick(r, fuzzValues))
+	}
+	v := b.String()
+	switch r.Intn(4) {
+	case 0:
+		v = pick(r, []string{"calc(1px + ", "min(1px, ", "rgb(0 0 0 / ", "color-mix(in srgb, red, "}) + v + ")"
+	case 1:
+		at := r.Intn(len(v) + 1)
+		v = v[:at] + pick(r, fuzzNoise) + v[at:]
+	}
+	return v
+}
+
+// tokenCase checks v as the value of a den.Token. A compile error is fine.
+// Otherwise den must check a token at least as strictly as a value in a
+// style block: the same text, written in a block as the value of a custom
+// property and of a property that takes URLs, must compile too. And the
+// CSS tokenizer of csscheck.go, not den's own scanner, must read in it no
+// url( token, no function that takes a URL or an image, and no custom
+// function. It returns whether v passed.
+func tokenCase(t testing.TB, v string) bool {
+	t.Helper()
+	toks := [5]string{v, "red", "1px", "1s", "serif"}
+	if !styleCase(t, ".a { --q: $t; }", toks) {
+		return false
+	}
+	toks[0] = "x"
+	if !styleCase(t, ".a { --x: "+v+"; background-image: "+v+"; }", toks) {
+		t.Fatalf("token %q passed, but the same value in a style block does not compile", v)
+	}
+	if fn := urlFunction(v); fn != "" {
+		t.Fatalf("token %q passed, but CSS reads %s in it", v, fn)
+	}
+	return true
+}
+
+// urlFunction returns the first url( token, function that takes a URL or
+// an image, or custom function that readCSS's tokenizer reads in v, or "".
+func urlFunction(v string) string {
+	t := &cssTokenizer{s: v}
+	for {
+		tok, ok := t.next()
+		if !ok {
+			return ""
+		}
+		switch tok.kind {
+		case ctURL, ctBadURL:
+			return "url("
+		case ctFunction:
+			name := []byte(v[tok.start : tok.start+strings.IndexByte(v[tok.start:], '(')])
+			for i, c := range name {
+				if 'A' <= c && c <= 'Z' {
+					name[i] = c + 'a' - 'A'
+				}
+			}
+			switch n := string(name); n {
+			case "url", "image-set", "-webkit-image-set", "image", "src", "cross-fade", "-webkit-cross-fade", "element", "-moz-element":
+				return n + "("
+			default:
+				if strings.HasPrefix(n, "--") {
+					return n + "("
+				}
+			}
+		}
+	}
+}
+
+// TestTokenProperty runs tokenCase on values made from the pieces of
+// inline values. DEN_STYLE_CASES=n runs n of them.
+func TestTokenProperty(t *testing.T) {
+	n := 20_000
+	if testing.Short() {
+		n = 2_000
+	}
+	if s := os.Getenv("DEN_STYLE_CASES"); s != "" {
+		n, _ = strconv.Atoi(s)
+	}
+	passed := 0
+	// Each piece alone first: in a random value, another piece is often
+	// what makes it an error.
+	for _, vs := range [][]string{fuzzValues, fuzzBadTokens, fuzzTokens[0]} {
+		for _, v := range vs {
+			tokenCase(t, v)
+		}
+	}
+	r := rand.New(rand.NewSource(3))
+	for i := 0; i < n; i++ {
+		if tokenCase(t, fuzzTokenValue(r)) {
+			passed++
+		}
+	}
+	if passed < n/20 {
+		t.Errorf("only %d of %d token values passed", passed, n)
+	}
+	t.Logf("%d token values, %d passed", n, passed)
 }
 
 // TestStyleProperty runs styleCase on blocks made from a grammar and
@@ -705,8 +821,10 @@ func FuzzStyle(f *testing.F) {
 	r := rand.New(rand.NewSource(2))
 	for i := 0; i < 50; i++ {
 		f.Add(fuzzBlock(r), fuzzToks(r)[0])
+		f.Add(fuzzBlock(r), fuzzTokenValue(r))
 	}
 	f.Fuzz(func(t *testing.T, body, tok string) {
 		styleCase(t, body, [5]string{tok, "red", "1px", "1s", "serif"})
+		tokenCase(t, tok)
 	})
 }

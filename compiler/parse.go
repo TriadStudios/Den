@@ -649,7 +649,7 @@ func (p *parser_) scanStyle(kw int) styleSpan {
 		}
 		next, err := cssAtom(p.src, i)
 		if err != "" {
-			fail(i, err)
+			fail(i, err+" in style block")
 		}
 		// cssAtom reads no escapes outside strings: a \} would end the
 		// block here and not in a browser.

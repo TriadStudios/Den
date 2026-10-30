@@ -553,12 +553,73 @@ const (
 )
 component App() {
     <p>x</p>
-}`, `app.den:3:5: design token Ink: a token cannot contain "}"`},
+}`, `app.den:3:5: design token Ink: unexpected }`},
 		{"token with an open string", `
 const Quote den.Token = "\"x"
 component App() {
     <p>x</p>
-}`, `app.den:2:7: design token Quote: its quotes, parentheses or brackets do not balance`},
+}`, `app.den:2:7: design token Quote: unterminated string`},
+		// A token's text goes wherever var() takes it, so it cannot hold a
+		// URL at all: den checks URLs where a style block writes them.
+		{"token holding image-set", `
+const U den.Token = "image-set(\"vbscript:x\" 1x)"
+component App() {
+    style { p { background-image: $u; } }
+    <p>x</p>
+}`, `app.den:2:7: design token U: a token cannot contain image-set(); write the URL in the style block`},
+		{"token holding -webkit-image-set", `
+const U den.Token = "-webkit-image-set(\"blob:https://x/y\" 1x)"
+component App() {
+    style { p { background-image: $u; } }
+    <p>x</p>
+}`, `app.den:2:7: design token U: a token cannot contain -webkit-image-set()`},
+		{"token holding IMAGE-SET in capitals", `
+const T den.Token = "IMAGE-SET('ftp://x/y' 2x)"
+component App() {
+    style { p { list-style-image: $t; } }
+    <p>x</p>
+}`, `app.den:2:7: design token T: a token cannot contain image-set()`},
+		{"token holding a data:text/html image-set, used in content", `
+const T den.Token = "image-set(\"data:text/html,x\" 1x)"
+component App() {
+    style { p::after { content: $t; } }
+    <p>x</p>
+}`, `app.den:2:7: design token T: a token cannot contain image-set()`},
+		{"token reaching image-set through a custom property", `
+const T den.Token = "image-set(\"vbscript:x\" 1x)"
+component App() {
+    style {
+        .a { --q: $t; }
+        .b { background-image: var(--q); }
+    }
+    <p class="a"><b class="b">x</b></p>
+}`, `app.den:2:7: design token T: a token cannot contain image-set()`},
+		{"length token hiding image-set in calc", `
+const L den.Length = "calc(1px + image-set(\"vbscript:x\" 1x))"
+component App() {
+    style { p { background: $l; } }
+    <p>x</p>
+}`, `app.den:2:7: design token L: a token cannot contain image-set()`},
+		{"token holding a safe url", `
+const Img den.Token = "URL(a.png)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Img: a token cannot contain url(); write the URL in the style block`},
+		{"token holding cross-fade", `
+const Img den.Token = "cross-fade(red, blue)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Img: a token cannot contain cross-fade()`},
+		{"token calling a custom function", `
+const Img den.Token = "--img(\"x\")"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Img: custom CSS functions are not supported in design tokens`},
+		{"token using another token", `
+const Gap den.Token = "$space-4"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: a token cannot contain $: tokens cannot use other tokens`},
 		{"color token where a length goes", `
 const Ink den.Color = "#000"
 component App() {
