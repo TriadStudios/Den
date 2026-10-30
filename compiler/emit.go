@@ -1279,7 +1279,14 @@ func (e *emitter) expr(x ast.Expr) string {
 	case *ast.UnaryExpr:
 		switch x.Op {
 		case token.NOT, token.SUB, token.ADD:
-			return x.Op.String() + e.expr(x.X)
+			// - -y must not run together into --y, a decrement, nor + +y
+			// into ++y. Binary operators are written with spaces, so
+			// these are the only places operators meet.
+			op, s := x.Op.String(), e.expr(x.X)
+			if strings.HasPrefix(s, op) && x.Op != token.NOT {
+				return op + " " + s
+			}
+			return op + s
 		case token.XOR:
 			return "~" + e.expr(x.X)
 		case token.AND:

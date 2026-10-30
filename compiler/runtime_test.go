@@ -445,7 +445,14 @@ func run() string {
 	if (P{1}) == (P{x - 3}) {
 		out += "p"
 	}
-	return out + itoa(x)
+	n := 1
+	for range (- -n) {
+		out += "n"
+	}
+	if (- -n > 0) {
+		out += "m"
+	}
+	return out + itoa(x) + itoa(n)
 }`,
 }
 
