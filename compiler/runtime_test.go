@@ -2285,6 +2285,60 @@ log(localStorage.getItem("theme"), location.hash);`)
 		`"dark!" #blue`)
 }
 
+// An owner that a run in the walk makes due again is checked again before
+// the effect runs: here a new row writes the signal that the {if} in an
+// older row reads.
+func TestUpdateOrderWalkRestale(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $effect $text $if $for $h $cm $frag $scope $free", `
+const G = $signal(1), Y = $signal("y0"), L = $signal([0]);
+let bad = 0;
+const root = $h("div");
+const [n] = $scope(() => {
+  const f = $frag(), a = $cm(), b = $cm();
+  f.append(a, b);
+  $for(a, b, () => L.get(), (v) => v, (v) => {
+    const e = $h("li");
+    if (v === 1) G.set(0);
+    const a2 = $cm(), b2 = $cm();
+    e.append(a2, b2);
+    $if(a2, b2, () => G.get() > 0, () => {
+      const t = document.createTextNode("");
+      $text(t, () => { if (!(G.v > 0)) bad++; return Y.get(); });
+      return t;
+    });
+    return e;
+  }, false);
+  return f;
+});
+root.append(n);
+log(html(root));
+Y.set("y1"); L.set([0, 1]);
+await new Promise((r) => setImmediate(r));
+log(html(root), "runs past the guard:", bad);`)
+	expectLines(t, got, `<div><li>y0</li></div>`, `<div><li></li><li></li></div> runs past the guard: 0`)
+}
+
+// Two effects that keep setting each other trip the update loop guard,
+// and effects outside the loop still run, then and afterwards.
+func TestUpdateLoopGuard(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $effect $scope $free", `
+const errs = []; console.error = (...a) => errs.push(a.join(" "));
+const x = $signal(0), y = $signal(0), z = $signal(0);
+let zr = 0, ar = 0;
+$scope(() => {
+  $effect(() => { ar++; y.set(x.get() + 1); });
+  $effect(() => { x.set(y.get() + 1); });
+  $effect(() => { z.get(); zr++; });
+});
+x.set(5); z.set(1);
+await new Promise((r) => setImmediate(r));
+log(JSON.stringify(errs), zr, ar > 100);
+z.set(2);
+await new Promise((r) => setImmediate(r));
+log(zr);`)
+	expectLines(t, got, `["den: update loop"] 2 true`, `3`)
+}
+
 // Readers are kept one at a time or in a Set, told apart by add and
 // delete: signal values that have add or delete members, and readers
 // added and removed, must not confuse that.

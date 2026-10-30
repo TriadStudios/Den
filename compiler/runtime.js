@@ -84,9 +84,12 @@ function $update(n) {
 // $run runs n's owners that are due first, then n unless they disposed it:
 // an effect never runs while a block around it still has to re-check, since
 // the block may remove it. Each owner runs its own owners first, so they go
-// outermost first.
+// outermost first, and the walk starts over after running one, in case
+// that made an owner due again (a block that writes a signal as it builds).
+// It starts over at most 9 times, so a block that keeps making itself due
+// is left to the flush's loop guard instead of hanging the page.
 function $run(n) {
-  for (let o = n; o = o.p; ) o.s && $run(o);
+  for (let o = n, i = 0; o = o.p; ) o.s && i++ < 9 && ($run(o), o = n);
   n.x || $fresh(n);
 }
 function $flush() {
