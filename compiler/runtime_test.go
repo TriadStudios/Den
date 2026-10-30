@@ -2060,8 +2060,8 @@ log(html());`)
 // An effect that throws is reported (reportError, which dom.js logs), the
 // rest of the update still lands, and the effect runs again when what it
 // read changes: a binding, an {if} condition and a computed alike. A
-// branch that throws while it is built is dropped whole, so none of its
-// bindings live on unseen.
+// binding that throws as its branch is built is reported the same way, and
+// the branch is shown without it until it can run.
 func TestRunThrowingEffect(t *testing.T) {
 	got := runApp(t, `
 component App() {
@@ -2095,30 +2095,67 @@ click(find("button", "good")); await tick(); log(html());
 click(find("button", "bad")); await tick(); log(html());
 click(find("button", "show")); await tick(); log(html());
 click(find("button", "ys")); await tick(); log(html());
-click(find("button", "show")); await tick();
-click(find("button", "good")); await tick();
-click(find("button", "show")); await tick(); log(html());`)
+click(find("button", "good")); await tick(); log(html());`)
 	const tail = `<button>bad</button><button>good</button><button>show</button><button>n</button><button>ys</button></div>`
+	const oob = `reportError: den: index out of range`
 	expectLines(t, got,
 		`<div><p>a</p><b>0</b><u>a!</u>`+tail,
-		`reportError: den: index out of range`,
-		`reportError: den: index out of range`,
-		`reportError: den: index out of range`,
+		oob, oob, oob,
 		`<div><p>a</p><b>1</b><u>a!</u>`+tail,
 		`<div><p>a</p><b>2</b><u>a!</u>`+tail,
 		`<div><p>b</p><b>2</b><u>b!</u><s>is b</s>`+tail,
-		`reportError: den: index out of range`,
-		`reportError: den: index out of range`,
-		`reportError: den: index out of range`,
+		oob, oob, oob,
 		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s>`+tail,
-		`reportError: den: index out of range`,
-		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s>`+tail,
-		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s>`+tail,
+		oob,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s><i>3</i>`+tail,
+		oob,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s><i>3</i>`+tail,
 		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s><i>3z</i>`+tail)
 }
 
-// A {for} whose new row panics while it is built keeps its old rows, and
-// tries again when its list changes.
+// A computed value that throws throws again for every reader, in the same
+// update and later, rather than handing out its old value; and every reader
+// still depends on it, so all of them run again once its inputs change,
+// including an {if} whose condition read it and threw.
+func TestRunThrowingComputed(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    xs := signal([]string{"a", "b"})
+    i := signal(0)
+    on := signal(true)
+    name := signal("x")
+    c := computed(xs.Get()[i.Get()])
+    <div>
+        {if on.Get() && c.Get() == "f" {
+            <s>is f</s>
+        }}
+        <p>{name.Get() + c.Get()}</p>
+        <b>{c.Get()}</b>
+        <button onclick={on.Set(true); i.Set(5); name.Set("y")}>bad</button>
+        <button onclick={on.Set(false)}>off</button>
+        <button onclick={xs.Set([]string{"a", "b", "c", "d", "e", "f"})}>grow</button>
+        <button onclick={name.Set("z")}>name</button>
+    </div>
+}`, `
+const show = () => log(html(find("div")).replace(/<button>.*$/, ""));
+show();
+click(find("button", "off")); await tick(); show();
+click(find("button", "bad")); await tick(); show();
+click(find("button", "name")); await tick(); show();
+click(find("button", "grow")); await tick(); show();`)
+	const oob = `reportError: den: index out of range`
+	expectLines(t, got,
+		`<div><p>xa</p><b>a</b>`,
+		`<div><p>xa</p><b>a</b>`,
+		oob, oob, oob,
+		`<div><p>xa</p><b>a</b>`,
+		oob,
+		`<div><p>xa</p><b>a</b>`,
+		`<div><s>is f</s><p>zf</p><b>f</b>`)
+}
+
+// A binding that panics in a new row is reported, and the row is shown
+// without it until the binding can run.
 func TestRunThrowingRow(t *testing.T) {
 	got := runApp(t, `
 component App() {
@@ -2144,8 +2181,8 @@ click(find("button", "swap")); await tick(); show();`)
 	expectLines(t, got,
 		`<ul><li>a</li></ul> 1`,
 		`reportError: den: index out of range`,
-		`<ul><li>a</li></ul> 2`,
-		`<ul><li>a</li></ul> 2`,
+		`<ul><li>a</li><li></li></ul> 2`,
+		`<ul><li>a</li><li>b</li></ul> 2`,
 		`<ul><li>b</li><li>a</li></ul> 2`)
 }
 

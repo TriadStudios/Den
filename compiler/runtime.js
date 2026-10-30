@@ -34,14 +34,18 @@ class $Sig {
 // A computed value or effect is a signal with f, its function, called with c
 // (the list row it belongs to, if any); s its state (0 clean, 1 check, 2
 // dirty); d the nodes it read (one node, or an array); n the next entry in
-// its scope; p its owner, the effect that made its scope (see $scope); and
+// its scope; p its owner, the effect that made its scope (see $scope); r,
+// set while a computed value's v is the error it threw (see $update); and
 // x, set once it is disposed. An effect also has e, a sink called with the
 // node when its value changes, and t and k for the sink to write to. Most
 // nodes have one reader and read one node, so storing those directly saves
 // allocating a collection for each.
 class $Node extends $Sig {
   constructor(f, e, t, k, c) { super($Node); this.f = f; this.e = e; this.t = t; this.k = k; this.c = c; this.s = 2; this.d = this.n = null; this.p = $owner?.p; }
-  get() { $fresh(this); return super.get(); }
+  // A computed value in error throws it again for every reader, which
+  // still depends on it (it is tracked first), so it runs again once the
+  // computed value's inputs change.
+  get() { $fresh(this); const v = super.get(); if (this.r) throw v; return v; }
 }
 function $each(o, f) { o?.forEach ? o.forEach(f) : o && f(o); }
 function $has(o, n) { return o === n || !!o?.includes?.(n); }
@@ -56,34 +60,34 @@ function $stale(n, s) {
     $each(n.o, (m) => $stale(m, 1));
   }
 }
-// A node that throws is clean afterwards and keeps what it read before
-// throwing, so the next change to those runs it again.
 function $fresh(n) {
-  try {
-    if (n.s === 1) $each(n.d, (d) => n.s === 1 && d.f && $fresh(d));
-    if (n.s === 2) $update(n);
-  } finally { n.s = 0; }
+  if (n.s === 1) $each(n.d, (d) => n.s === 1 && d.f && $fresh(d));
+  if (n.s === 2) $update(n);
+  n.s = 0;
 }
+// An effect that throws is reported. A computed value that throws takes
+// the error as its value, with r set, so every read throws it, and its
+// readers are told, as they are of a new value (and again when it
+// recovers). Either way the node is clean afterwards, with what it read
+// before throwing, so the next change to that runs it again.
 function $update(n) {
   const old = n.d, l = $listener, v = n.v;
   n.d = null;
   $listener = n;
-  try { n.v = n.f(n.c); } finally {
-    $listener = l;
-    $each(old, (d) => $has(n.d, d) || $unlink(d, n));
-    if (!n.x) $each(n.d, (d) => $has(old, d) || $link(d, n));
-    n.s = 0;
-  }
+  try { n.v = n.f(n.c); n.r &&= 0; } catch (e) { n.e ? reportError(e) : (n.r = 1, n.v = e); }
+  $listener = l;
+  $each(old, (d) => $has(n.d, d) || $unlink(d, n));
+  if (!n.x) $each(n.d, (d) => $has(old, d) || $link(d, n));
+  n.s = 0;
   if (!Object.is(v, n.v) || $mutable(n.v)) n.e ? n.e(n) : $each(n.o, (m) => { m.s = 2; });
 }
 // $run runs n's owners that are due first, then n unless they disposed it:
 // an effect never runs while a block around it still has to re-check, since
 // the block may remove it. Each owner runs its own owners first, so they go
-// outermost first. An effect that throws is reported, and the rest still
-// run.
+// outermost first.
 function $run(n) {
   for (let o = n; o = o.p; ) o.s && $run(o);
-  if (!n.x) try { $fresh(n); } catch (e) { reportError(e); }
+  n.x || $fresh(n);
 }
 function $flush() {
   for (let i = 0; $queue.length; i++) {

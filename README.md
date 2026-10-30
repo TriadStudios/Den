@@ -283,9 +283,12 @@ component App() {
 - A binding that panics (an index out of range, say) is reported with
   `reportError`, as an uncaught error would be, and the rest of the
   update still lands; the binding runs again when what it read changes.
-  An `{if}` branch that panics while it is built is left out, and a
-  `{for}` whose new row panics keeps its old rows, until the block's
-  condition or list changes again.
+  A `computed` that panics panics again for each binding that reads it,
+  until its own inputs change. A binding that panics as its branch or row
+  is built is reported the same way, and the branch or row is shown
+  without it. A panic outside bindings while a branch or row is built (in
+  a component's statements or a prop) leaves that `{if}` branch out, or
+  keeps the `{for}`'s old rows, until its condition or list changes again.
 
 **Routing**
 
