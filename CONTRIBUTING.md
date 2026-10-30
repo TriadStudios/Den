@@ -21,6 +21,7 @@ and components.
 go test ./...   # needs node on PATH; the runtime tests run compiled apps under node
 go vet ./...
 gofmt -l .      # must print nothing
+go run ./cmd/den fmt -l .   # must print nothing: .den files are formatted too
 ```
 
 - Every change to what the compiler accepts needs a test. Compile errors go in

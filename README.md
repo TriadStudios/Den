@@ -55,6 +55,7 @@ go install github.com/TriadStudios/Den/cmd/den@latest
 den dev examples/todomvc       # http://localhost:8080, rebuilds and reloads on save
 den build examples/todomvc     # writes examples/todomvc/dist/
 den check examples/todomvc     # type-check only
+den fmt -w examples/todomvc    # format the .den files in place
 ```
 
 Den needs Go 1.24 or later and has no dependencies beyond the Go standard
@@ -163,6 +164,55 @@ padding takes a length`).
   hold `!important`, which would stop `style.css` from theming it.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
+
+## Formatting
+
+`den fmt` gives `.den` files one layout, as `gofmt` does for Go, and is
+used the same way:
+
+```sh
+den fmt app.den      # print the file formatted
+den fmt -l .         # list the files whose formatting differs
+den fmt -w .         # rewrite them in place
+den fmt -d .         # show the changes as a diff
+den fmt < app.den    # format standard input
+```
+
+A directory stands for every `.den` file under it, except those in
+`dist`, `node_modules` and dot directories. `-w` replaces a file
+atomically and keeps its permissions. A file that does not parse is
+reported as `file:line:col` and left alone, and the exit status is 2.
+
+What it changes:
+- Go is formatted as `gofmt` formats it: declarations, statements,
+  props, and the Go in markup (`{expr}`, attribute values, handlers and
+  `{if}` and `{for}` headers). A handler written on one line stays on
+  one line if it is short.
+- Markup is indented with tabs. An element holding only text and
+  `{expr}`s goes on one line if it fits in 100 columns (a tab counts as
+  4), and so does any element, `{if}` or `{for}` written on one line
+  that fits. Otherwise children go on lines of their own, wherever that
+  changes nothing (below). A start tag that does not fit has one
+  attribute per line. Quoted attribute values keep their text, in `"`
+  unless they hold one; tags close as `<x />`; at most one blank line is
+  kept.
+- Style blocks get a line per rule and per declaration, `prop: value;`,
+  with each run of whitespace collapsed to one space, apart from strings,
+  comments and `url()`. A selector list longer than 80 columns gets a
+  line per selector.
+- Line endings become LF.
+
+What it never changes is what the app compiles to. Den's text rules say
+which whitespace counts: whitespace with a newline in it is dropped next
+to a tag or `{...}` and is one space between words, while a space
+without a newline is text. So `<b>a</b> <i>b</i>` keeps its space, and
+`{a}` and `{b}` on two lines become `{a}{b}`, which shows that the page
+has no space between them. Whitespace in `<pre>` and `<textarea>` is
+kept exactly, and so is the text around a line holding nothing but a
+non-breaking space, which den drops. Comments of every kind are kept.
+`den fmt` checks its own work: it parses what it wrote and compares it
+with what it read, and reports an error rather than write a file that
+would compile differently.
 
 ## The language
 
@@ -506,12 +556,15 @@ rendering. The larger ones are on the [roadmap](#roadmap).
 ```sh
 go test ./...          # needs node on PATH for the runtime tests
 go vet ./...
+go run ./cmd/den fmt -w .
 ```
 
 The tests compile apps and run them under node against a small fake DOM
 (`compiler/testdata/dom.js`), fuzz the keyed list diff, run the conformance
 programs against Go, and hold the runtime to 3 KB and every example to
-10 KB gzipped. `examples/todomvc/e2e.js` and `bench/run.js` drive Chromium
+10 KB gzipped. They also fail when a `.den` file in the repository is not
+formatted, and hold `den fmt` to compiling every program in the
+repository and its tests to the same JavaScript and CSS once formatted. `examples/todomvc/e2e.js` and `bench/run.js` drive Chromium
 with Playwright; they are optional development tools.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
@@ -530,7 +583,7 @@ rebuild of 100 components under 50 ms.
    TodoMVC under 10 KB, and the benchmark gate.
 2. **Components, styling and motion:** children and slots (done), a typed
    router (done), scoped styles and design tokens (done), animations
-   (done), `den fmt` and a VS Code extension.
+   (done), `den fmt` (done) and a VS Code extension.
 3. **Server and security:** typed server functions with required `auth=`,
    `Secret[T]`, CSRF protection, SSR, source maps and `den test`.
 4. **Scale:** `<VirtualList>`, data windows, live streams, and the
