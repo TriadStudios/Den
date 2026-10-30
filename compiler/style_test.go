@@ -481,12 +481,13 @@ var (
 		`image-set("data:image/gif;base64,R0lGOD" 1x)`, "url(data:text/html,x)", `"a javascript: tutorial"`,
 		`'expression(1)'`, `url("javascript:x")`, "{}", `"İZMİR"`, "K", `"ẞȺſı"`, `"İ"/**/expression(1)`, `url("DATA:İMAGE/png,x")`,
 		`image-set(var(--q) 1x)`, `src(VAR(--q))`, `image(attr(data-x))`, `-webkit-image-set(Env(x) 1x)`,
-		`image-set(type(var(--q)) "a.png" 1x)`, `var(--q, "javascript:x")`, "İ(x)", "ſrc(x)"}
+		`image-set(type(var(--q)) "a.png" 1x)`, `var(--q, "javascript:x")`, "İ(x)", "ſrc(x)",
+		`--img("x")`, "--a_b(1)", `image-set(--img("x") 1x)`, "a_var(--q)", "--(x)"}
 	fuzzNoise = []string{"'", "\"", "(", ")", "[", "]", "{", "}", ";", ":", ",", "\\", "/*", "*/", "/", "*", "<!--",
 		"-->", "<", ">", "@", "@media", "@keyframes x", "$", "$t", "$d", "$f", "url(", "URL(", "u", "rl(", "\f", "\r",
 		"\n", "\r\n", "\t", " ", "\x00", "\x01", "\x0b", "\x7f", "é", "\u2028", "\u00a0", "😀", "\xff", "#", "%", "-",
 		"_", "&", "!", "e", "1", ".", "\\\n", "\\31 ", "\"\\", "'\\\r\n'", "/**/", "\"\n", "}{", "){", "javascript:",
-		"expression(", "image-set(", "src(", "\\)", "\\]", "\\}", "\\{", "İ", "ı", "K", "ẞ", "Ⱥ", "ſ"}
+		"expression(", "image-set(", "src(", "\\)", "\\]", "\\}", "\\{", "İ", "ı", "K", "ẞ", "Ⱥ", "ſ", "--x(", "--"}
 	// Token values that pass checkToken, then ones that do not.
 	fuzzTokens = [5][]string{
 		{"0 1px 2px red", "1.5", "bold", `"a b"`, "'x'", "fade", `"x.png"`, "'a' 'b'", `"a'b"`, "a-->b", "é", "rgb(0 0 0)", `"İZMİR"`, "Kſ"},

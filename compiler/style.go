@@ -173,6 +173,19 @@ func cssNameStart(c byte) bool { return isLetter(c) || c == '-' || c >= 0x80 }
 
 func cssNameChar(c byte) bool { return cssNameStart(c) || isDigit(c) }
 
+// funcName returns where the name of the function whose ( is at src[open]
+// starts, no earlier than from, and the name in lower case: "" when no
+// name comes right before the (. It reads back over every byte CSS allows
+// in a name, _ included, so it finds the whole name a browser reads:
+// a_var( calls a_var, not var, and --a_b( calls --a_b.
+func funcName(src string, from, open int) (int, string) {
+	k := open
+	for k > from && (cssNameChar(src[k-1]) || src[k-1] == '_') {
+		k--
+	}
+	return k, asciiLower(src[k:open])
+}
+
 // tokenTypes are the design token types of the built-in package den.
 var tokenTypes = []string{"Color", "Length", "Duration", "Font", "Token"}
 
@@ -400,6 +413,9 @@ func (s *styler) sheet() []cssRule {
 // that is not would take the CSS after it into its block. And there is no
 // code: old browsers ran expression(...) and javascript: URLs. Strings
 // are text and may say either, unless they are URLs, which checkURL checks.
+// Nor are there calls of custom functions (--name(...)), which an
+// @function in the app's unchecked style.css could define to wrap their
+// arguments into a URL: image-set(--img("vbscript:x")).
 func (s *styler) lex() {
 	var open []int // the ( [ and { not yet closed
 	for i := 0; i < len(s.src); {
@@ -427,6 +443,11 @@ func (s *styler) lex() {
 		}
 		switch c {
 		case '(', '[', '{':
+			if c == '(' {
+				if k, fn := funcName(s.src, 0, i); strings.HasPrefix(fn, "--") {
+					s.errAt(k, "custom CSS functions are not supported in style blocks")
+				}
+			}
 			open = append(open, i)
 		case ')', ']', '}':
 			want := "([{"[strings.IndexByte(")]}", c)]
@@ -862,11 +883,10 @@ func (s *styler) value(prop string, i, end int) string {
 		default:
 			switch c {
 			case '(', '[':
-				k := i
-				for k > start && c == '(' && cssNameChar(s.src[k-1]) {
-					k--
+				k, fn := i, ""
+				if c == '(' {
+					k, fn = funcName(s.src, start, i)
 				}
-				fn := asciiLower(s.src[k:i])
 				// var(--u) with --u: "javascript:x" would hand image-set() a
 				// URL that was never checked.
 				if fn == "var" || fn == "env" || fn == "attr" {

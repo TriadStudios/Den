@@ -886,6 +886,18 @@ component App() {
     style { p { background: src("vbscript:x"); } }
     <p>x</p>
 }`, `app.den:3:33: unsafe URL in src()`},
+		// An @function in the app's own style.css could wrap a string into
+		// image-set(), where den would never see it as a URL.
+		{"custom function call in a style block", `
+component App() {
+    style { p { background-image: --img("vbscript:x"); } }
+    <p>x</p>
+}`, `app.den:3:35: custom CSS functions are not supported in style blocks`},
+		{"custom function call with _ in its name", `
+component App() {
+    style { p { width: calc(--Gap_x(2) * 1px); } }
+    <p>x</p>
+}`, `app.den:3:29: custom CSS functions are not supported in style blocks`},
 		{"composite literal of type style, indexed", `
 type style []int
 component App() {
