@@ -1,0 +1,131 @@
+// Motion: elements that enter and leave with transitions, list rows that
+// glide to their new places, and a spring. Every animation runs on the
+// Web Animations API, so it works under the page's strict CSP, and none
+// runs when the system asks for reduced motion.
+
+// Fast is a design token: the same constant times a transition (.For)
+// and a CSS transition in a style block.
+const Fast den.Duration = "150ms"
+
+type Item struct {
+    ID   int
+    Name string
+}
+
+func fruit(n int) string {
+    names := []string{"Apple", "Banana", "Cherry", "Damson", "Elderberry", "Fig", "Grape", "Kiwi", "Lime", "Mango"}
+    return names[(n-1)%len(names)]
+}
+
+func without(xs []Item, id int) []Item {
+    var out []Item
+    for _, x := range xs {
+        if x.ID != id {
+            out = append(out, x)
+        }
+    }
+    return out
+}
+
+// shuffled returns xs in an order picked by seed (Fisher-Yates with a
+// small linear congruential generator).
+func shuffled(xs []Item, seed int) []Item {
+    out := make([]Item, len(xs))
+    copy(out, xs)
+    s := seed
+    for i := len(out) - 1; i > 0; i-- {
+        s = (s*75 + 74) % 65537
+        j := s % (i + 1)
+        out[i], out[j] = out[j], out[i]
+    }
+    return out
+}
+
+// sorted returns xs ordered by ID.
+func sorted(xs []Item) []Item {
+    out := make([]Item, len(xs))
+    copy(out, xs)
+    for i := 1; i < len(out); i++ {
+        for j := i; j > 0 && out[j-1].ID > out[j].ID; j-- {
+            out[j-1], out[j] = out[j], out[j-1]
+        }
+    }
+    return out
+}
+
+component App() {
+    <main class="app">
+        <h1>Motion</h1>
+        <p class="sub">Transitions, layout animation and a spring. Try it with reduced motion on, too.</p>
+        <div class="grid">
+            <List />
+            <Panel />
+            <Spring />
+        </div>
+    </main>
+}
+
+component List() {
+    style {
+        li { transition: background $fast; }
+        li:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+    }
+    next := signal(4)
+    seed := signal(1)
+    items := signal([]Item{{1, "Apple"}, {2, "Banana"}, {3, "Cherry"}})
+    <section class="card wide">
+        <h2>List: enter, exit and layout</h2>
+        <div class="row">
+            <button onclick={
+                n := next.Get()
+                items.Set(append(items.Get(), Item{n, fruit(n)}))
+                next.Set(n + 1)
+            }>Add</button>
+            <button class="ghost" onclick={
+                seed.Set(seed.Get() + 1)
+                items.Set(shuffled(items.Get(), seed.Get()))
+            }>Shuffle</button>
+            <button class="ghost" onclick={items.Set(sorted(items.Get()))}>Sort</button>
+        </div>
+        <ul class="list">
+            {for _, it := range items.Get() key it.ID {
+                <li enter={scale()} exit={slide("left").For(Fast)} animate={layout()}>
+                    <span>{it.Name}</span>
+                    <button class="ghost small" aria-label={"Remove " + it.Name} onclick={items.Set(without(items.Get(), it.ID))}>×</button>
+                </li>
+            }}
+        </ul>
+    </section>
+}
+
+component Panel() {
+    open := signal(false)
+    <section class="card">
+        <h2>Panel: scale in, fade out</h2>
+        <button onclick={open.Set(!open.Get())}>{if open.Get() {Close} else {Open}}</button>
+        {if open.Get() {
+            <div class="panel" enter={scale()} exit={fade().For(Fast)}>
+                <p>A branch of an if. It scales in, and when it closes it fades out while its bindings are already stopped.</p>
+            </div>
+        } else {
+            <p class="hint" enter={fade()}>Closed.</p>
+        }}
+    </section>
+}
+
+component Spring() {
+    target := signal(30.0)
+    x := spring(target.Get())
+    <section class="card">
+        <h2>Spring</h2>
+        <svg class="track" viewBox="0 0 300 40" role="img" aria-label="A dot that springs to where you send it">
+            <line x1="30" y1="20" x2="270" y2="20" />
+            <circle cx={x.Get()} cy="20" r="12" />
+        </svg>
+        <div class="row">
+            <button class="ghost" onclick={target.Set(30)}>Left</button>
+            <button class="ghost" onclick={target.Set(150)}>Middle</button>
+            <button class="ghost" onclick={target.Set(270)}>Right</button>
+        </div>
+    </section>
+}
