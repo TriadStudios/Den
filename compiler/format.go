@@ -1643,10 +1643,10 @@ func sameNode(a, b Node) (Pos, bool) {
 // goShape describes Go source src of the given kind ('d' declarations,
 // 'p' parameters, 's' statements, 'x' an expression, 'h' a handler, 'i'
 // and 'f' if and for headers) as its syntax tree, without positions,
-// comments or parentheses, which gofmt may drop from if and for headers
-// and from a function's single result. Numbers are described by their
-// values and imports as a set, since gofmt sorts them. It returns false if
-// src does not parse.
+// comments and empty statements. Parentheses count, except where gofmt
+// drops them and den compiles the same without them (see unparenSlots).
+// Numbers are described by their values and imports as a set, since gofmt
+// sorts them. It returns false if src does not parse.
 func goShape(kind byte, src string) (string, bool) {
 	var full string
 	switch kind {
@@ -1670,9 +1670,52 @@ func goShape(kind byte, src string) (string, bool) {
 	if withoutImportOrder(err) != nil {
 		return "", false
 	}
+	unparenSlots(file)
 	var b strings.Builder
 	dumpGo(&b, reflect.ValueOf(file.Decls))
 	return b.String(), true
+}
+
+// unparenSlots removes from file the parentheses and empty statements
+// that go/printer drops: parentheses around if and for conditions and
+// range expressions (stripParens; emit drops these too, in header), and
+// around parameter, result and type parameter types (stripParensAlways;
+// types make no JS). Nested parentheses go/printer prints as one pair, as
+// emit does; dumpGo folds those.
+func unparenSlots(file *ast.File) {
+	types := func(fls ...*ast.FieldList) {
+		for _, fl := range fls {
+			if fl != nil {
+				for _, f := range fl.List {
+					f.Type = ast.Unparen(f.Type)
+				}
+			}
+		}
+	}
+	empty := func(s ast.Stmt) bool { _, ok := s.(*ast.EmptyStmt); return ok }
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.IfStmt:
+			n.Cond = ast.Unparen(n.Cond)
+		case *ast.ForStmt:
+			n.Cond = ast.Unparen(n.Cond)
+		case *ast.SwitchStmt:
+			n.Tag = ast.Unparen(n.Tag)
+		case *ast.RangeStmt:
+			n.X = ast.Unparen(n.X)
+		case *ast.FuncType:
+			types(n.TypeParams, n.Params, n.Results)
+		case *ast.TypeSpec:
+			types(n.TypeParams)
+		case *ast.BlockStmt:
+			n.List = slices.DeleteFunc(n.List, empty)
+		case *ast.CaseClause:
+			n.Body = slices.DeleteFunc(n.Body, empty)
+		case *ast.CommClause:
+			n.Body = slices.DeleteFunc(n.Body, empty)
+		}
+		return true
+	})
 }
 
 var (
@@ -1702,8 +1745,10 @@ func dumpGo(b *strings.Builder, v reflect.Value) {
 		}
 		switch x := v.Interface().(type) {
 		case *ast.ParenExpr:
-			dumpGo(b, reflect.ValueOf(x.X))
-			return
+			if inner, ok := x.X.(*ast.ParenExpr); ok {
+				dumpGo(b, reflect.ValueOf(inner)) // ((x)) is printed, and compiled, as (x)
+				return
+			}
 		case *ast.BasicLit:
 			val := x.Value
 			if x.Kind == token.INT || x.Kind == token.FLOAT || x.Kind == token.IMAG {

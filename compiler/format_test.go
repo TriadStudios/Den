@@ -256,6 +256,43 @@ func TestFormatErrors(t *testing.T) {
 	}
 }
 
+// TestSameGo pins down what Format's self-check counts as the same Go:
+// only what gofmt changes and den compiles the same either way.
+func TestSameGo(t *testing.T) {
+	for _, c := range []struct {
+		kind byte
+		a, b string
+		same bool
+	}{
+		{'s', "x := (1)", "x := 1", false},
+		{'s', "x := (y)", "x := y", false},
+		{'s', "x := ((y))", "x := (y)", true},
+		{'s', "x := ((y))", "x := y", false},
+		{'s', "if (x > 0) {\n}", "if x > 0 {\n}", true},
+		{'s', "if x := (1); x > 0 {\n}", "if x := 1; x > 0 {\n}", false},
+		{'s', "for i := 0; (i < 3); i++ {\n}", "for i := 0; i < 3; i++ {\n}", true},
+		{'s', "for i := (0); i < 3; i++ {\n}", "for i := 0; i < 3; i++ {\n}", false},
+		{'s', "for (x) {\n}", "for x {\n}", true},
+		{'s', "for range (xs) {\n}", "for range xs {\n}", true},
+		{'s', "a();;\n;\nb()", "a()\nb()", true},
+		{'s', "a()", "b()", false},
+		{'d', "func f(a (int)) (int) { return a }", "func f(a int) int { return a }", true},
+		{'d', "func f() int { return (1) }", "func f() int { return 1 }", false},
+		{'d', "import (\n\"b\"\n\"a\"\n\"a\"\n)", "import (\n\"a\"\n\"b\"\n)", true},
+		{'i', "(x > 0)", "x > 0", true},
+		{'f', "_, v := range (xs)", "_, v := range xs", true},
+		{'x', "(a)", "a", false},
+		{'x', "f(xs...)", "f(xs)", false},
+		{'x', "0X1F", "31", true},
+		{'x', "1", "2", false},
+		{'x', "f(a, /* c */ b,)", "f(a, b)", true},
+	} {
+		if got := sameGo(c.kind, c.a, c.b); got != c.same {
+			t.Errorf("sameGo(%c, %q, %q) = %t, want %t", c.kind, c.a, c.b, got, c.same)
+		}
+	}
+}
+
 // TestRepoFormatted keeps every .den file in the repository formatted, so
 // that go test is the CI check for it.
 func TestRepoFormatted(t *testing.T) {

@@ -1,0 +1,42 @@
+// Parentheses gofmt drops around if and for conditions, range
+// expressions, parameter and result types, and nested ones. Den compiles
+// the same JS with or without them.
+
+type P struct{ N int }
+
+func sum(xs []int) int {
+	s := 0
+	for _, x := range xs {
+		if x > 0 {
+			s += (x)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		s += (i)
+	}
+	if (P{s}) == (P{3}) {
+		s++
+	}
+	for s > 100 {
+		s--
+	}
+	return s
+}
+
+func double(n int) int { return n * 2 }
+
+component App() {
+	x := 1
+	xs := signal([]int{1, 2})
+	if x > 0 {
+		x++
+	}
+	for _, v := range xs.Get() {
+		x += (v)
+	}
+	<div>
+		<p>{if x > 1 {<b>y</b>}}</p>
+		<ul>{for _, v := range xs.Get() key v {<li>{v}{sum(xs.Get())}</li>}}</ul>
+		<p>{(x)} {(x)} {double((x))}</p>
+	</div>
+}
