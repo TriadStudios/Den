@@ -618,17 +618,32 @@ component App() {
 component App() {
     style { p { background: url("vbscript:x"); } }
     <p>x</p>
-}`, `app.den:3:29: unsafe URL in url(): only http, https, mailto, tel and relative URLs are allowed`},
+}`, `app.den:3:29: unsafe URL in url(): only http, https, mailto, tel, data:image/ and relative URLs are allowed`},
 		{"unsafe unquoted url", `
 component App() {
-    style { p { background: url(data:image/png;base64,xx); } }
+    style { p { background: url(data:text/html,xx); } }
     <p>x</p>
 }`, `app.den:3:29: unsafe URL in url()`},
 		{"javascript in a style block", `
 component App() {
-    style { p::after { content: "JavaScript:x"; } }
+    style { p::after { content: JavaScript:x; } }
     <p>x</p>
-}`, `app.den:3:34: "javascript:" is not allowed in a style block`},
+}`, `app.den:3:33: "javascript:" is not allowed in a style block`},
+		{"javascript in a url string", `
+component App() {
+    style { p { background: url("JavaScript:alert(1)"); } }
+    <p>x</p>
+}`, `app.den:3:29: url() cannot contain "expression(" or "javascript:"`},
+		{"data URL that is not an image", `
+component App() {
+    style { p { background-image: image-set("data:text/html,x" 1x); } }
+    <p>x</p>
+}`, `app.den:3:45: unsafe URL in image-set()`},
+		{"block in a custom property", `
+component App() {
+    style { p { --x: {}; } }
+    <p>x</p>
+}`, `app.den:3:22: {} blocks in custom property values are not supported`},
 		{"expression in a style block", `
 component App() {
     style { p { width: expression(1); } }
@@ -820,7 +835,7 @@ component App() {
 component App() {
     style { p { background-image: image-set("vbscript:x" 1x, "a.png" 2x); } }
     <p>x</p>
-}`, `app.den:3:45: unsafe URL in image-set(): only http, https, mailto, tel and relative URLs are allowed`},
+}`, `app.den:3:45: unsafe URL in image-set(): only http, https, mailto, tel, data:image/ and relative URLs are allowed`},
 		{"unsafe URL in src", `
 component App() {
     style { p { background: src("vbscript:x"); } }

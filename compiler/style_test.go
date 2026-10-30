@@ -50,6 +50,8 @@ func TestScopeSelectors(t *testing.T) {
 		{`p { background: url( "a b.png" ) , URL(img/x.png); }`, `p[d-x]{background:url("a b.png"),url(img/x.png)}`},
 		{`p { --gap : 4px ; }`, `p[d-x]{--gap:4px}`},
 		{`p { background-image: image-set("a.png" 1x, url(b.png) 2x, "https://x.test/c.avif" type("image/avif")); }`, `p[d-x]{background-image:image-set("a.png" 1x,url(b.png) 2x,"https://x.test/c.avif" type("image/avif"))}`},
+		{`[href^="javascript:"]::after { content: "a javascript: tutorial, expression(1)" }`, `[href^="javascript:"][d-x]::after{content:"a javascript: tutorial, expression(1)"}`},
+		{`p { background: url(data:image/png;base64,iVBORw0KGgo=), url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>"); }`, `p[d-x]{background:url(data:image/png;base64,iVBORw0KGgo=),url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>")}`},
 		{`p {} a { }`, ``},
 		{`@media (min-width: 40rem) and (max-width: 60rem) { .a, .b { margin: 0 } }`, `@media (min-width: 40rem) and (max-width: 60rem){.a[d-x],.b[d-x]{margin:0}}`},
 		{`@MEDIA screen { @supports (display: grid) { @container (width > 1px) { a b { margin: 0 } } } }`, `@media screen{@supports (display: grid){@container (width > 1px){a[d-x] b[d-x]{margin:0}}}}`},
@@ -132,15 +134,15 @@ func TestCheckToken(t *testing.T) {
 	ok := map[string][]string{
 		"Color": {"#fff", "#FFFA", "#a0b1c2", "#a0b1c2ff", "red", "RebeccaPurple", "transparent", "currentColor",
 			"rgb(0 0 0 / 0.1)", "rgba(0,0,0,.5)", "hsl(200 50% 50%)", "oklch(25% 0.02 260)", "color-mix(in oklch, red 40%, blue)", "color(display-p3 1 0 0)"},
-		"Length":   {"0", "16px", "-4px", "+1.5rem", ".5em", "100%", "50vw", "10dvh", "2cqi", "calc(100% - 2rem)", "clamp(1rem, 2vw, 3rem)", "min(10px, 1em)"},
-		"Duration": {"150ms", "1s", ".2s", "0s", "-1s"},
+		"Length":   {"0", "16px", "-4px", "+1.5rem", ".5em", "1e3px", "1.5E-1rem", "-2e+1em", "1ex", "100%", "50vw", "10dvh", "2cqi", "calc(100% - 2rem)", "clamp(1rem, 2vw, 3rem)", "min(10px, 1em)"},
+		"Duration": {"150ms", "1s", ".2s", "0s", "-1s", "1e3ms", "1.5E-1S"},
 		"Font":     {"system-ui", "system-ui, sans-serif", `ui-sans-serif, -apple-system, "Segoe UI", sans-serif`, "'Fira Code', monospace", "Times New Roman"},
 		"Token":    {"0 1px 2px rgb(0 0 0 / 0.1)", "1.5", "bold", `"a b"`},
 	}
 	bad := map[string][]string{
 		"Color":    {"#ff", "#ggg", "blu", "rgb(0 0 0", "rgb(0 0 0) red", "evil(1)", "var(--x)", ""},
-		"Length":   {"16", "px", "1.5.5px", "16 px", "--4px", "calc(1px", "calc(1px) 2px", "auto"},
-		"Duration": {"150", "ms", "1 s", "fast"},
+		"Length":   {"16", "px", "1.5.5px", "16 px", "--4px", "calc(1px", "calc(1px) 2px", "auto", "1e3", "e3px", "1e+px", "1.px"},
+		"Duration": {"150", "ms", "1 s", "fast", "1es", "1e", "1e3"},
 		"Font":     {"a,,b", `"unclosed`, `"a"b"`, "1font", "a, "},
 		"Token":    {"'a\fb'", "a\tb", "\x00", "a\x7f", "a\x1b", "JAVA script:x", "a;b", `"a;b"`, "a{", "}", "<x", `a\b`, "url(x)", "EXPRESSION(1)", "a /* b", "a\nb", "(a", `"a`, "  "},
 	}
@@ -462,15 +464,18 @@ var (
 		"::before", ":after", ":hover", "::selection", ":not(.x)", ":is(.a, .b)", ":where(p)", ":has(> img)",
 		":nth-child(2n + 1)", "[x]", `[title="a b"]`, `[x='}{']`, `[href$=".pdf" i]`, `[x="\"]"]`, ":first-line",
 		"input::-webkit-input-placeholder", ".a/**/.b", "a /* c */ b", "_x", "-x", "é", "/", "*", "/**/", "a//**/*",
-		":is(//**/*)", "u/**/rl(x)"}
+		":is(//**/*)", "u/**/rl(x)", `[href^="javascript:"]`}
 	fuzzProps = []string{"color", "margin", "padding", "content", "background", "background-image", "animation",
-		"animation-name", "font-family", "font", "transition", "--x", "width", "border-color", "box-shadow", "quotes"}
+		"animation-name", "font-family", "font", "transition", "--x", "--y", "width", "border-color", "box-shadow", "quotes"}
 	fuzzValues = []string{"red", "1px", "0", "auto", "solid", "1px solid red", `"s"`, `'s'`, `"a;b}"`, `"\"" `, `'\''`,
 		"\"a\\\nb\"", `"\41 "`, "url(a.png)", `url("b.png")`, "url( c.png )", `image-set("a.png" 1x, url(b.png) 2x)`,
 		`src("x.woff")`, "calc(1px + 2px)", "var(--x)", "#fff", "rgb(0 0 0 / .5)", "!important", ",", "/", "attr(x)",
 		"counter(c)", "$t", "$t", "$t", "$c", "$l", "spin 1s linear", "fade", "a/**/b", "u/**/rl(x)", "#url(x)",
 		"@url(x)", "_url(x)", "-url(x)", "@url(a/*b)", "#url(a/*b)", "<!--", "<!--url(a/*b)", "[x]", "1e3", "-1.5e-2px", "50%", "a-->b", "0 0 1px $c", "\"<!--\"", "\"/*\"",
-		"'}'", "\"\\\r\n\"", "\"\\41\r\nx\"", "a\fb", "a\r\nb", "\"é😀\"", "é", "\u2028", "--a", "-->"}
+		"'}'", "\"\\\r\n\"", "\"\\41\r\nx\"", "a\fb", "a\r\nb", "\"é😀\"", "é", "\u2028", "--a", "-->",
+		"url(data:image/png;base64,iVBORw0KGgo=)", `url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>")`,
+		`image-set("data:image/gif;base64,R0lGOD" 1x)`, "url(data:text/html,x)", `"a javascript: tutorial"`,
+		`'expression(1)'`, `url("javascript:x")`, "{}"}
 	fuzzNoise = []string{"'", "\"", "(", ")", "[", "]", "{", "}", ";", ":", ",", "\\", "/*", "*/", "/", "*", "<!--",
 		"-->", "<", ">", "@", "@media", "@keyframes x", "$", "$t", "$d", "$f", "url(", "URL(", "u", "rl(", "\f", "\r",
 		"\n", "\r\n", "\t", " ", "\x00", "\x01", "\x0b", "\x7f", "é", "\u2028", "\u00a0", "😀", "\xff", "#", "%", "-",
@@ -480,8 +485,8 @@ var (
 	fuzzTokens = [5][]string{
 		{"0 1px 2px red", "1.5", "bold", `"a b"`, "'x'", "fade", `"x.png"`, "'a' 'b'", `"a'b"`, "a-->b", "é", "rgb(0 0 0)"},
 		{"red", "#fff", "rgb(0 0 0 / .1)", "oklch(25% 0.02 260)", "transparent", "currentColor"},
-		{"0", "16px", "-1.5rem", "calc(100% - 2px)", "clamp(1rem, 2vw, 3rem)"},
-		{"150ms", "1s", "-.5s"},
+		{"0", "16px", "-1.5rem", "calc(100% - 2px)", "clamp(1rem, 2vw, 3rem)", "1e3px", "1.5E-1rem"},
+		{"150ms", "1s", "-.5s", "1e3ms", "2E-1S"},
 		{"system-ui", "system-ui, sans-serif", `"Segoe UI", serif`, "'a b'"},
 	}
 	fuzzBadTokens = []string{"", "a;b", "a}", `"a`, "(a", "a)", "x\fy", "url(x)", "<x", `\`, "a/*b", "nope", "#ff",

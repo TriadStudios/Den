@@ -345,7 +345,8 @@ func (s *styler) sheet() []cssRule {
 // than whitespace are not allowed outside comments. Every ( [ and { is
 // closed, and by its own kind of bracket, as a browser pairs them; one
 // that is not would take the CSS after it into its block. And there is no
-// code: old browsers ran expression(...) and javascript: URLs.
+// code: old browsers ran expression(...) and javascript: URLs. Strings
+// are text and may say either, unless they are URLs, which checkURL checks.
 func (s *styler) lex() {
 	lower := strings.ToLower(s.src)
 	var open []int // the ( [ and { not yet closed
@@ -354,8 +355,8 @@ func (s *styler) lex() {
 		c := s.src[i]
 		if !strings.HasPrefix(s.src[i:], "/*") {
 			for j := i; j < next; j++ {
-				for _, bad := range []string{"expression(", "javascript:"} {
-					if strings.HasPrefix(lower[j:], bad) {
+				for _, bad := range codeInCSS {
+					if c != '"' && c != '\'' && strings.HasPrefix(lower[j:], bad) {
 						s.errAt(j, "%q is not allowed in a style block", bad)
 					}
 				}
@@ -613,21 +614,38 @@ func isPercentage(s string) bool {
 	return ok && isNumber(n)
 }
 
-// isNumber reports whether s is a plain decimal number such as 1, 0.5,
-// .5 or 100, without a sign.
-func isNumber(s string) bool {
-	digits, dot := 0, false
-	for i := 0; i < len(s); i++ {
-		switch {
-		case isDigit(s[i]):
-			digits++
-		case s[i] == '.' && !dot && i+1 < len(s):
-			dot = true
-		default:
-			return false
+// isNumber reports whether s is a CSS number without a sign, such as 1,
+// 0.5, .5, 100 or 1e3.
+func isNumber(s string) bool { return s != "" && numberEnd(s) == len(s) }
+
+// numberEnd returns the length of the CSS number without a sign at the
+// start of s: digits with an optional fraction (1, 0.5, .5) and an
+// optional exponent (1e3, 1.5E-1), or 0 if s does not start with one.
+func numberEnd(s string) int {
+	i := 0
+	for i < len(s) && isDigit(s[i]) {
+		i++
+	}
+	digits := i > 0
+	if i+1 < len(s) && s[i] == '.' && isDigit(s[i+1]) {
+		for i++; i < len(s) && isDigit(s[i]); i++ {
+		}
+		digits = true
+	}
+	if !digits {
+		return 0
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		j := i + 1
+		if j < len(s) && (s[j] == '+' || s[j] == '-') {
+			j++
+		}
+		if j < len(s) && isDigit(s[j]) {
+			for i = j; i < len(s) && isDigit(s[i]); i++ {
+			}
 		}
 	}
-	return digits > 0
+	return i
 }
 
 // splitTop splits src[i:end] at the commas outside parentheses, brackets
@@ -650,7 +668,11 @@ func (s *styler) declarations(i, end int) []string {
 	for i < end {
 		stop := s.find(i, end, ";{")
 		if stop < end && s.src[stop] == '{' {
-			s.errAt(stop, "nested rules are not supported in a style block; write each rule with its full selector")
+			if j := s.skipSpace(i, stop); strings.HasPrefix(s.src[j:stop], "--") && s.find(j, stop, ":") < stop {
+				s.errAt(stop, "{} blocks in custom property values are not supported")
+			} else {
+				s.errAt(stop, "nested rules are not supported in a style block; write each rule with its full selector")
+			}
 			break
 		}
 		if d := s.declaration(i, stop); d != "" {
@@ -851,16 +873,24 @@ func (s *styler) url(i, end int, next *int) string {
 
 // urlFuncs are the functions other than url() whose string arguments are
 // URLs.
-var urlFuncs = map[string]bool{"image-set": true, "-webkit-image-set": true, "src": true}
+var urlFuncs = map[string]bool{"image-set": true, "-webkit-image-set": true, "src": true, "image": true}
+
+// codeInCSS is what old browsers ran as code in CSS.
+var codeInCSS = []string{"expression(", "javascript:"}
 
 // checkURL checks the URL arg at off, given to the function fn: the same
-// URLs as a static href.
+// URLs as a static href, and data:image/ URLs, which the page's CSP
+// allows as images and an image cannot run code.
 func (s *styler) checkURL(off int, arg, fn string) {
+	lower := strings.ToLower(arg)
 	switch {
 	case strings.Contains(arg, "\\"):
 		s.errAt(off, "escapes are not allowed in %s()", fn)
+	case slices.ContainsFunc(codeInCSS, func(bad string) bool { return strings.Contains(lower, bad) }):
+		s.errAt(off, "%s() cannot contain %q or %q", fn, codeInCSS[0], codeInCSS[1])
+	case strings.HasPrefix(lower, "data:image/"):
 	case !safeStaticURL(arg):
-		s.errAt(off, "unsafe URL in %s(): only http, https, mailto, tel and relative URLs are allowed", fn)
+		s.errAt(off, "unsafe URL in %s(): only http, https, mailto, tel, data:image/ and relative URLs are allowed", fn)
 	}
 }
 
@@ -1110,11 +1140,8 @@ func isLength(v string) bool {
 		return true
 	}
 	n := trimSign(v)
-	i := 0
-	for i < len(n) && (isDigit(n[i]) || n[i] == '.') {
-		i++
-	}
-	return i > 0 && isNumber(n[:i]) && cssUnits[n[i:]]
+	i := numberEnd(n)
+	return i > 0 && cssUnits[n[i:]]
 }
 
 func isDuration(v string) bool {

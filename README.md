@@ -131,14 +131,17 @@ padding takes a length`).
   'self'` too: the browser ignores `<style>` elements and `style="..."`
   attributes, so CSS goes in style blocks (below) or `style.css`.
 - **Checked CSS.** In style blocks, `url(...)` and the strings in
-  `image-set()` and `src()` take the same URLs as a static `href`, and
-  `expression(`, `javascript:`, `behavior` and `-moz-binding` are compile
-  errors. Backslash escapes are allowed only inside strings, and the CSS
-  of every block is read back before it is written, so one component's
-  rules cannot run into the rules after them. Design token values cannot
-  contain control characters (newlines and form feeds included), `;`,
-  braces, `<`, backslashes, `url(`, `javascript:` or comments, so a token
-  can never end its string, declaration or rule.
+  `image-set()`, `image()` and `src()` take the same URLs as a static
+  `href`, or a `data:image/` URL. `expression(` and `javascript:` are
+  compile errors in those URLs and anywhere outside a string (in a string
+  such as `content: "a javascript: tutorial"` they are only text), and so
+  are `behavior` and `-moz-binding`. Backslash escapes are allowed only
+  inside strings, and the CSS of every block is read back before it is
+  written, so one component's rules cannot run into the rules after them.
+  Design token values cannot contain control characters (newlines and
+  form feeds included), `;`, braces, `<`, backslashes, `url(`,
+  `javascript:` or comments, so a token can never end its string,
+  declaration or rule.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
@@ -315,8 +318,9 @@ component Card(title string, children den.Children) {
   is a hex color, a color function such as `oklch(...)`, `transparent`,
   `currentColor` or a color name; a `den.Length` is `0`, a number with a
   unit, or `calc()`, `min()`, `max()` or `clamp()`; a `den.Duration` is a
-  number of `ms` or `s`; a `den.Font` is a list of font families; a
-  `den.Token` is any other value. A color cannot go where only a length
+  number of `ms` or `s` (numbers may have exponents: `1e3ms`, `1.5E-1rem`);
+  a `den.Font` is a list of font families; a `den.Token` is any other
+  value. A color cannot go where only a length
   can (`padding`, `width`, `gap` and so on), a length where only a color
   can, a duration outside `transition` and `animation`, or a font outside
   `font` and `font-family`.
@@ -340,9 +344,10 @@ component Card(title string, children den.Children) {
   in a selector, which no component makes (page-wide styles go in
   `style.css`); at-rules other than `@media`, `@supports`, `@container` and
   `@keyframes` (`@import`, `@font-face` and the rest go in `style.css`);
-  nested rules and `&`; and tokens in selectors, in `@media` conditions or
-  inside `url()`, where custom properties do not work, or inside
-  `image-set()` and `src()`, whose URLs are checked when the app builds.
+  nested rules and `&`, and `{}` blocks in custom property values; and
+  tokens in selectors, in `@media` conditions or inside `url()`, where
+  custom properties do not work, or inside `image-set()`, `image()` and
+  `src()`, whose URLs are checked when the app builds.
 - Backslash escapes are allowed only inside strings: `content: "\201C"`
   is fine, `.sm\:p-4` is an error. To select a class with such
   characters, match it as a string: `[class~="sm:p-4"]`. Brackets must
