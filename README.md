@@ -42,6 +42,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/todos` (add, toggle, remove, filter) | 3.9 KB |
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.3 KB |
 | `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.1 KB |
+| `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.7 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -110,7 +111,8 @@ Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list keys that are not strings,
 numbers or bools, calling a component as a function, children or slots
 a component does not take, route patterns that do not fit their params,
-and design tokens that do not exist, hold a bad value or are used in the
+transitions where they could never play, and design tokens that do not
+exist, hold a bad value or are used in the
 wrong kind of property (`app.den:9:30: $surface is a den.Color, but
 padding takes a length`).
 
@@ -385,6 +387,82 @@ component Card(title string, children den.Children) {
   `style{1, 2}[0] = 5`; write it as `(style{1, 2})[0] = 5`, or give the
   type another name. Everywhere else `style` is an ordinary name.
 
+**Motion**
+
+```go
+const Fast den.Duration = "150ms"
+
+component List(items *Signal[[]Item]) {
+    <ul>
+        {for _, it := range items.Get() key it.ID {
+            <li enter={fade()} exit={slide("left").For(Fast)} animate={layout()}>{it.Name}</li>
+        }}
+    </ul>
+}
+
+component Dot(target *Signal[float64]) {
+    x := spring(target.Get())
+    <svg viewBox="0 0 300 40"><circle cx={x.Get()} cy="20" r="12" /></svg>
+}
+```
+
+- `enter={t}` and `exit={t}` give an element the transition it plays when
+  it is added and when it is removed. A transition is `fade()`, `scale()`
+  (a fade from 95% size) or `slide(dir)`, a fade while moving in from, or
+  out to, `"left"`, `"right"`, `"up"` or `"down"` by the element's own
+  size. `.For(d)` sets how long it takes (200ms otherwise), where `d` is a
+  constant `den.Duration`: `"150ms"`, `"0.2s"` or a design token const.
+  Entering eases out and leaving eases in.
+- They go on an HTML or SVG element directly inside an `{if}` branch or a
+  `{for}` row, the elements that block adds and removes. An `{if}` or
+  `{for}` directly inside the branch or row counts as well, so an
+  `else if` chain animates as one block, and rows of a list directly in a
+  branch leave with it.
+- When the block changes, new elements enter while the old ones leave. A
+  leaving element's bindings and handlers stop at once, so it keeps
+  showing what it showed last; it becomes `inert`, and goes when its exit
+  transition ends. Other nodes go at once. Transitions play only when the
+  block itself changes: not when the page is built, nor when a block is
+  built along with the branch or row around it. A row whose key stays but
+  whose item changed is rebuilt in place, without transitions; a key that
+  comes back while its old row is leaving gets a new row.
+- `animate={layout()}` goes on an element directly inside a `{for}` row.
+  When the list changes, and when a leaving row is finally removed, the
+  element glides (200ms) from where it was to its new place: den measures
+  it before and after the change and animates a `transform` between them.
+- `spring(x)` is a `*Computed[float64]` that follows `x` with spring
+  physics (stiffness 170, damping 26, mass 1). Like `computed`, `x` is
+  read again whenever the signals it reads change. The spring starts at
+  `x`, steps once a frame only while it moves, settles exactly on its
+  target, and stops with the component that made it.
+- Transitions are values: a variable, a prop or a function can hold one,
+  and the zero `Transition{}` plays nothing. They are read once, when the
+  element is made, so they cannot depend on a signal, and they cannot be
+  compared.
+- Everything runs on the Web Animations API (`element.animate` with
+  keyframe objects), which the strict CSP allows: no style attributes, no
+  injected CSS. Under `prefers-reduced-motion: reduce`, or in a browser
+  without `element.animate`, nothing animates: leaving elements go at
+  once, rows do not glide, and springs jump to their targets. A browser
+  may hold animations in a hidden tab, and an element leaving there can
+  stay (inert) until the tab is shown again.
+- An app ships the code for motion only when it uses it, and only the
+  parts it uses: an `{if}` with transitions ships no list or spring code.
+- These are compile errors: `enter`, `exit` or `animate` given a string,
+  no value or a value of the wrong type, put on a component, not directly
+  inside an `{if}` branch or a `{for}` row (`animate`: a `{for}` row), or
+  inside blocks that read no signal and so never change
+  (`app.den:3:25: enter never plays: the {if} or {for} around <p> reads no
+  signal, so it never adds or removes it`); a transition that reads a
+  signal; a `slide` direction that is not one of the four constants; a
+  `.For` duration that is not a constant, not a number of ms or s,
+  negative, or too long; and den's functions used as values
+  (`f := slide`).
+- `Transition`, `Layout`, `fade`, `scale`, `slide`, `layout` and `spring`
+  are ordinary names: a program that has its own at the top level keeps
+  it. `fade`, `scale` and `slide` give way along with `Transition`, and
+  `layout` with `Layout`; using one then says why.
+
 **Go**
 - `type`, `const` and `func` declarations, including generic and variadic
   functions, named results and multiple return values.
@@ -447,8 +525,8 @@ rebuild of 100 components under 50 ms.
    and maps, template cloning, lazy computed values, ownership scopes,
    TodoMVC under 10 KB, and the benchmark gate.
 2. **Components, styling and motion:** children and slots (done), a typed
-   router (done), scoped styles and design tokens (done), animations,
-   `den fmt` and a VS Code extension.
+   router (done), scoped styles and design tokens (done), animations
+   (done), `den fmt` and a VS Code extension.
 3. **Server and security:** typed server functions with required `auth=`,
    `Secret[T]`, CSRF protection, SSR, source maps and `den test`.
 4. **Scale:** `<VirtualList>`, data windows, live streams, and the
