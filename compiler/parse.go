@@ -217,13 +217,7 @@ type bailout struct{ err *Error }
 // Parse parses a .den source file. On an error it also returns what it
 // parsed before it.
 func Parse(name, src string) (f *File, err error) {
-	p := &parser_{file: name, src: src}
-	p.lines = append(p.lines, 0)
-	for i := 0; i < len(src); i++ {
-		if src[i] == '\n' {
-			p.lines = append(p.lines, i+1)
-		}
-	}
+	p := newParser(name, src)
 	defer func() {
 		if r := recover(); r != nil {
 			b, ok := r.(bailout)

@@ -1,0 +1,77 @@
+type Item struct {
+	ID   int
+	Name string
+}
+
+type P struct {
+	ID int
+}
+
+component App() {
+	items := signal([]Item{{1, "a"}, {2, "b"}})
+	n := signal(0)
+	home := route[struct{}]("/")
+	user := route[P]("/users/:id")
+	<div id="main" class="app">
+		<!-- a markup comment -->
+		{/* a brace comment */}
+		<nav><a href="/">Home</a> <a href={user.Link(P{ID: 7})}>User 7</a> <Small /></nav>
+		{if home.Matches() {
+			<p>Home</p>
+		} else if user.Matches() {
+			<p>User {user.Params().ID}</p>
+		} else {
+			<p>Not found</p>
+		}}
+		<ul>
+			{for _, it := range items.Get() key it.ID {
+				<li
+					enter={fade()}
+					exit={slide("left").For("150ms")}
+					animate={layout()}
+					class="item"
+					data-id={it.ID}
+					aria-label={"Item " + it.Name}>
+					{it.Name}
+				</li>
+			}}
+		</ul>
+		<button onclick={n.Set(n.Get() + 1)}>+</button>
+		<button
+			class='say "hi"'
+			onclick={
+				n.Set(0)
+				items.Set(nil)
+			}>
+			Reset
+		</button>
+		<Card title="t">
+			<:header><b>Top</b></:header>
+			<p>Body {n.Get()}</p>
+		</Card>
+		<svg viewBox="0 0 10 10">
+			<circle cx="5" cy="5" r={n.Get()} />
+			<text x="1" y="9">svg text</text>
+		</svg>
+		<input type="text" disabled />
+		<p>{if n.Get() > 0 {yes} else {no}}</p>
+		<p>{for i := range 3 key i {{i}}}</p>
+		<div>
+			<span>a</span>
+			<span>b</span>
+			<span>c</span>
+			<span>d</span>
+			<span>e</span>
+			<span>f</span>
+			<span>g</span>
+		</div>
+	</div>
+}
+
+component Card(title string, header den.Children, children den.Children) {
+	<section><header>{header}</header><h2>{title}</h2>{children}</section>
+}
+
+component Small() {
+	<i>small</i>
+}

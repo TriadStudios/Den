@@ -1,0 +1,42 @@
+// Go between components: comments, imports anywhere, odd spacing.
+// The second line of the file comment.
+
+import "strings"
+
+
+
+type Todo   struct {
+  ID int  // the id
+    Title string
+}
+
+/* A block
+   comment. */
+const (
+	a = 1
+  bb = 0X1F
+)
+
+// Card shows a title.
+// Its doc comment stays with it.
+component   Card( title string,children   den.Children )   {
+    up := strings.ToUpper( title )
+	n := len(up)+a+bb
+
+
+    <section class="card"><h2>{up} {n}</h2>{children}</section>
+} // end of Card
+component App() {
+
+  // the page
+  x:=signal(1)
+  t := Todo{ID:1,Title:"one"}
+  <Card title={t.Title}>
+    <p>{x.Get()}: {itoa2(t.ID)}</p>
+  </Card>
+  // after the root
+  /* and a block comment */
+}
+import "strconv"
+
+func itoa2(n int) string { return strconv.Itoa(n) }
