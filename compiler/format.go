@@ -321,23 +321,62 @@ func (f *formatter) component(c *mComponent) string {
 
 // params formats the parameter list of c, parentheses included.
 func (f *formatter) params(c *mComponent) string {
+	out, n, err := printParams(c.params, c.paramsOff)
+	if err != nil {
+		if s, ok := err.(*synthErr); ok {
+			f.goErrors(s.err, s.s)
+		} else {
+			f.errAt(c.paramsOff, err.Error())
+		}
+		return "(" + lf(c.params) + ")"
+	}
+	if n > 0 || !strings.Contains(out, "\n") {
+		return out
+	}
+	// A list of nothing but comments on lines of their own: go/printer
+	// leaves them at column 0, but indents them before a parameter. So
+	// format it with a stand-in parameter, and drop that line.
+	stand := "denNoParams"
+	for strings.Contains(c.params, stand) {
+		stand += "_"
+	}
+	with, _, err := printParams(strings.TrimRight(c.params, " \t\r\n")+"\n"+stand+" int,\n", c.paramsOff)
+	if err != nil {
+		return out
+	}
+	lines := strings.Split(with, "\n")
+	i := slices.IndexFunc(lines, func(l string) bool { return strings.TrimSpace(l) == stand+" int," })
+	if i < 0 {
+		return out
+	}
+	return strings.Join(slices.Delete(lines, i, i+1), "\n")
+}
+
+type synthErr struct {
+	err error
+	s   *synth
+}
+
+func (e *synthErr) Error() string { return e.err.Error() }
+
+// printParams formats a parameter list, parentheses included, and returns
+// how many parameters it has.
+func printParams(params string, off int) (string, int, error) {
 	var s synth
 	s.add("package p\nfunc _(")
-	s.src(c.params, c.paramsOff)
+	s.src(params, off)
 	s.add(") {}\n")
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", s.String(), parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		f.goErrors(err, &s)
-		return "(" + lf(c.params) + ")"
+		return "", 0, &synthErr{err, &s}
 	}
 	fd := file.Decls[0].(*ast.FuncDecl)
 	var b bytes.Buffer
 	if err := goPrinter.Fprint(&b, fset, &printer.CommentedNode{Node: fd.Type, Comments: file.Comments}); err != nil {
-		f.errAt(c.paramsOff, err.Error())
-		return "(" + lf(c.params) + ")"
+		return "", 0, err
 	}
-	return strings.TrimPrefix(b.String(), "func")
+	return strings.TrimPrefix(b.String(), "func"), fd.Type.Params.NumFields(), nil
 }
 
 // body formats the Go statements and the style block before the markup,

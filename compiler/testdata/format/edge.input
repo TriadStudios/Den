@@ -45,6 +45,7 @@ component App() {
             <b>{v}</b>
         }}</div>
         <Box><:header /></Box>
+        <Empty /><Empty2 /><Empty3 />
         <Box>
             <:header>
                 <h1>Head</h1>
@@ -62,4 +63,22 @@ component App() {
             <li>{x}</li>
         }}</ul>
     </main> // after the root
+}
+
+component Empty(
+// no props yet
+) {
+	<i>empty</i>
+}
+
+component Empty2(
+	/* none,
+	   for now */
+) {
+	<i>empty</i>
+}
+
+component Empty3( // trailing
+) {
+	<i>empty</i>
 }
