@@ -46,6 +46,7 @@ func denAttr[T renderable](v T)  {}
 func denHandler(f func(e Event)) {}
 func denKey[T comparable](v T)   {}
 func denMark()                   {}
+func denAny(v any)               {}
 
 // stored is a signal kept in localStorage under key, as JSON.
 func stored[T any](key string, initial T) *Signal[T] { return &Signal[T]{v: initial} }
@@ -953,8 +954,11 @@ func isMotionAttr(name string) bool { return slices.Contains(motionAttrs, name) 
 
 // motionAttr checks what can be checked of an enter, exit or animate
 // attribute before types: that its value is Go, that den's Transition or
-// Layout is there, and that the attribute is where it can play. If so it
-// writes the call that type-checks the value, denEnter(x) for enter={x}.
+// Layout is there, and that the attribute is where it can play. It writes
+// the call that type-checks the value, denEnter(x) for enter={x}, or
+// denAny(x) when it reports an error: the value is still checked, and the
+// variables it uses still count as used, so that error is the only one.
+// (The pairer, which reads these calls, runs only when gen reported none.)
 func (g *gen) motionAttr(a *Attr) *Error {
 	bad := func(format string, args ...any) *Error {
 		return &Error{File: g.file, Pos: a.Pos, Msg: fmt.Sprintf(format, args...)}
@@ -966,19 +970,23 @@ func (g *gen) motionAttr(a *Attr) *Error {
 	if a.Kind != AttrExpr {
 		return bad("%s takes %s", a.Name, want)
 	}
-	if by := g.motionBy[typ]; by != "" {
-		return bad("%s is not available because this program %s; rename it", a.Name, g.own[by])
-	}
+	var err *Error
 	inFor := slices.ContainsFunc(g.chain, func(b Node) bool { _, ok := b.(*For); return ok })
-	switch {
+	switch by := g.motionBy[typ]; {
+	case by != "":
+		err = bad("%s is not available because this program %s; rename it", a.Name, g.own[by])
 	case a.Name == "animate" && !inFor:
-		return bad("animate works only on an element directly inside a {for} row, whose place it animates when the list changes")
+		err = bad("animate works only on an element directly inside a {for} row, whose place it animates when the list changes")
 	case len(g.chain) == 0:
-		return bad("%s works only on an element directly inside an {if} branch or a {for} row, which add and remove it", a.Name)
+		err = bad("%s works only on an element directly inside an {if} branch or a {for} row, which add and remove it", a.Name)
+	}
+	fn := "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
+	if err != nil {
+		fn = "denAny"
 	}
 	d := g.d(a.ValuePos)
-	fmt.Fprintf(g.src, "\t%sden%s%s(%s%s)\n", d, strings.ToUpper(a.Name[:1]), a.Name[1:], d, a.Value)
-	return nil
+	fmt.Fprintf(g.src, "\t%s%s(%s%s)\n", d, fn, d, a.Value)
+	return err
 }
 
 // pairer walks markup in the same order as gen and links each node to the

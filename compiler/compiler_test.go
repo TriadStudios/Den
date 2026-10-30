@@ -1183,6 +1183,25 @@ component App() {
 			}
 		})
 	}
+	// These programs have exactly one error. A misplaced motion attribute's
+	// value is still type-checked, so the variable it uses counts as used.
+	for _, c := range []struct{ name, src, want string }{
+		{"misplaced exit using a variable", `
+component App() {
+    t := fade()
+    <p exit={t}>x</p>
+}`, `app.den:4:8: exit works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+		{"animate in an if using a variable", `
+component App() {
+    show := signal(true)
+    l := layout()
+    <div>{if show.Get() { <p animate={l}>x</p> }}</div>
+}`, `app.den:5:30: animate works only on an element directly inside a {for} row, whose place it animates when the list changes`},
+	} {
+		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
+			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)
+		}
+	}
 }
 
 func TestConstantsFoldAndIntDivision(t *testing.T) {
