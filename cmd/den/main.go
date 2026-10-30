@@ -1,8 +1,9 @@
-// Command den builds, checks and serves den apps.
+// Command den builds, checks, serves and formats den apps.
 //
 //	den build <dir> [-o dist]   compile <dir>/*.den into dist/app.js + index.html
 //	den check <dir>             type-check only
 //	den dev   <dir> [-addr :8080] build, serve and rebuild on save with live reload
+//	den fmt [-l] [-w] [-d] [path ...]  format .den files, as gofmt formats Go
 package main
 
 import (
@@ -28,6 +29,10 @@ usage:
   den build <dir> [-o dist]       compile <dir>/*.den
   den check <dir>                 type-check without writing files
   den dev   <dir> [-addr :8080]   serve with rebuild + live reload
+  den fmt [-l] [-w] [-d] [path ...]
+                                  format .den files (stdin without a path):
+                                  -l lists files that would change, -w
+                                  rewrites them, -d prints diffs
 `
 
 func main() {
@@ -36,6 +41,9 @@ func main() {
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if cmd == "fmt" {
+		os.Exit(runFmt(args, os.Stdin, os.Stdout, os.Stderr))
+	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	out := fs.String("o", "", "output directory (default <dir>/dist)")
 	addr := fs.String("addr", "localhost:8080", "dev server address")
