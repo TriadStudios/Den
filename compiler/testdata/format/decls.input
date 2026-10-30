@@ -32,7 +32,7 @@ component App() {
   x:=signal(1)
   t := Todo{ID:1,Title:"one"}
   <Card title={t.Title}>
-    <p>{x.Get()}: {itoa2(t.ID)}</p>
+    <p>{x.Get()}: {itoa2(t.ID)} {n2(1)}</p>
   </Card>
   // after the root
   /* and a block comment */
@@ -40,3 +40,6 @@ component App() {
 import "strconv"
 
 func itoa2(n int) string { return strconv.Itoa(n) }
+
+import "strings" func shout(s string) string { return strings.ToUpper(s) } import ("strconv")
+func n2(n int) string { return strconv.Itoa(n) + shout("x") }

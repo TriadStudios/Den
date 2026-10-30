@@ -63,6 +63,20 @@ func Format(filename string, src []byte) (_ []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// gofmt is not always idempotent: a composite literal whose last
+	// element ends a line can need a second pass to lose its comma. So
+	// format the result again until nothing changes.
+	for range 3 {
+		if _, err := Parse(filename, out); err != nil {
+			break // sameMeaning reports it
+		}
+		g := &formatter{file: filename, src: out, p: newParser(filename, out), cache: map[fragKey]string{}}
+		next, err := g.format()
+		if err != nil || next == out {
+			break
+		}
+		out = next
+	}
 	if err := sameMeaning(filename, orig, out); err != nil {
 		return nil, err
 	}
@@ -159,7 +173,14 @@ func (f *formatter) goRegion(pieces []piece, start, end int) []piece {
 	}
 	var s synth
 	s.add("package p\n")
-	s.src(f.src[start:end], start)
+	region := f.src[start:end]
+	at := 0
+	for _, brk := range importBreaks(region) {
+		s.src(region[at:brk], start+at)
+		s.add(";")
+		at = brk
+	}
+	s.src(region[at:], start+at)
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", s.String(), parser.ParseComments|parser.SkipObjectResolution)
 	if err = withoutImportOrder(err); err != nil {
@@ -178,6 +199,65 @@ func (f *formatter) goRegion(pieces []piece, start, end int) []piece {
 	}
 	text := strings.Trim(strings.TrimPrefix(b.String(), "package p\n"), "\n")
 	return append(pieces, piece{start, end, text, false})
+}
+
+// importBreaks returns the offsets in Go declarations src where a ';' must
+// go for go/parser to read them as den does. Den lifts each import out of
+// the declarations before Go reads them (screenDecl), so an import can
+// share a line with the declarations before and after it:
+// import "strings" func f() {} compiles.
+func importBreaks(src string) []int {
+	type tok struct {
+		t        token.Token
+		off, end int
+	}
+	fset := token.NewFileSet()
+	file := fset.AddFile("", -1, len(src))
+	var s scanner.Scanner
+	s.Init(file, []byte(src), func(token.Position, string) {}, 0)
+	var toks []tok
+	for {
+		pos, t, lit := s.Scan()
+		if t == token.EOF {
+			break
+		}
+		text := lit
+		if text == "" || t == token.SEMICOLON {
+			text = t.String()
+		}
+		if t == token.SEMICOLON && lit == "\n" {
+			text = ""
+		}
+		off := file.Offset(pos)
+		toks = append(toks, tok{t, off, off + len(text)})
+	}
+	var out []int
+	for i := 0; i < len(toks); i++ {
+		if toks[i].t != token.IMPORT {
+			continue
+		}
+		if i > 0 && toks[i-1].t != token.SEMICOLON {
+			out = append(out, toks[i].off)
+		}
+		j := i + 1
+		if j < len(toks) && toks[j].t == token.LPAREN {
+			for j < len(toks) && toks[j].t != token.RPAREN {
+				j++
+			}
+		} else {
+			for j < len(toks) && toks[j].t != token.STRING {
+				j++
+			}
+		}
+		if j >= len(toks) {
+			break
+		}
+		if j+1 < len(toks) && toks[j+1].t != token.SEMICOLON {
+			out = append(out, toks[j].end)
+		}
+		i = j
+	}
+	return out
 }
 
 // withoutImportOrder drops go/parser's complaint about imports after other
@@ -1692,7 +1772,13 @@ func goShape(kind byte, src string) (string, bool) {
 	var full string
 	switch kind {
 	case 'd':
-		full = "package p\n" + src
+		var b strings.Builder
+		at := 0
+		for _, brk := range importBreaks(src) {
+			b.WriteString(src[at:brk] + ";")
+			at = brk
+		}
+		full = "package p\n" + b.String() + src[at:]
 	case 'p':
 		full = "package p\nfunc _(" + src + ") {}\n"
 	case 's':
