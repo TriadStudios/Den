@@ -954,6 +954,33 @@ component App() {
     style { p { background-image: --img("vbscript:x"); } }
     <p>x</p>
 }`, `app.den:3:35: custom CSS functions are not supported in style blocks`},
+		// Chromium 152 reads a nested inherit() in a stylesheet built with
+		// replaceSync as running past every later rule.
+		{"inherit() in a style block", `
+component App() {
+    style { p { width: calc(inherit(--w) + 1px); } }
+    <p>x</p>
+}`, `app.den:3:29: inherit() is not supported in style blocks`},
+		{"INHERIT( in a style block", `
+component App() {
+    style { p { color: INHERIT(--c); } }
+    <p>x</p>
+}`, `app.den:3:24: inherit() is not supported in style blocks`},
+		{"inherit() in image-set", `
+component App() {
+    style { p { background-image: image-set(inherit(--a) 1x); } }
+    <p>x</p>
+}`, `app.den:3:45: inherit() is not supported in style blocks`},
+		{"inherit() in a token", `
+const Gap den.Token = "calc(inherit(--gap) * 2)"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Gap: inherit() is not supported in design tokens`},
+		{"important token", `
+const Ink den.Token = "red ! IMPORTANT"
+component App() {
+    <p>x</p>
+}`, `app.den:2:7: design token Ink: a token cannot contain "!important": style.css could not give it another value`},
 		{"custom function call with _ in its name", `
 component App() {
     style { p { width: calc(--Gap_x(2) * 1px); } }

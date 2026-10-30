@@ -423,7 +423,10 @@ func (s *styler) sheet() []cssRule {
 // are text and may say either, unless they are URLs, which checkURL checks.
 // Nor are there calls of custom functions (--name(...)), which an
 // @function in the app's unchecked style.css could define to wrap their
-// arguments into a URL: image-set(--img("vbscript:x")).
+// arguments into a URL: image-set(--img("vbscript:x")). Nor of inherit():
+// Chromium 152 reads calc(inherit(--w) + 1px) in a stylesheet built with
+// replaceSync as running on past every later rule, and like var() it
+// substitutes a value den never sees. Plain inherit, the keyword, is fine.
 //
 // A string, comment or url( that is not closed is reported too, though in
 // a style block scanStyle has found every one already.
@@ -458,12 +461,15 @@ func (s *styler) lex() {
 		switch c {
 		case '(', '[', '{':
 			if c == '(' {
-				if k, fn := funcName(s.src, 0, i); strings.HasPrefix(fn, "--") {
-					where := "style blocks"
-					if s.tokenValue {
-						where = "design tokens"
-					}
+				where := "style blocks"
+				if s.tokenValue {
+					where = "design tokens"
+				}
+				switch k, fn := funcName(s.src, 0, i); {
+				case strings.HasPrefix(fn, "--"):
 					s.errAt(k, "custom CSS functions are not supported in %s", where)
+				case fn == "inherit":
+					s.errAt(k, "inherit() is not supported in %s", where)
 				}
 			}
 			open = append(open, i)
@@ -919,8 +925,9 @@ func (s *styler) value(prop string, i, end int) string {
 					return ""
 				}
 				// var(--u) with --u: "javascript:x" would hand image-set() a
-				// URL that was never checked.
-				if fn == "var" || fn == "env" || fn == "attr" {
+				// URL that was never checked. lex rejects inherit() already;
+				// it is listed in case that ever changes.
+				if fn == "var" || fn == "env" || fn == "attr" || fn == "inherit" {
 					if u := slices.IndexFunc(fns, func(f string) bool { return urlFuncs[f] }); u >= 0 {
 						s.errAt(k, "%s() cannot be used in %s(): its URLs are checked when the app builds", fn, fns[u])
 					}
@@ -1162,6 +1169,7 @@ func colorOnly(p string) bool {
 //   - no control characters, ";", "<", backslashes or comments, so it can
 //     never end its string, declaration or rule, even in a string;
 //   - no "javascript:" or "expression(", not even in strings;
+//   - no !important, which would keep style.css from theming it;
 //   - no $: the value is written as it is, so a token cannot use another.
 //
 // Then it must be a value of its type: a color, a length and so on.
@@ -1185,6 +1193,11 @@ func checkToken(kind, v string) string {
 	}
 	if strings.Contains(strings.ReplaceAll(lv, " ", ""), "javascript:") {
 		return `a token cannot contain "javascript:"`
+	}
+	// --x: red !important in :root would win over the app's style.css,
+	// which could no longer give the token another value.
+	if strings.Contains(strings.ReplaceAll(lv, " ", ""), "!important") {
+		return `a token cannot contain "!important": style.css could not give it another value`
 	}
 	var errs ErrorList
 	s := &styler{tokenValue: true, src: v, errs: &errs}

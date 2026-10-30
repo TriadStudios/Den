@@ -49,6 +49,8 @@ func TestScopeSelectors(t *testing.T) {
 		{`p { font: 16px / 1.5 a , b; margin: calc( 1px + 2px ) auto !important }`, `p[d-x]{font:16px / 1.5 a,b;margin:calc(1px + 2px) auto !important}`},
 		{`p { background: url( "a b.png" ) , URL(img/x.png); }`, `p[d-x]{background:url("a b.png"),url(img/x.png)}`},
 		{`p { --gap : 4px ; }`, `p[d-x]{--gap:4px}`},
+		// inherit() is an error, the keyword is not.
+		{`p { color: inherit; border-color: INHERIT; margin: inherit (1px) }`, `p[d-x]{color:inherit;border-color:INHERIT;margin:inherit (1px)}`},
 		{`p { background-image: image-set("a.png" 1x, url(b.png) 2x, "https://x.test/c.avif" type("image/avif")); }`, `p[d-x]{background-image:image-set("a.png" 1x,url(b.png) 2x,"https://x.test/c.avif" type("image/avif"))}`},
 		{`[href^="javascript:"]::after { content: "a javascript: tutorial, expression(1)" }`, `[href^="javascript:"][d-x]::after{content:"a javascript: tutorial, expression(1)"}`},
 		// Unicode case mapping changes these letters' byte lengths, or maps
@@ -142,7 +144,7 @@ func TestCheckToken(t *testing.T) {
 		"Duration": {"150ms", "1s", ".2s", "0s", "-1s", "1e3ms", "1.5E-1S"},
 		"Font":     {"system-ui", "system-ui, sans-serif", `ui-sans-serif, -apple-system, "Segoe UI", sans-serif`, "'Fira Code', monospace", "Times New Roman", `"image-set(" , x`},
 		// Strings are text, and a_image-set( calls a_image-set, as in CSS.
-		"Token": {"0 1px 2px rgb(0 0 0 / 0.1)", "1.5", "bold", `"a b"`, `"url(x)"`, `'a}' "{"`, "var(--x)", "attr(data-x)", "a_image-set(1)", "a-->b", "x--y(1)", `"$5"`},
+		"Token": {"0 1px 2px rgb(0 0 0 / 0.1)", "1.5", "bold", `"a b"`, `"url(x)"`, `'a}' "{"`, "var(--x)", "attr(data-x)", "a_image-set(1)", "a-->b", "x--y(1)", `"$5"`, "inherit", "INHERIT"},
 	}
 	bad := map[string][]string{
 		"Color":    {"#ff", "#ggg", "blu", "rgb(0 0 0", "rgb(0 0 0) red", "evil(1)", "var(--x)", "", "rgb(0 0 0 / image(red))"},
@@ -151,7 +153,8 @@ func TestCheckToken(t *testing.T) {
 		"Font":     {"a,,b", `"unclosed`, `"a"b"`, "1font", "a, "},
 		"Token": {"'a\fb'", "a\tb", "\x00", "a\x7f", "a\x1b", "JAVA script:x", "a;b", `"a;b"`, "a{", "}", "a{}b", "<x", `a\b`, "url(x)", `url("x")`, "EXPRESSION(1)", `"expression("`, "a /* b", "a\nb", "(a", "a)", "[a)", `"a`, "  ",
 			`image-set("a.png" 1x)`, `-WEBKIT-IMAGE-SET("x" 1x)`, `IMAGE("x")`, `src("x")`, "cross-fade(red, blue)", "-webkit-cross-fade(red, blue, 50%)",
-			"element(#x)", "-moz-element(#x)", `rgb(0 0 0) image-set("x" 1x)`, `--img("x")`, "--A_b(1)", "a $b", "$"},
+			"element(#x)", "-moz-element(#x)", `rgb(0 0 0) image-set("x" 1x)`, `--img("x")`, "--A_b(1)", "a $b", "$",
+			"calc(inherit(--gap) * 2)", "foo(inherit(x))", "INHERIT(--x)", "red !important", "red!IMPORTANT", "red ! important"},
 	}
 	for kind, vs := range ok {
 		for _, v := range vs {
@@ -487,7 +490,8 @@ var (
 		`image-set(type(var(--q)) "a.png" 1x)`, `var(--q, "javascript:x")`, "İ(x)", "ſrc(x)",
 		`--img("x")`, "--a_b(1)", `image-set(--img("x") 1x)`, "a_var(--q)", "--(x)",
 		"cross-fade(red, blue)", "element(#x)", "-webkit-cross-fade(url(a.png), url(b.png), 50%)", `IMAGE("a.png")`,
-		"x_image-set(1)", `"url(x)"`, `"image-set("`, "-MOZ-ELEMENT(#x)"}
+		"x_image-set(1)", `"url(x)"`, `"image-set("`, "-MOZ-ELEMENT(#x)",
+		"calc(inherit(--w) + 1px)", `image-set(inherit(--a) 1x)`, "inherit", "red !important"}
 	fuzzNoise = []string{"'", "\"", "(", ")", "[", "]", "{", "}", ";", ":", ",", "\\", "/*", "*/", "/", "*", "<!--",
 		"-->", "<", ">", "@", "@media", "@keyframes x", "$", "$t", "$d", "$f", "url(", "URL(", "u", "rl(", "\f", "\r",
 		"\n", "\r\n", "\t", " ", "\x00", "\x01", "\x0b", "\x7f", "é", "\u2028", "\u00a0", "😀", "\xff", "#", "%", "-",
@@ -609,8 +613,8 @@ func fuzzTokenValue(r *rand.Rand) string {
 // style block: the same text, written in a block as the value of a custom
 // property and of a property that takes URLs, must compile too. And the
 // CSS tokenizer of csscheck.go, not den's own scanner, must read in it no
-// url( token, no function that takes a URL or an image, and no custom
-// function. It returns whether v passed.
+// url( token, no function that takes a URL or an image, no custom
+// function and no inherit(). It returns whether v passed.
 func tokenCase(t testing.TB, v string) bool {
 	t.Helper()
 	toks := [5]string{v, "red", "1px", "1s", "serif"}
@@ -628,7 +632,8 @@ func tokenCase(t testing.TB, v string) bool {
 }
 
 // urlFunction returns the first url( token, function that takes a URL or
-// an image, or custom function that readCSS's tokenizer reads in v, or "".
+// an image, custom function or inherit( that readCSS's tokenizer reads in
+// v, or "".
 func urlFunction(v string) string {
 	t := &cssTokenizer{s: v}
 	for {
@@ -647,7 +652,7 @@ func urlFunction(v string) string {
 				}
 			}
 			switch n := string(name); n {
-			case "url", "image-set", "-webkit-image-set", "image", "src", "cross-fade", "-webkit-cross-fade", "element", "-moz-element":
+			case "url", "image-set", "-webkit-image-set", "image", "src", "cross-fade", "-webkit-cross-fade", "element", "-moz-element", "inherit":
 				return n + "("
 			default:
 				if strings.HasPrefix(n, "--") {

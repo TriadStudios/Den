@@ -140,8 +140,10 @@ padding takes a length`).
   design tokens are compile errors inside those functions, and calls of
   custom functions (`--name(...)`) are errors anywhere in a style block,
   since an `@function` in `style.css` could turn their arguments into
-  URLs. So nothing in a style block can become a URL den has not
-  checked. Elsewhere, `expression(` and `javascript:` are errors outside
+  URLs. So are calls of `inherit()` (the `inherit` keyword is fine),
+  which substitutes a value like `var()` does, and which Chromium can
+  read as running into every later rule. So nothing in a style block can
+  become a URL den has not checked. Elsewhere, `expression(` and `javascript:` are errors outside
   strings (in a string such as `content: "a javascript: tutorial"` they
   are only text), and so are `behavior` and `-moz-binding`. CSS names
   and keywords are compared ignoring ASCII case only, as browsers do.
@@ -152,10 +154,11 @@ padding takes a length`).
   style block, and more strictly, since `var()` can take it into any
   property: it cannot hold a function that takes a URL or an image at
   all (`url()`, `image-set()`, `image()`, `src()`, `cross-fade()`,
-  `element()` and their prefixed forms), a custom function, `$`, control
-  characters (newlines and form feeds included), `;`, `<`, backslashes,
-  comments, `javascript:` or `expression(`, so a token can never carry a
-  URL or end its string, declaration or rule.
+  `element()` and their prefixed forms), a custom function, `inherit()`,
+  `$`, control characters (newlines and form feeds included), `;`, `<`,
+  backslashes, comments, `javascript:` or `expression(`, so a token can
+  never carry a URL or end its string, declaration or rule. Nor can it
+  hold `!important`, which would stop `style.css` from theming it.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
@@ -361,10 +364,11 @@ component Card(title string, children den.Children) {
   `style.css`); at-rules other than `@media`, `@supports`, `@container` and
   `@keyframes` (`@import`, `@font-face` and the rest go in `style.css`);
   nested rules and `&`, and `{}` blocks in custom property values; calls
-  of custom functions (`--name(...)`); tokens in selectors, in `@media`
-  conditions or inside `url()`, where custom properties do not work; and
-  tokens, `var()`, `env()` or `attr()` inside `image-set()`, `image()` or
-  `src()`, whose URLs are checked when the app builds.
+  of custom functions (`--name(...)`) and of `inherit()`; tokens in
+  selectors, in `@media` conditions or inside `url()`, where custom
+  properties do not work; and tokens, `var()`, `env()` or `attr()` inside
+  `image-set()`, `image()` or `src()`, whose URLs are checked when the app
+  builds.
 - Backslash escapes are allowed only inside strings: `content: "\201C"`
   is fine, `.sm\:p-4` is an error. To select a class with such
   characters, match it as a string: `[class~="sm:p-4"]`. Brackets must
