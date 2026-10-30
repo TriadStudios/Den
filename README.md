@@ -279,6 +279,12 @@ component App() {
   before anything inside it runs, so a guard holds:
   `{if len(xs.Get()) > 1 { <p>{xs.Get()[1]}</p> }}` takes the `<p>` away
   when `xs` shrinks, and never reads past the end.
+- A binding that panics (an index out of range, say) is reported with
+  `reportError`, as an uncaught error would be, and the rest of the
+  update still lands; the binding runs again when what it read changes.
+  An `{if}` branch that panics while it is built is left out, and a
+  `{for}` whose new row panics keeps its old rows, until the block's
+  condition or list changes again.
 
 **Routing**
 

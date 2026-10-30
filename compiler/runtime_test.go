@@ -2057,6 +2057,98 @@ log(html());`)
 		`<div><p>d</p><ul><li>aa</li><li>dd</li></ul><button>cut</button><button>grow</button></div>`)
 }
 
+// An effect that throws is reported (reportError, which dom.js logs), the
+// rest of the update still lands, and the effect runs again when what it
+// read changes: a binding, an {if} condition and a computed alike. A
+// branch that throws while it is built is dropped whole, so none of its
+// bindings live on unseen.
+func TestRunThrowingEffect(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    xs := signal([]string{"a", "b"})
+    ys := signal([]string{"y"})
+    i := signal(0)
+    n := signal(0)
+    show := signal(false)
+    at := computed(xs.Get()[i.Get()] + "!")
+    <div>
+        <p>{xs.Get()[i.Get()]}</p>
+        <b>{n.Get()}</b>
+        <u>{at.Get()}</u>
+        {if xs.Get()[i.Get()] == "b" {
+            <s>is b</s>
+        }}
+        {if show.Get() {
+            <i>{n.Get()}{ys.Get()[i.Get()]}</i>
+        }}
+        <button onclick={i.Set(5); n.Set(n.Get() + 1)}>bad</button>
+        <button onclick={i.Set(1)}>good</button>
+        <button onclick={show.Set(!show.Get())}>show</button>
+        <button onclick={n.Set(n.Get() + 1)}>n</button>
+        <button onclick={ys.Set([]string{"y", "z"})}>ys</button>
+    </div>
+}`, `
+log(html());
+click(find("button", "bad")); await tick(); log(html());
+click(find("button", "n")); await tick(); log(html());
+click(find("button", "good")); await tick(); log(html());
+click(find("button", "bad")); await tick(); log(html());
+click(find("button", "show")); await tick(); log(html());
+click(find("button", "ys")); await tick(); log(html());
+click(find("button", "show")); await tick();
+click(find("button", "good")); await tick();
+click(find("button", "show")); await tick(); log(html());`)
+	const tail = `<button>bad</button><button>good</button><button>show</button><button>n</button><button>ys</button></div>`
+	expectLines(t, got,
+		`<div><p>a</p><b>0</b><u>a!</u>`+tail,
+		`reportError: den: index out of range`,
+		`reportError: den: index out of range`,
+		`reportError: den: index out of range`,
+		`<div><p>a</p><b>1</b><u>a!</u>`+tail,
+		`<div><p>a</p><b>2</b><u>a!</u>`+tail,
+		`<div><p>b</p><b>2</b><u>b!</u><s>is b</s>`+tail,
+		`reportError: den: index out of range`,
+		`reportError: den: index out of range`,
+		`reportError: den: index out of range`,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s>`+tail,
+		`reportError: den: index out of range`,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s>`+tail,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s>`+tail,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s><i>3z</i>`+tail)
+}
+
+// A {for} whose new row panics while it is built keeps its old rows, and
+// tries again when its list changes.
+func TestRunThrowingRow(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    keys := signal([]int{0})
+    vals := signal([]string{"a"})
+    <div>
+        <ul>
+            {for _, k := range keys.Get() key k {
+                <li>{vals.Get()[k]}</li>
+            }}
+        </ul>
+        <p>{len(keys.Get())}</p>
+        <button onclick={keys.Set([]int{0, 1})}>two</button>
+        <button onclick={vals.Set([]string{"a", "b"})}>vals</button>
+        <button onclick={keys.Set([]int{1, 0})}>swap</button>
+    </div>
+}`, `
+const show = () => log(html(find("ul")), find("p").textContent);
+show();
+click(find("button", "two")); await tick(); show();
+click(find("button", "vals")); await tick(); show();
+click(find("button", "swap")); await tick(); show();`)
+	expectLines(t, got,
+		`<ul><li>a</li></ul> 1`,
+		`reportError: den: index out of range`,
+		`<ul><li>a</li></ul> 2`,
+		`<ul><li>a</li></ul> 2`,
+		`<ul><li>b</li><li>a</li></ul> 2`)
+}
+
 // TestUpdateOrderRandom builds random trees of {if} and keyed {for}
 // blocks, plain and with motion, around bindings and computed values over
 // a few signals; applies random batches of writes; and after each batch

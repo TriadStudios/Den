@@ -55,28 +55,34 @@ function $stale(n, s) {
     $each(n.o, (m) => $stale(m, 1));
   }
 }
+// A node that throws is clean afterwards and keeps what it read before
+// throwing, so the next change to those runs it again.
 function $fresh(n) {
-  if (n.s === 1) $each(n.d, (d) => n.s === 1 && d.f && $fresh(d));
-  if (n.s === 2) $update(n);
-  n.s = 0;
+  try {
+    if (n.s === 1) $each(n.d, (d) => n.s === 1 && d.f && $fresh(d));
+    if (n.s === 2) $update(n);
+  } finally { n.s = 0; }
 }
 function $update(n) {
   const old = n.d, l = $listener, v = n.v;
   n.d = null;
   $listener = n;
-  try { n.v = n.f(n.c); } finally { $listener = l; }
-  $each(old, (d) => $has(n.d, d) || $unlink(d, n));
-  if (!n.x) $each(n.d, (d) => $has(old, d) || $link(d, n));
-  n.s = 0;
+  try { n.v = n.f(n.c); } finally {
+    $listener = l;
+    $each(old, (d) => $has(n.d, d) || $unlink(d, n));
+    if (!n.x) $each(n.d, (d) => $has(old, d) || $link(d, n));
+    n.s = 0;
+  }
   if (!Object.is(v, n.v) || $mutable(n.v)) n.e ? n.e(n) : $each(n.o, (m) => { m.s = 2; });
 }
 // $run runs n's owners that are due first, then n unless they disposed it:
 // an effect never runs while a block around it still has to re-check, since
 // the block may remove it. Each owner runs its own owners first, so they go
-// outermost first.
+// outermost first. An effect that throws is reported, and the rest still
+// run.
 function $run(n) {
   for (let o = n; o = o.p; ) o.s && $run(o);
-  n.x || $fresh(n);
+  if (!n.x) try { $fresh(n); } catch (e) { reportError(e); }
 }
 function $flush() {
   for (let i = 0; $queue.length; i++) {
@@ -94,16 +100,16 @@ function $dispose(n) { n.x = true; $each(n.d, (d) => $unlink(d, n)); n.d = null;
 // costs no allocation of its own. It is passed around as its newest entry.
 function $cleanup(x) { if ($owner) { x.n = $owner.h; $owner.h = x; } }
 function $free(x) { for (; x; x = x.n) x.f ? $dispose(x) : x(); }
-// $scope runs f untracked in a new scope: [result, scope]. The scope's p,
-// the owner of the nodes made in it, is the effect running when $scope is
-// called, or else the owner of the enclosing scope. So code that builds
-// nodes untracked must do it in a $scope, never by setting $listener to
-// null itself, or they get no owner.
+// $scope runs f untracked in a new scope: [result, scope]. If f throws, the
+// nodes it made are disposed. The scope's p, the owner of the nodes made in
+// it, is the effect running when $scope is called, or else the owner of the
+// enclosing scope. So code that builds nodes untracked must do it in a
+// $scope, never by setting $listener to null itself, or they get no owner.
 function $scope(f) {
   const o = $owner, l = $listener, own = { h: null, p: l || o?.p };
   $owner = own;
   $listener = null;
-  try { return [f(), own.h]; } finally { $owner = o; $listener = l; }
+  try { return [f(), own.h]; } catch (e) { $free(own.h); throw e; } finally { $owner = o; $listener = l; }
 }
 // $url lets through only http, https, mailto, tel and relative URLs. The
 // compiler wraps every dynamic URL attribute (href, src, ...) in it.
