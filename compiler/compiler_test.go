@@ -853,6 +853,11 @@ component App() {
     style { @keyframes spin { start { opacity: 0; } } }
     <p>x</p>
 }`, `app.den:3:31: keyframe selectors are from, to or a percentage, not "start"`},
+		{"unterminated comment in statements", `
+component App() {
+    x := 1 /* oops
+    <p>{x}</p>
+}`, `app.den:3:12: comment not terminated`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -588,6 +588,8 @@ func (p *parser_) findMarkupStart(from int) (int, []styleSpan) {
 				lineStart = false
 				continue
 			}
+			// It would hide the markup and the end of the component.
+			p.failAt(p.posAt(i), "comment not terminated")
 		case c == '(' || c == '[' || c == '{':
 			depth++
 		case c == ')' || c == ']' || c == '}':
