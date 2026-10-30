@@ -2187,6 +2187,35 @@ log(localStorage.getItem("theme"), location.hash);`)
 		`"dark!" #blue`)
 }
 
+// Readers are kept one at a time or in a Set, told apart by add and
+// delete: signal values that have add or delete members, and readers
+// added and removed, must not confuse that.
+func TestSignalReaderSets(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $effect $scope $free", `
+const weird = { add() { throw new Error("add called"); }, delete() { throw new Error("delete called"); } };
+const s = $signal(weird), m = $signal(new Map([["add", 1]])), st = $signal(new Set([1]));
+const runs = [0, 0, 0, 0];
+const scopes = [0, 1, 2, 3].map((i) => $scope(() => $effect(() => { s.get(); m.get(); st.get(); runs[i]++; }))[1]);
+$free(scopes[1]); $free(scopes[0]);
+s.set({ add: 1, delete: 2 }); m.set(new Map()); st.set(new Set());
+await new Promise((r) => setImmediate(r));
+log(runs.join(","), s.o instanceof Set ? "Set(" + s.o.size + ")" : typeof s.o);
+$free(scopes[2]); $free(scopes[3]);
+s.set(3);
+await new Promise((r) => setImmediate(r));
+log(runs.join(","));
+const c = $computed(() => ({ add: s.get(), delete: 1 }));
+let cr = 0;
+const [, sc] = $scope(() => { $effect(() => { c.get(); cr++; }); $effect(() => { c.get(); cr++; }); });
+s.set(4);
+await new Promise((r) => setImmediate(r));
+$free(sc);
+s.set(5);
+await new Promise((r) => setImmediate(r));
+log(cr, c.o instanceof Set ? "Set(" + c.o.size + ")" : String(c.o));`)
+	expectLines(t, got, `1,1,2,2 Set(2)`, `1,1,2,2`, `4 Set(0)`)
+}
+
 // TestUpdateOrderRandom builds random trees of {if} and keyed {for}
 // blocks, plain and with motion, around bindings and computed values over
 // a few signals; applies random batches of writes; and after each batch

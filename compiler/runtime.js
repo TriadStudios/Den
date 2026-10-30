@@ -24,9 +24,10 @@ class $Sig {
     return this.v;
   }
   set(v) {
-    if (Object.is(v, this.v) && !$mutable(v)) return;
-    this.v = v;
-    $each(this.o, (n) => $stale(n, 2));
+    if (!Object.is(v, this.v) || $mutable(v)) {
+      this.v = v;
+      $each(this.o, (n) => $stale(n, 2));
+    }
   }
   update(f) { this.set(f(this.v)); }
 }
@@ -86,7 +87,7 @@ function $run(n) {
 }
 function $flush() {
   for (let i = 0; $queue.length; i++) {
-    if (i > 1000) { $queue = []; console.error("den: update loop"); break; }
+    if (i > 1e3) { $queue = []; console.error("den: update loop"); break; }
     $queue.splice(0).forEach($run);
   }
 }
@@ -94,7 +95,7 @@ function $signal(v) { return new $Sig(v); }
 function $computed(f) { const c = new $Node(f); $cleanup(c); return c; }
 // Effects belong to the scope that created them and stop when it is
 // disposed. The default sink, Boolean, does nothing.
-function $effect(f, e = Boolean, t, k, c) { const n = new $Node(f, e, t, k, c); $cleanup(n); $update(n); return n; }
+function $effect(f, e = Boolean, t, k, c) { const n = new $Node(f, e, t, k, c); $cleanup(n); $update(n); }
 function $dispose(n) { n.x = true; $each(n.d, (d) => $unlink(d, n)); n.d = null; }
 // A scope is a list of nodes and cleanup functions linked through n, so it
 // costs no allocation of its own. It is passed around as its newest entry.
@@ -114,21 +115,21 @@ function $scope(f) {
 // $url lets through only http, https, mailto, tel and relative URLs. The
 // compiler wraps every dynamic URL attribute (href, src, ...) in it.
 function $url(v) {
-  const s = String(v).replace(/[\t\n\r]|^[\0- ]+/g, "");
-  return !/^[a-z][a-z0-9+.-]*:/i.test(s) || /^(https?|mailto|tel):/i.test(s) ? s : "about:blank#blocked";
+  v = String(v).replace(/[\t\n\r]|^[\0- ]+/g, "");
+  return !/^[a-z][a-z0-9+.-]*:/i.test(v) || /^(https?|mailto|tel):/i.test(v) ? v : "about:blank#blocked";
 }
-function $h(tag) { return document.createElement(tag); }
-function $hs(tag) { return document.createElementNS("http://www.w3.org/2000/svg", tag); }
+function $h(t) { return document.createElement(t); }
+function $hs(t) { return document.createElementNS("http://www.w3.org/2000/svg", t); }
 function $frag() { return document.createDocumentFragment(); }
 function $cm() { return document.createComment(""); }
 // $tpl builds a template once and returns a function that clones it.
-function $tpl(build) { let t; return () => (t ??= build()).cloneNode(true); }
-function $set(el, name, v) {
-  if (name === "value") { v = String(v ?? ""); if (el.value !== v) el.value = v; return; }
-  if (name === "checked" || name === "selected") { el[name] = !!v; return; }
-  if (typeof v === "boolean" && name.startsWith("aria-")) v = String(v);
-  if (v === false || v == null) el.removeAttribute(name);
-  else el.setAttribute(name, v === true ? "" : v);
+function $tpl(b) { let t; return () => (t ??= b()).cloneNode(true); }
+function $set(e, k, v) {
+  if (k === "value") { v = String(v ?? ""); if (e.value !== v) e.value = v; return; }
+  if (k === "checked" || k === "selected") { e[k] = !!v; return; }
+  if (typeof v === "boolean" && k.startsWith("aria-")) v = String(v);
+  if (v === false || v == null) e.removeAttribute(k);
+  else e.setAttribute(k, v === true ? "" : v);
 }
 // Bindings are effects whose sink writes the DOM when the value changes.
 function $attr(el, name, f, c) { $effect(f, $attrSink, el, name, c); }
@@ -140,8 +141,8 @@ function $textSink(n) { n.t.data = String(n.v); }
 // attribute like den-click="0" naming a handler in the table of its list
 // row, whose element ($r) holds the row record.
 const $delegated = {};
-function $listen(type) { $delegated[type] ||= (document.addEventListener(type, $dispatch), 1); }
-function $on(el, type, f) { $listen(type); el["$" + type] = f; }
+function $listen(t) { $delegated[t] ||= (document.addEventListener(t, $dispatch), 1); }
+function $on(e, t, f) { $listen(t); e["$" + t] = f; }
 function $dispatch(e) {
   for (let n = e.target, i; n && !e.cancelBubble; n = n.parentNode) {
     n["$" + e.type]?.(e);
@@ -153,7 +154,7 @@ function $dispatch(e) {
 // last node stay put and the block can be moved or removed as one range.
 function $clear(a, b) {
   const p = a.parentNode;
-  if (p.firstChild === a && p.lastChild === b) { p.textContent = ""; p.append(a, b); }
+  if (p.firstChild === a && p.lastChild === b) p.textContent = "", p.append(a, b);
   else while (a.nextSibling !== b) a.nextSibling.remove();
 }
 // own is the scope of the branch being shown.
@@ -162,10 +163,10 @@ function $if(a, b, cond, yes, no) {
   $effect(() => {
     const v = !!cond();
     if (v === cur) return;
-    if (cur !== undefined) { $free(own); own = null; $clear(a, b); }
+    if (cur !== undefined) { own = $free(own); $clear(a, b); }
     cur = v;
     const f = v ? yes : no;
-    if (f) { let n; [n, own] = $scope(f); b.before(n); }
+    if (f) b.before(([, own] = $scope(f))[0]);
   });
   $cleanup(() => $free(own));
 }
@@ -174,11 +175,11 @@ function $if(a, b, cond, yes, no) {
 // diff skips the common prefix and suffix, then moves the rows in between
 // with a longest-increasing-subsequence diff, so only rows that actually
 // moved touch the DOM.
-function $for(a, b, list, key, row, ui, hs) {
+function $for(a, b, list, key, row, ui, h) {
   let rows = [];
   $effect(() => {
     const items = list();
-    rows = $scope(() => $reconcile(a, b, rows, items, key, row, ui, hs))[0];
+    rows = $scope(() => $reconcile(a, b, rows, items, key, row, ui, h))[0];
   });
   $cleanup(() => rows.forEach((r) => $free(r.d)));
 }
@@ -226,9 +227,9 @@ function $reconcile(a, b, old, xs, key, row, ui, h) {
   return out;
 }
 function $nodes(r) {
-  const out = [r.a];
-  for (let m = r.a; m !== r.b;) out.push((m = m.nextSibling));
-  return out;
+  const o = [r.a];
+  for (let m = r.a; m !== r.b;) o.push((m = m.nextSibling));
+  return o;
 }
 // $lis returns the indexes of a longest increasing run of old positions;
 // those rows stay where they are. Negative positions are new rows.
@@ -255,7 +256,7 @@ function $sl(a) { return new $Slice(a, 0, a.length, a.length); }
 function $arr(s) { return !s ? [] : !s.o && s.n === s.a.length ? s.a : s.a.slice(s.o, s.o + s.n); }
 function $slen(s) { return s ? s.n : 0; }
 function $scap(s) { return s ? s.c : 0; }
-function $panic(msg) { throw new Error("den: " + msg); }
+function $panic(m) { throw new Error("den: " + m); }
 // $ix bounds-checks index i of slice s and returns its index in s.a.
 function $ix(s, i) { if (!(i >= 0 && i < $slen(s))) $panic("index out of range"); return s.o + i; }
 function $at(s, i) { return s.a[$ix(s, i)]; }
@@ -269,7 +270,7 @@ function $append(s, vs) {
   if (s && m <= s.c) { vs.forEach((v, i) => { s.a[s.o + n + i] = v; }); return new $Slice(s.a, s.o, m, s.c); }
   return vs.length ? new $Slice($arr(s).concat(vs), 0, m, Math.max(m, 2 * $scap(s))) : s;
 }
-function $make(n, c, zero) { return new $Slice(Array(n).fill(zero), 0, n, c); }
+function $make(n, c, z) { return new $Slice(Array(n).fill(z), 0, n, c); }
 function $copy(d, s) { const t = $arr(s).slice(0, $slen(d)); t.forEach((v, i) => { d.a[d.o + i] = v; }); return t.length; }
 function $entries(m) { const a = [...m.values()]; a.$k = [...m.keys()]; return a; }
 // $eq is Go == for structs and arrays.
@@ -280,4 +281,4 @@ function $eq(a, b) {
 }
 // $len is Go len for strings: the length in UTF-8 bytes.
 function $len(s) { return new TextEncoder().encode(s).length; }
-function $mount(app, root) { root.replaceChildren($scope(app)[0]); }
+function $mount(f, r) { r.replaceChildren($scope(f)[0]); }
