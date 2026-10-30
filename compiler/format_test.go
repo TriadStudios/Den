@@ -659,7 +659,7 @@ func perturb(src string, rng *rand.Rand) string {
 // code, tags and CSS) and checks that each still formats to the same
 // text and compiles to the same output.
 func TestFormatPerturb(t *testing.T) {
-	seed := time.Now().UnixNano()
+	seed := fmtSeed(t, 1)
 	rng := rand.New(rand.NewSource(seed))
 	start := time.Now()
 	cases, changed := 0, 0
@@ -682,20 +682,42 @@ func TestFormatPerturb(t *testing.T) {
 				}
 				got, err := Format(s.Name, []byte(perturbed[i].Code))
 				if err != nil {
-					t.Fatalf("seed %d: %s: %s perturbed: %v\n%s", seed, p.name, s.Name, err, perturbed[i].Code)
+					t.Fatalf("-fmtseed=%d: %s: %s perturbed: %v\n%s", seed, p.name, s.Name, err, perturbed[i].Code)
 				}
 				if string(got) != s.Code {
-					t.Fatalf("seed %d: %s: %s perturbed formats differently\nperturbed:\n%s\nformatted:\n%s\nwant:\n%s", seed, p.name, s.Name, perturbed[i].Code, got, s.Code)
+					t.Fatalf("-fmtseed=%d: %s: %s perturbed formats differently\nperturbed:\n%s\nformatted:\n%s\nwant:\n%s", seed, p.name, s.Name, perturbed[i].Code, got, s.Code)
 				}
 			}
 			got := mustCompile(t, p.name+" (perturbed)", perturbed)
 			if got.JS != want.JS || got.CSS != want.CSS {
-				t.Fatalf("seed %d: %s perturbed compiles differently\n%s", seed, p.name, sourcesText(perturbed))
+				t.Fatalf("-fmtseed=%d: %s perturbed compiles differently\n%s", seed, p.name, sourcesText(perturbed))
 			}
 			cases++
 		}
 	}
-	t.Logf("%d perturbed programs (%d files changed) in %v, seed %d", cases, changed, time.Since(start).Round(time.Millisecond), seed)
+	t.Logf("%d perturbed programs (%d files changed) in %v, -fmtseed=%d", cases, changed, time.Since(start).Round(time.Millisecond), seed)
+}
+
+var fmtSeedFlag = flag.String("fmtseed", "", "seed of TestFormatPerturb and TestFormatMutants: a number, or random for one from the clock (default: each test's fixed seed)")
+
+// fmtSeed returns the seed a randomized format test runs with: its fixed
+// seed, so that go test gives the same result on every run and in CI, or
+// the one -fmtseed asks for. To look for new failures, run
+// go test ./compiler -run 'FormatPerturb|FormatMutants' -fmtseed=random -count=100;
+// a failure names the seed that reproduces it.
+func fmtSeed(t *testing.T, fixed int64) int64 {
+	t.Helper()
+	switch *fmtSeedFlag {
+	case "":
+		return fixed
+	case "random":
+		return time.Now().UnixNano()
+	}
+	n, err := strconv.ParseInt(*fmtSeedFlag, 10, 64)
+	if err != nil {
+		t.Fatalf("-fmtseed=%s: want a number or random", *fmtSeedFlag)
+	}
+	return n
 }
 
 // mutate changes about a quarter of the whitespace slots of src to
@@ -725,7 +747,7 @@ func mutate(src string, rng *rand.Rand) string {
 // often changes what they mean or breaks them, and every one that still
 // compiles must compile the same once formatted, and format idempotently.
 func TestFormatMutants(t *testing.T) {
-	seed := time.Now().UnixNano()
+	seed := fmtSeed(t, 2)
 	rng := rand.New(rand.NewSource(seed))
 	rounds := 8
 	if raceEnabled {
@@ -749,17 +771,17 @@ func TestFormatMutants(t *testing.T) {
 			for _, s := range mut {
 				got, err := Format(s.Name, []byte(s.Code))
 				if err != nil {
-					t.Fatalf("seed %d: %s: %v\n%s", seed, p.name, err, s.Code)
+					t.Fatalf("-fmtseed=%d: %s: %v\n%s", seed, p.name, err, s.Code)
 				}
 				if again, err := Format(s.Name, got); err != nil || string(again) != string(got) {
-					t.Fatalf("seed %d: %s: not idempotent: %v\nmutant:\n%q\nonce:\n%s\ntwice:\n%s", seed, p.name, err, s.Code, got, again)
+					t.Fatalf("-fmtseed=%d: %s: not idempotent: %v\nmutant:\n%q\nonce:\n%s\ntwice:\n%s", seed, p.name, err, s.Code, got, again)
 				}
 				out = append(out, Source{Name: s.Name, Code: string(got)})
 			}
 			if res, err := Compile(out); err != nil || res.JS != want.JS || res.CSS != want.CSS {
-				t.Fatalf("seed %d: %s compiles differently once formatted: %v\nmutant:\n%s\nformatted:\n%s", seed, p.name, err, sourcesText(mut), sourcesText(out))
+				t.Fatalf("-fmtseed=%d: %s compiles differently once formatted: %v\nmutant:\n%s\nformatted:\n%s", seed, p.name, err, sourcesText(mut), sourcesText(out))
 			}
 		}
 	}
-	t.Logf("%d mutants, %d of which compile, seed %d", tried, kept, seed)
+	t.Logf("%d mutants, %d of which compile, -fmtseed=%d", tried, kept, seed)
 }
