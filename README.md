@@ -42,7 +42,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/todos` (add, toggle, remove, filter) | 3.9 KB |
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.3 KB |
 | `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.1 KB |
-| `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.7 KB |
+| `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
