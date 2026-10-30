@@ -93,6 +93,9 @@ func Compile(sources []Source) (*Result, error) {
 	}
 	body.WriteString("$mount(App, document.getElementById(\"app\"));\n")
 	code := e.tplOut.String() + body.String()
+	if e.motion {
+		code = handlerTypes(ck) + code
+	}
 	var out strings.Builder
 	out.WriteString("// Built by Den. Do not edit.\n(() => {\n\"use strict\";\n")
 	out.WriteString(runtimeFor(code))
@@ -160,6 +163,7 @@ type emitter struct {
 	router  bool                  // route or path is used
 	scopes  map[*Component]string // the scope attribute of each component with a style block
 	motions map[string]string     // shared transitions: JS -> the name of the constant holding it
+	motion  bool                  // a block compiled to $ifm or $form, whose leaving elements need $evs
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -717,7 +721,7 @@ func (e *emitter) ifNode(t *tnode, n *If) {
 	// until their exit transitions end.
 	fn := "$if"
 	if motionIn(n.Then, false) || motionIn(n.Else, false) {
-		fn = "$ifm"
+		fn, e.motion = "$ifm", true
 	}
 	e.line("%s(%s, %s, () => %s, %s, %s);", fn, t.v, t.end.v, cond, e.block("", n.Then, t.svg), els)
 }
@@ -814,7 +818,7 @@ func (e *emitter) forNode(t *tnode, n *For) {
 	// Rows with transitions or animate={layout()} need $form.
 	fn := "$for"
 	if motionIn(n.Body, true) {
-		fn = "$form"
+		fn, e.motion = "$form", true
 	}
 	e.line("%s(%s, %s, () => %s, (%s) => %s, %s, %t%s);", fn, t.v, t.end.v, list, params, e.expr(pt.expr), block, useIndex, table)
 }

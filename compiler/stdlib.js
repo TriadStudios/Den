@@ -134,10 +134,13 @@ function $enter(ns) { ns.forEach((m) => $play(m, m.$in)); }
 // transition is kept in out (node -> animation) until the transition ends,
 // and then rm removes it; every other node goes at once. A leaving element
 // takes no input: it is inert, and has pointer-events: none (SVG elements
-// have no inert), focus inside it is dropped, and events inside it stop
-// before den's handlers on the document see them. A browser that runs no
-// animation frames (in a hidden tab) never finishes the animation, so a
-// timer ends it too, 100ms after it should have finished; end runs once.
+// have no inert), focus inside it is dropped, and capture listeners on it
+// stop every event type the app has a handler for ($evs, which the
+// compiler writes), so none reaches a handler inside it, on the document
+// or on the element itself, mouseenter and focus included. A browser that
+// runs no animation frames (in a hidden tab) never finishes the animation,
+// so a timer ends it too, 100ms after it should have finished; end runs
+// once.
 function $exit(ns, out, rm = (m) => m.remove()) {
   for (const m of ns) {
     const x = $play(m, m.$out, 1);
@@ -146,7 +149,7 @@ function $exit(ns, out, rm = (m) => m.remove()) {
     m.inert = true;
     m.style.pointerEvents = "none";
     if (m.contains(document.activeElement)) document.activeElement.blur();
-    for (const t in $delegated) m.addEventListener(t, $halt, true);
+    for (const t of $evs) m.addEventListener(t, $halt, true);
     m.addEventListener("focusin", $halt, true);
     out.set(m, x);
     x.onfinish = end;

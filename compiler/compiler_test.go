@@ -1440,7 +1440,7 @@ component App() {
 // Motion costs only the apps that use it, and each part ships alone: an
 // {if} with transitions ships no list or spring code, and so on.
 func TestMotionTreeShaking(t *testing.T) {
-	motion := []string{"$ifm", "$form", "$glide", "$spring", "animate(", "requestAnimationFrame", "$m0"}
+	motion := []string{"$ifm", "$form", "$glide", "$spring", "animate(", "requestAnimationFrame", "$m0", "$evs"}
 	cases := []struct {
 		name, src string
 		ships     []string
@@ -1449,12 +1449,12 @@ func TestMotionTreeShaking(t *testing.T) {
 component App() {
     show := signal(true)
     <div>{if show.Get() { <p exit={fade()}>x</p> }}</div>
-}`, []string{"$ifm", "animate(", "$m0"}},
+}`, []string{"$ifm", "animate(", "$m0", "$evs"}},
 		{"for", `
 component App() {
     xs := signal([]int{1})
     <ul>{for _, x := range xs.Get() key x { <li animate={layout()}>{x}</li> }}</ul>
-}`, []string{"$form", "$glide", "animate("}},
+}`, []string{"$form", "$glide", "animate(", "$evs"}},
 		{"spring", `
 component App() {
     x := spring(1)

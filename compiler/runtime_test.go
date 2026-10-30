@@ -1723,3 +1723,37 @@ log(html(), state());`)
 		`<ul><li>a</li></ul> c:finished`,
 		`<div><button>hide</button></div> a:idle`)
 }
+
+// Handlers den attaches to the element itself, for events that do not
+// bubble (mouseenter, focus), stop too once it is leaving, on a child of
+// the leaving element (which may take pointer events of its own) and on
+// the leaving element itself.
+func TestMotionLeavingStopsDirectHandlers(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    open := signal(true)
+    seen := signal("")
+    <div>
+        <p>{seen.Get()}</p>
+        <button onclick={open.Set(false)}>close</button>
+        <svg>
+            {if open.Get() {
+                <g exit={fade().For("6s")}>
+                    <circle pointer-events="all" r="5" onmouseenter={seen.Set(seen.Get() + "enter;")} />
+                </g>
+            }}
+        </svg>
+        {if open.Get() {
+            <input exit={fade()} onfocus={seen.Set(seen.Get() + "focus;")} />
+        }}
+    </div>
+}`, `
+const c = find("circle"), inp = find("input");
+c.dispatch("mouseenter"); inp.dispatch("focus"); await tick();
+log(find("p").textContent);
+click(find("button")); await tick();
+c.dispatch("mouseenter"); inp.dispatch("focus"); await tick();
+log(find("p").textContent, findAll("circle").length, findAll("input").length);
+finishAll();`)
+	expectLines(t, got, `enter;focus;`, `enter;focus; 1 1`)
+}

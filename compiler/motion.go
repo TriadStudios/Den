@@ -208,5 +208,27 @@ func (ck *checked) preludeFunc(o types.Object, names ...string) bool {
 		(f.Signature().Recv() != nil || ck.components[f.Name()] == nil)
 }
 
+// handlerTypes returns the JS declaring $evs: every event type the
+// program has a handler for (onclick, onmouseenter, ...). A leaving
+// element stops all of them, delegated or not, before they reach a
+// handler. Den takes any on<name> attribute, so the list comes from the
+// program itself rather than from a table that could fall behind it.
+func handlerTypes(ck *checked) string {
+	seen := map[string]bool{}
+	for _, cc := range ck.comps {
+		for a, pt := range cc.attrs {
+			if pt.kind == partHandler {
+				seen[a.Name[2:]] = true
+			}
+		}
+	}
+	var types []string
+	for t := range seen {
+		types = append(types, jsString(t))
+	}
+	slices.Sort(types)
+	return "const $evs = [" + strings.Join(types, ", ") + "];\n"
+}
+
 // jsNumber writes a float64 as a JS number literal.
 func jsNumber(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
