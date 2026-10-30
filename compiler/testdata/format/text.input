@@ -1,0 +1,31 @@
+component App() {
+    name := signal("x")
+    <div>
+        <p>  Leading and trailing spaces  </p>
+        <p>
+            Wrapped text that the
+            author broke over lines.
+        </p>
+        <p>Hello, {name.Get()}!</p>
+        <p>{name.Get()} {name.Get()}</p>
+        <p>{name.Get()}
+        {name.Get()}</p>
+        <p><b>bold</b> <i>italic</i></p>
+        <p><b>bold</b><i>glued</i></p>
+        <p>a&nbsp;b &amp; c</p>
+        <pre>
+  keep   this
+     exactly
+</pre>
+        <p>     </p>
+        <p>
+        </p>
+        <span>Unicode: héllo — 日本語 ✓</span>
+        <p>one
+             
+            two</p>
+        <p>A very long paragraph of text that goes on and on, well past the hundred column limit of den fmt.</p>
+        <p>Text with a <a href="/x">link</a> inside it, and then a sentence long enough to need a break.</p>
+		<p>	tabs	and  spaces	</p>
+    </div>
+}

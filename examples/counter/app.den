@@ -1,37 +1,39 @@
 // A small den app: typed props, signals, computed values and events.
 
 component App() {
-    name := signal("Gopher")
-    <main class="app">
-        <header>
-            <h1>Hello, {name.Get()}!</h1>
-            <p class="sub">Written in Go syntax. Compiled to a few KB of JavaScript.</p>
-        </header>
-        <label class="field">
-            <span>Your name</span>
-            <input value={name.Get()} oninput={name.Set(e.Value())} placeholder="Type a name" />
-        </label>
-        <div class="grid">
-            <Counter label="Apples" start={0} step={1} />
-            <Counter label="Oranges" start={10} step={5} />
-        </div>
-        <footer>
-            <a href="https://go.dev">Go</a> syntax · signals · strict CSP
-        </footer>
-    </main>
+	name := signal("Gopher")
+	<main class="app">
+		<header>
+			<h1>Hello, {name.Get()}!</h1>
+			<p class="sub">Written in Go syntax. Compiled to a few KB of JavaScript.</p>
+		</header>
+		<label class="field">
+			<span>Your name</span>
+			<input value={name.Get()} oninput={name.Set(e.Value())} placeholder="Type a name" />
+		</label>
+		<div class="grid">
+			<Counter label="Apples" start={0} step={1} />
+			<Counter label="Oranges" start={10} step={5} />
+		</div>
+		<footer>
+			<a href="https://go.dev">Go</a> syntax · signals · strict CSP
+		</footer>
+	</main>
 }
 
 component Counter(label string, start int, step int) {
-    count := signal(start)
-    double := computed(count.Get() * 2)
-    <section class="card">
-        <h2>{label}</h2>
-        <p class="value">{count.Get()}</p>
-        <p class="hint">Double: {double.Get()} · step {step}</p>
-        <div class="row">
-            <button onclick={count.Set(count.Get() - step)} disabled={count.Get() - step < 0}>−</button>
-            <button onclick={count.Update(func(n int) int { return n + step })}>+</button>
-            <button class="ghost" onclick={count.Set(start)}>Reset</button>
-        </div>
-    </section>
+	count := signal(start)
+	double := computed(count.Get() * 2)
+	<section class="card">
+		<h2>{label}</h2>
+		<p class="value">{count.Get()}</p>
+		<p class="hint">Double: {double.Get()} · step {step}</p>
+		<div class="row">
+			<button onclick={count.Set(count.Get() - step)} disabled={count.Get()-step < 0}>
+				−
+			</button>
+			<button onclick={count.Update(func(n int) int { return n + step })}>+</button>
+			<button class="ghost" onclick={count.Set(start)}>Reset</button>
+		</div>
+	</section>
 }

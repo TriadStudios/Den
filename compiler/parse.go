@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Pos is a 1-based line/column inside a .den file.
@@ -217,13 +218,7 @@ type bailout struct{ err *Error }
 // Parse parses a .den source file. On an error it also returns what it
 // parsed before it.
 func Parse(name, src string) (f *File, err error) {
-	p := &parser_{file: name, src: src}
-	p.lines = append(p.lines, 0)
-	for i := 0; i < len(src); i++ {
-		if src[i] == '\n' {
-			p.lines = append(p.lines, i+1)
-		}
-	}
+	p := newParser(name, src)
 	defer func() {
 		if r := recover(); r != nil {
 			b, ok := r.(bailout)
@@ -870,8 +865,7 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 			nodes = append(nodes, p.parseControl())
 		case rest[0] == '{':
 			src, srcPos := p.readBraced()
-			trimmed := strings.TrimSpace(src)
-			if trimmed == "" || (strings.HasPrefix(trimmed, "/*") && strings.HasSuffix(trimmed, "*/")) {
+			if commentOnly(src) {
 				continue
 			}
 			nodes = append(nodes, &Interp{Src: src, Pos_: srcPos})
@@ -892,6 +886,37 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 			}
 		}
 	}
+}
+
+// commentOnly reports whether src, the inside of a {...} in markup, holds
+// nothing but comments and whitespace, which makes it a comment. Checking
+// that it starts with /* and ends with */ was not enough: {/* a */ x /* b */}
+// was dropped with its x. Whitespace is what strings.TrimSpace trims, as
+// it always was here, so {U+00A0} is a comment too; an unterminated
+// comment is not, and is left for the Go checker to report.
+func commentOnly(src string) bool {
+	for i := 0; i < len(src); {
+		r, n := utf8.DecodeRuneInString(src[i:])
+		switch rest := src[i:]; {
+		case unicode.IsSpace(r):
+			i += n
+		case strings.HasPrefix(rest, "//"):
+			if j := strings.IndexByte(rest, '\n'); j >= 0 {
+				i += j
+			} else {
+				i = len(src)
+			}
+		case strings.HasPrefix(rest, "/*"):
+			j := strings.Index(rest[2:], "*/")
+			if j < 0 {
+				return false
+			}
+			i += j + 4
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // controlWord returns "if" or "for" when the '{' at p.off opens a

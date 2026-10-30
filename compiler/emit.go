@@ -697,7 +697,7 @@ func (e *emitter) block(params string, nodes []Node, svg ns) string {
 // otherwise $if swaps the branches between two anchors.
 func (e *emitter) ifNode(t *tnode, n *If) {
 	pt := e.cc.parts[n]
-	cond := e.expr(pt.expr)
+	cond := e.header(pt.expr)
 	if t.end == nil {
 		branch := func(nodes []Node) {
 			if len(nodes) > 0 {
@@ -734,7 +734,7 @@ func (e *emitter) forNode(t *tnode, n *For) {
 	k, v := loopVar(rs.Key), loopVar(rs.Value)
 	b, isInt := e.ck.info.TypeOf(rs.X).Underlying().(*types.Basic)
 	isInt = isInt && b.Info()&types.IsInteger != 0
-	list := e.expr(rs.X)
+	list := e.header(rs.X)
 	if isSlice(e.ck.info.TypeOf(rs.X)) {
 		list = "$arr(" + list + ")"
 	}
@@ -902,7 +902,7 @@ func (e *emitter) stmt(s ast.Stmt) {
 		}
 		cond := ""
 		if s.Cond != nil {
-			cond = e.expr(s.Cond)
+			cond = e.header(s.Cond)
 		}
 		e.line("for (%s; %s; %s) {", init, cond, post)
 		e.indented(func() { e.stmts(s.Body.List) })
@@ -963,7 +963,7 @@ func (e *emitter) ifStmt(s *ast.IfStmt, prefix string) {
 		e.line("}")
 		return
 	}
-	e.line("%sif (%s) {", prefix, e.expr(s.Cond))
+	e.line("%sif (%s) {", prefix, e.header(s.Cond))
 	e.indented(func() { e.stmts(s.Body.List) })
 	switch el := s.Else.(type) {
 	case *ast.IfStmt:
@@ -986,7 +986,7 @@ func (e *emitter) rangeStmt(s *ast.RangeStmt) {
 	}
 	k, v := loopVar(s.Key), loopVar(s.Value)
 	l, i := e.name("$l"), e.name("$k")
-	e.line("const %s = %s;", l, e.expr(s.X))
+	e.line("const %s = %s;", l, e.header(s.X))
 	switch t := e.ck.info.TypeOf(s.X).Underlying().(type) {
 	case *types.Basic:
 		if t.Info()&types.IsInteger == 0 {
@@ -1247,6 +1247,13 @@ func (e *emitter) binary(op token.Token, x, y ast.Expr, ys string, result types.
 	return "(" + s + ")"
 }
 
+// header emits the condition of an if or for, or the expression a range
+// ranges over, in Go code or in markup. gofmt drops parentheses around
+// them (go/printer's stripParens), so they are dropped here too: a program
+// compiles to the same JS before and after formatting. Each place that
+// uses the result puts it where parentheses are not needed.
+func (e *emitter) header(x ast.Expr) string { return e.expr(ast.Unparen(x)) }
+
 func (e *emitter) expr(x ast.Expr) string {
 	if tv, ok := e.ck.info.Types[x]; ok && tv.Value != nil {
 		return constJS(tv.Value)
@@ -1264,13 +1271,22 @@ func (e *emitter) expr(x ast.Expr) string {
 		}
 		return jsIdent(x.Name)
 	case *ast.ParenExpr:
-		return "(" + e.expr(x.X) + ")"
+		// One pair for any number: gofmt prints ((x)) as (x), and a
+		// formatted program must compile to the same JS.
+		return "(" + e.expr(ast.Unparen(x)) + ")"
 	case *ast.BinaryExpr:
 		return e.binary(x.Op, x.X, x.Y, "", e.ck.info.TypeOf(x))
 	case *ast.UnaryExpr:
 		switch x.Op {
 		case token.NOT, token.SUB, token.ADD:
-			return x.Op.String() + e.expr(x.X)
+			// - -y must not run together into --y, a decrement, nor + +y
+			// into ++y. Binary operators are written with spaces, so
+			// these are the only places operators meet.
+			op, s := x.Op.String(), e.expr(x.X)
+			if strings.HasPrefix(s, op) && x.Op != token.NOT {
+				return op + " " + s
+			}
+			return op + s
 		case token.XOR:
 			return "~" + e.expr(x.X)
 		case token.AND:

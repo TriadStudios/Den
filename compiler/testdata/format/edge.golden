@@ -1,0 +1,104 @@
+// Edge cases: comments inside Go in markup, if with an init statement,
+// empty braces, slots that close themselves, <textarea>, a style block
+// between statements with a comment after it.
+
+func pick(n int) (int, bool) { return n * 2, n > 1 }
+
+func f2(a, b int) int { return a + b }
+
+// An import after other declarations, unsorted: den lifts imports, so
+// they can go anywhere.
+import (
+	"strings"
+	"strconv"
+)
+
+func label(n int) string { return strings.ToUpper("n" + strconv.Itoa(n)) }
+
+component Box(header den.Children, children den.Children) {
+	<div class="box">{header}{children}</div>
+}
+
+component App() {
+	n := signal(0)
+	n2 := 0
+	n2++
+	style {
+		.x {
+			color: red;
+		}
+	} // the only rule
+	m := n2 + 1
+	<main>
+		<p>
+			{/* nothing */}{}{m}{/* a */ m /* b */}{// only a comment
+			}
+		</p>
+		<p>{m /* why */}</p>
+		<p title={m /* also why */}>t</p>
+		<button
+			onclick={
+				n.Set(1) // one
+			}>
+			1
+		</button>
+		<i>
+			{label(1)}{f2(1,
+				2)}
+		</i>
+		<button
+			onclick={
+				// reset
+				n.Set(0)
+			}>
+			r
+		</button>
+		<div>
+			{if v, ok := pick(n.Get()); ok {
+				<b>{v}</b>
+			}}
+		</div>
+		<Box><:header /></Box>
+		<Empty />
+		<Empty2 />
+		<Empty3 />
+		<Box>
+			<:header>
+				<h1>Head</h1>
+			</:header>
+			<p>Body</p>
+		</Box>
+		<textarea>
+    keep
+  this</textarea>
+		<p>
+			before {if n.Get() > 2 {
+				<i>big</i>
+			}} after
+		</p>
+		<p> lead</p>
+		<ul>
+			{for i, x := range []int{1, 2} key i {
+				<li>{x}</li>
+			}}
+		</ul>
+	</main> // after the root
+}
+
+component Empty(
+	// no props yet
+) {
+	<i>empty</i>
+}
+
+component Empty2(
+	/* none,
+	   for now */
+) {
+	<i>empty</i>
+}
+
+component Empty3( // trailing
+) {
+	<i>empty</i>
+}
