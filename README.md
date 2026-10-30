@@ -130,12 +130,18 @@ padding takes a length`).
   policies allowed. The runtime never needs one. Styles are `style-src
   'self'` too: the browser ignores `<style>` elements and `style="..."`
   attributes, so CSS goes in style blocks (below) or `style.css`.
-- **Checked CSS.** In style blocks, `url(...)` and the strings in
-  `image-set()`, `image()` and `src()` take the same URLs as a static
-  `href`, or a `data:image/` URL. `expression(` and `javascript:` are
-  compile errors in those URLs and anywhere outside a string (in a string
-  such as `content: "a javascript: tutorial"` they are only text), and so
-  are `behavior` and `-moz-binding`. Backslash escapes are allowed only
+- **Checked CSS.** Den checks every URL written in a style block: the
+  argument of `url(...)` and each string directly inside `image-set()`,
+  `-webkit-image-set()`, `image()` and `src()`. It must be a URL a static
+  `href` may have (http, https, mailto, tel or relative) or a
+  `data:image/` URL, with no `expression(` or `javascript:` in it.
+  `var()`, `env()`, `attr()` and design tokens are compile errors inside
+  those functions, so no value den has not checked can become a URL
+  there. Elsewhere, `expression(` and `javascript:` are errors outside
+  strings (in a string such as `content: "a javascript: tutorial"` they
+  are only text), and so are `behavior` and `-moz-binding`. CSS names and
+  keywords are compared ignoring ASCII case only, as browsers do. The
+  app's own `style.css` is not checked. Backslash escapes are allowed only
   inside strings, and the CSS of every block is read back before it is
   written, so one component's rules cannot run into the rules after them.
   Design token values cannot contain control characters (newlines and
@@ -346,8 +352,9 @@ component Card(title string, children den.Children) {
   `@keyframes` (`@import`, `@font-face` and the rest go in `style.css`);
   nested rules and `&`, and `{}` blocks in custom property values; and
   tokens in selectors, in `@media` conditions or inside `url()`, where
-  custom properties do not work, or inside `image-set()`, `image()` and
-  `src()`, whose URLs are checked when the app builds.
+  custom properties do not work; and tokens, `var()`, `env()` or `attr()`
+  inside `image-set()`, `image()` or `src()`, whose URLs are checked when
+  the app builds.
 - Backslash escapes are allowed only inside strings: `content: "\201C"`
   is fine, `.sm\:p-4` is an error. To select a class with such
   characters, match it as a string: `[class~="sm:p-4"]`. Brackets must

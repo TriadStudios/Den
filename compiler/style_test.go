@@ -54,6 +54,7 @@ func TestScopeSelectors(t *testing.T) {
 		// Unicode case mapping changes these letters' byte lengths, or maps
 		// them to ASCII; CSS case is ASCII only.
 		{`.city::after { content: "İZMİR ıK ẞȺſ"; --K: 1 } .ı.İ, Ⱥ { cOLOR: red }`, `.city[d-x]::after{content:"İZMİR ıK ẞȺſ";--K:1}` + "\n" + `.ı.İ[d-x],Ⱥ[d-x]{color:red}`},
+		{`p { background: url(DATA:IMAGE/PNG,x), var(--a, "javascript:x") }`, `p[d-x]{background:url(DATA:IMAGE/PNG,x),var(--a,"javascript:x")}`},
 		{`p { background: url(data:image/png;base64,iVBORw0KGgo=), url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>"); }`, `p[d-x]{background:url(data:image/png;base64,iVBORw0KGgo=),url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>")}`},
 		{`p {} a { }`, ``},
 		{`@media (min-width: 40rem) and (max-width: 60rem) { .a, .b { margin: 0 } }`, `@media (min-width: 40rem) and (max-width: 60rem){.a[d-x],.b[d-x]{margin:0}}`},
@@ -479,7 +480,8 @@ var (
 		"url(data:image/png;base64,iVBORw0KGgo=)", `url("DATA:IMAGE/SVG+XML,<svg xmlns='http://www.w3.org/2000/svg'/>")`,
 		`image-set("data:image/gif;base64,R0lGOD" 1x)`, "url(data:text/html,x)", `"a javascript: tutorial"`,
 		`'expression(1)'`, `url("javascript:x")`, "{}", `"İZMİR"`, "K", `"ẞȺſı"`, `"İ"/**/expression(1)`, `url("DATA:İMAGE/png,x")`,
-		"İ(x)", "ſrc(x)"}
+		`image-set(var(--q) 1x)`, `src(VAR(--q))`, `image(attr(data-x))`, `-webkit-image-set(Env(x) 1x)`,
+		`image-set(type(var(--q)) "a.png" 1x)`, `var(--q, "javascript:x")`, "İ(x)", "ſrc(x)"}
 	fuzzNoise = []string{"'", "\"", "(", ")", "[", "]", "{", "}", ";", ":", ",", "\\", "/*", "*/", "/", "*", "<!--",
 		"-->", "<", ">", "@", "@media", "@keyframes x", "$", "$t", "$d", "$f", "url(", "URL(", "u", "rl(", "\f", "\r",
 		"\n", "\r\n", "\t", " ", "\x00", "\x01", "\x0b", "\x7f", "é", "\u2028", "\u00a0", "😀", "\xff", "#", "%", "-",

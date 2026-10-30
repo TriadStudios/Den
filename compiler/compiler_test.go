@@ -662,6 +662,28 @@ component App() {
     style { @MEDİA screen { p { color: red; } } }
     <p>x</p>
 }`, `app.den:3:13: @medİa is not allowed in a style block`},
+		// var(), env() and attr() would hand a URL function a value den
+		// never checked.
+		{"var in image-set", `
+component App() {
+    style { .k { background-image: image-set(var(--nope, "javascript:alert(2)") 1x); } }
+    <p>x</p>
+}`, `app.den:3:46: var() cannot be used in image-set(): its URLs are checked when the app builds`},
+		{"var in a prefixed image-set, any case", `
+component App() {
+    style { .k { --u: "javascript:alert(1)"; background-image: -WEBKIT-IMAGE-SET(VAR(--u) 1x); } }
+    <p>x</p>
+}`, `app.den:3:82: var() cannot be used in -webkit-image-set()`},
+		{"env in image", `
+component App() {
+    style { p { background-image: image(ENV(safe-area)); } }
+    <p>x</p>
+}`, `app.den:3:41: env() cannot be used in image()`},
+		{"attr in src", `
+component App() {
+    style { p { background-image: image-set(src(attr(data-x)) 1x); } }
+    <p>x</p>
+}`, `app.den:3:49: attr() cannot be used in image-set()`},
 		{"expression in a style block", `
 component App() {
     style { p { width: expression(1); } }

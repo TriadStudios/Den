@@ -847,7 +847,15 @@ func (s *styler) value(prop string, i, end int) string {
 				for k > start && c == '(' && cssNameChar(s.src[k-1]) {
 					k--
 				}
-				open, fns = append(open, i), append(fns, asciiLower(s.src[k:i]))
+				fn := asciiLower(s.src[k:i])
+				// var(--u) with --u: "javascript:x" would hand image-set() a
+				// URL that was never checked.
+				if fn == "var" || fn == "env" || fn == "attr" {
+					if u := slices.IndexFunc(fns, func(f string) bool { return urlFuncs[f] }); u >= 0 {
+						s.errAt(k, "%s() cannot be used in %s(): its URLs are checked when the app builds", fn, fns[u])
+					}
+				}
+				open, fns = append(open, i), append(fns, fn)
 			case ')', ']':
 				want := byte('(')
 				if c == ']' {
