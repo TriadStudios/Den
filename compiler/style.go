@@ -28,20 +28,22 @@ import (
 // that starts at i, or i+1 for anything else, and a message if it is not
 // terminated. As in CSS, a newline (\n, \r or \f) that is not escaped ends
 // a string that is still open.
+//
+// Backslashes are allowed only inside strings (styler.lex), so only
+// strings have escapes to read.
 func cssAtom(src string, i int) (int, string) {
 	switch c := src[i]; {
 	case c == '"' || c == '\'':
-		for j := i + 1; j < len(src); j++ {
+		for j := i + 1; j < len(src); {
 			switch src[j] {
 			case '\\':
-				if strings.HasPrefix(src[j+1:], "\r\n") {
-					j++ // an escaped CRLF is one newline
-				}
-				j++
+				j = stringEscapeEnd(src, j)
 			case c:
 				return j + 1, ""
 			case '\n', '\r', '\f':
 				return len(src), "unterminated string in style block"
+			default:
+				j++
 			}
 		}
 		return len(src), "unterminated string in style block"
@@ -50,7 +52,7 @@ func cssAtom(src string, i int) (int, string) {
 			return i + end + 4, ""
 		}
 		return len(src), "unterminated comment in style block"
-	case (c == 'u' || c == 'U') && len(src) >= i+4 && strings.EqualFold(src[i:i+4], "url(") && (i == 0 || !cssNameChar(src[i-1])):
+	case urlAt(src, i):
 		j := i + 4
 		for j < len(src) && isCSSSpace(src[j]) {
 			j++
@@ -71,6 +73,45 @@ func cssAtom(src string, i int) (int, string) {
 		return len(src), "unterminated url( in style block"
 	}
 	return i + 1, ""
+}
+
+// stringEscapeEnd returns the end of the escape at src[i], a backslash in
+// a CSS string, read as CSS reads it: a backslash and a newline (CR LF
+// counts as one) continue the string on the next line; a backslash and up
+// to six hex digits stand for a code point, and one space or newline after
+// them belongs to the escape; any other character after a backslash
+// stands for itself.
+func stringEscapeEnd(src string, i int) int {
+	j := i + 1
+	switch {
+	case j >= len(src):
+		return j
+	case strings.HasPrefix(src[j:], "\r\n"):
+		return j + 2
+	case isHex(src[j]):
+		for k := 0; k < 6 && j < len(src) && isHex(src[j]); k++ {
+			j++
+		}
+		if strings.HasPrefix(src[j:], "\r\n") {
+			return j + 2
+		}
+		if j < len(src) && isCSSSpace(src[j]) {
+			j++
+		}
+		return j
+	}
+	return j + 1
+}
+
+// urlAt reports whether a url( that CSS reads as a URL starts at i: the
+// u must begin an identifier, not continue one (_url( and -url( are
+// functions), and # or @ before it would make it part of a hash or an
+// at-keyword.
+func urlAt(src string, i int) bool {
+	if len(src) < i+4 || !strings.EqualFold(src[i:i+4], "url(") {
+		return false
+	}
+	return i == 0 || !cssNameChar(src[i-1]) && src[i-1] != '#' && src[i-1] != '@'
 }
 
 func isCSSSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
@@ -283,24 +324,78 @@ func (s *styler) errAt(off int, format string, args ...any) {
 	*s.errs = append(*s.errs, &Error{File: s.c.File, Pos: s.pos(off), Msg: fmt.Sprintf(format, args...)})
 }
 
-// sheet compiles the block's rules.
+const backslashMsg = "backslash escapes are only allowed inside strings in style blocks"
+
+// sheet compiles the block's rules, or returns nil when it has errors.
 func (s *styler) sheet() []cssRule {
-	// Code in CSS: old browsers ran expression(...) and javascript: URLs.
-	lower := strings.ToLower(s.src)
-	for i := 0; i < len(s.src); {
-		next, _ := cssAtom(s.src, i)
-		for j := i; j < next && !strings.HasPrefix(s.src[i:], "/*"); j++ {
-			for _, bad := range []string{"expression(", "javascript:"} {
-				if strings.HasPrefix(lower[j:], bad) {
-					s.errAt(j, "%q is not allowed in a style block", bad)
-				}
-			}
-		}
-		i = next
+	errs := len(*s.errs)
+	s.lex()
+	if len(*s.errs) > errs {
+		return nil
 	}
 	s.kf = map[string]bool{}
 	s.keyframes(0, len(s.src))
 	return s.rules(0, len(s.src))
+}
+
+// lex checks the block for what the rest of the styler, and the CSS it
+// writes, rely on. Escapes are allowed only inside strings: elsewhere a
+// backslash changes where a selector, value or bracket ends in ways that
+// are easy to get wrong, and nothing needs one. Control characters other
+// than whitespace are not allowed outside comments. Every ( [ and { is
+// closed, and by its own kind of bracket, as a browser pairs them; one
+// that is not would take the CSS after it into its block. And there is no
+// code: old browsers ran expression(...) and javascript: URLs.
+func (s *styler) lex() {
+	lower := strings.ToLower(s.src)
+	var open []int // the ( [ and { not yet closed
+	for i := 0; i < len(s.src); {
+		next, _ := cssAtom(s.src, i)
+		c := s.src[i]
+		if !strings.HasPrefix(s.src[i:], "/*") {
+			for j := i; j < next; j++ {
+				for _, bad := range []string{"expression(", "javascript:"} {
+					if strings.HasPrefix(lower[j:], bad) {
+						s.errAt(j, "%q is not allowed in a style block", bad)
+					}
+				}
+				if b := s.src[j]; b < 0x20 && !isCSSSpace(b) || b == 0x7f {
+					s.errAt(j, "a style block cannot contain the control character U+%04X", b)
+				}
+			}
+			if k := strings.IndexByte(s.src[i:next], '\\'); k >= 0 && c != '"' && c != '\'' {
+				s.errAt(i+k, backslashMsg)
+			}
+			// CSS reads <!-- as one token, so -- after it starts nothing:
+			// in <!--url(x), url( would be a URL that den read as a name.
+			if strings.HasPrefix(s.src[i:], "<!--") {
+				s.errAt(i, "<!-- is not allowed in a style block")
+			}
+		}
+		switch c {
+		case '(', '[', '{':
+			open = append(open, i)
+		case ')', ']', '}':
+			want := "([{"[strings.IndexByte(")]}", c)]
+			k := len(open) - 1
+			for k >= 0 && s.src[open[k]] != want {
+				k--
+			}
+			switch {
+			case k < 0:
+				s.errAt(i, "unexpected %c", c)
+			case k < len(open)-1:
+				s.errAt(open[len(open)-1], "unclosed %c", s.src[open[len(open)-1]])
+				open = open[:k]
+			default:
+				open = open[:k]
+			}
+		}
+		i = next
+	}
+	if len(open) > 0 {
+		s.errAt(open[len(open)-1], "unclosed %c", s.src[open[len(open)-1]])
+	}
 }
 
 // skipSpace moves past whitespace and comments.
@@ -487,12 +582,17 @@ func (s *styler) atRule(start, open, close int) (cssRule, bool) {
 // animationKeywords are the words the animation properties read as
 // keywords, never as a @keyframes name: a block's references to its own
 // keyframes are renamed, so a keyframes name among them would rename the
-// keyword too.
+// keyword too. Besides the CSS-wide keywords and none, they are the
+// keywords of the properties the animation shorthand sets: duration
+// (auto), easing, iteration count, direction, fill mode, play state and
+// timeline (auto, none), and of animation-composition, which browsers may
+// add to the shorthand.
 var animationKeywords = map[string]bool{
-	"initial": true, "inherit": true, "unset": true, "revert": true, "revert-layer": true, "default": true, "none": true,
+	"initial": true, "inherit": true, "unset": true, "revert": true, "revert-layer": true, "default": true, "none": true, "auto": true,
 	"ease": true, "ease-in": true, "ease-out": true, "ease-in-out": true, "linear": true, "step-start": true, "step-end": true,
 	"infinite": true, "normal": true, "reverse": true, "alternate": true, "alternate-reverse": true,
 	"forwards": true, "backwards": true, "both": true, "running": true, "paused": true,
+	"replace": true, "add": true, "accumulate": true,
 }
 
 // cssIdent reports whether name is a plain CSS identifier.
@@ -649,27 +749,27 @@ func (s *styler) value(prop string, i, end int) string {
 			}
 			write(s.src[i:j])
 			i = j
-		case c == '\\':
-			s.errAt(i, "escapes are only allowed inside strings in a style block")
-			i += 2
 		case c == '$':
 			j := i + 1
 			for j < end && (cssNameChar(s.src[j]) || s.src[j] == '_') {
 				j++
 			}
 			name := s.src[i+1 : j]
+			fn := slices.IndexFunc(fns, func(f string) bool { return urlFuncs[f] })
 			switch {
 			case name == "":
 				s.errAt(i, "stray $: a design token is written $name, like $space-4")
 			case strings.HasPrefix(prop, "@"):
 				s.errAt(i, "design tokens cannot be used in %s conditions: CSS custom properties do not work there", prop)
+			case fn >= 0:
+				s.errAt(i, "design tokens cannot be used in %s(): its URLs are checked when the app builds", fns[fn])
 			default:
 				if v := s.token(i, name, prop); v != "" {
 					write(v)
 				}
 			}
 			i = j
-		case (c == 'u' || c == 'U') && end-i >= 4 && strings.EqualFold(s.src[i:i+4], "url(") && (i == 0 || !cssNameChar(s.src[i-1])):
+		case end-i >= 4 && urlAt(s.src, i):
 			write(s.url(i, end, &i))
 		case cssNameStart(c) || c == '_' || c == '#' || isDigit(c) || (c == '.' && i+1 < end && isDigit(s.src[i+1])):
 			j := i + 1
@@ -734,6 +834,12 @@ func (s *styler) url(i, end int, next *int) string {
 		k, _ := cssAtom(s.src, i)
 		arg = strings.TrimRight(s.src[j:k-1], " \t\r\n\f")
 		out, *next = arg, k
+		// A browser reads any of these as a broken URL, and a broken URL
+		// as running to the next ), wherever that is.
+		if bad := strings.IndexAny(arg, " \t\r\n\f\"'("); bad >= 0 {
+			s.errAt(j+bad, "unquoted url() cannot contain spaces, quotes or (; put the URL in quotes")
+			return ""
+		}
 	}
 	if strings.Contains(arg, "$") {
 		s.errAt(i, "design tokens cannot be used in url(): CSS custom properties do not work there")
@@ -1128,7 +1234,14 @@ func (s *styler) selector(i, end int) (string, bool) {
 		c := s.src[j]
 		switch {
 		case strings.HasPrefix(s.src[j:end], "/*"):
-			j, _ = cssAtom(s.src, j)
+			// Inside a compound, a comment keeps what is on either side of
+			// it apart, as it does for a browser: .a/**/b is not .ab.
+			next, _ := cssAtom(s.src, j)
+			if cur.Len() > 0 && next < end && !isCSSSpace(s.src[next]) && strings.IndexByte(">+~", s.src[next]) < 0 &&
+				!strings.HasPrefix(s.src[next:end], "/*") {
+				cur.WriteString("/**/")
+			}
+			j = next
 			continue
 		case isCSSSpace(c):
 			endCompound()
@@ -1152,7 +1265,7 @@ func (s *styler) selector(i, end int) (string, bool) {
 			bad(j, "& (CSS nesting) is not supported in a style block; write each rule with its full selector")
 		case c == '$':
 			bad(j, "design tokens cannot be used in selectors")
-		case c == ')' || c == ']':
+		case c == ')' || c == ']' || c == '<':
 			bad(j, "unexpected %c in selector", c)
 		}
 		if cur.Len() == 0 {
@@ -1171,20 +1284,21 @@ func (s *styler) selector(i, end int) (string, bool) {
 				next = end
 			}
 			for k := j; k < next; {
-				if s.src[k] == '{' || s.src[k] == '}' {
+				n, _ := cssAtom(s.src, k)
+				switch {
+				case s.src[k] == '{' || s.src[k] == '}' || s.src[k] == '<':
 					bad(k, "unexpected %c in selector", s.src[k])
+				case n > k+1 && urlAt(s.src, k):
+					bad(k, "url() cannot be used in a selector")
 				}
-				k, _ = cssAtom(s.src, k)
+				k = n
 			}
 			cur.WriteString(collapseCSS(s.src[j:next]))
-		case '\\':
-			if j+1 < end && strings.IndexByte("\n\r\f", s.src[j+1]) >= 0 {
-				bad(j, "a backslash cannot end a line in a selector")
-			}
-			next = escapeEnd(s.src, j, end)
-			cur.WriteString(s.src[j:next])
 		default:
 			next, _ = cssAtom(s.src, j)
+			if next > j+1 && urlAt(s.src, j) {
+				bad(j, "url() cannot be used in a selector")
+			}
 			cur.WriteString(s.src[j:next])
 		}
 		j = next
@@ -1215,29 +1329,12 @@ func (s *styler) selector(i, end int) (string, bool) {
 	return b.String(), ok
 }
 
-// escapeEnd returns the end of the CSS escape at i: a backslash and one
-// character, or up to six hex digits and one optional space.
-func escapeEnd(src string, i, end int) int {
-	j := i + 1
-	if j >= end {
-		return end
-	}
-	if !isHex(src[j]) {
-		return j + 1
-	}
-	for k := 0; k < 6 && j < end && isHex(src[j]); k++ {
-		j++
-	}
-	if j < end && isCSSSpace(src[j]) {
-		j++
-	}
-	return j
-}
-
 func isHex(c byte) bool { return isDigit(c) || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F' }
 
 // collapseCSS drops the comments in src and collapses its whitespace,
-// leaving strings as they are.
+// leaving strings as they are. A comment between two other things is kept
+// as /**/, which keeps them apart as the comment did: dropped, a/**/b
+// would become ab, and //**/* would become the start of a comment.
 func collapseCSS(src string) string {
 	var b strings.Builder
 	space := false
@@ -1247,18 +1344,19 @@ func collapseCSS(src string) string {
 			space = true
 			i++
 		case strings.HasPrefix(src[i:], "/*"):
-			i, _ = cssAtom(src, i)
+			next, _ := cssAtom(src, i)
+			if b.Len() > 0 && !space && next < len(src) && !isCSSSpace(src[next]) && !strings.HasPrefix(src[next:], "/*") {
+				b.WriteString("/**/")
+			}
+			i = next
 		default:
 			if space && b.Len() > 0 {
 				b.WriteByte(' ')
 			}
 			space = false
 			j := i + 1
-			switch src[i] {
-			case '"', '\'':
+			if c := src[i]; c == '"' || c == '\'' {
 				j, _ = cssAtom(src, i)
-			case '\\':
-				j = escapeEnd(src, i, len(src))
 			}
 			b.WriteString(src[i:j])
 			i = j
@@ -1268,15 +1366,12 @@ func collapseCSS(src string) string {
 }
 
 // topLevelBytes calls f with the offset of each byte of the compound selector
-// comp that is outside parentheses, brackets, strings and escapes.
+// comp that is outside parentheses, brackets and strings.
 func topLevelBytes(comp string, f func(i int) bool) {
 	depth := 0
 	for i := 0; i < len(comp); {
 		c := comp[i]
 		switch {
-		case c == '\\':
-			i = escapeEnd(comp, i, len(comp))
-			continue
 		case c == '"' || c == '\'':
 			i, _ = cssAtom(comp, i)
 			continue

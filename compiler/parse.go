@@ -649,6 +649,13 @@ func (p *parser_) scanStyle(kw int) styleSpan {
 		if err != "" {
 			fail(i, err)
 		}
+		// cssAtom reads no escapes outside strings: a \} would end the
+		// block here and not in a browser.
+		if c := p.src[i]; c != '"' && c != '\'' && !strings.HasPrefix(p.src[i:], "/*") {
+			if k := strings.IndexByte(p.src[i:next], '\\'); k >= 0 {
+				fail(i+k, backslashMsg)
+			}
+		}
 		switch p.src[i] {
 		case '{':
 			depth++

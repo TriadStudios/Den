@@ -2,7 +2,13 @@ package compiler
 
 import (
 	"fmt"
+	"go/ast"
+	"go/constant"
+	"go/token"
 	"go/types"
+	"math/rand"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -34,8 +40,11 @@ func TestScopeSelectors(t *testing.T) {
 		{`li:nth-child(2n + 1):has(> img){margin:0}`, `li:nth-child(2n + 1):has(> img)[d-x]{margin:0}`},
 		{`[data-x="a b, c"] , [title='}{ x']{margin:0}`, `[data-x="a b, c"][d-x],[title='}{ x'][d-x]{margin:0}`},
 		{`a[href$=".pdf" i]{margin:0}`, `a[href$=".pdf" i][d-x]{margin:0}`},
-		{`.sm\:p-4, .\31 0 p{margin:0}`, `.sm\:p-4[d-x],.\31 0[d-x] p[d-x]{margin:0}`},
 		{`a /* one */ > /* two */ b /* three */ {margin:0}`, `a[d-x]>b[d-x]{margin:0}`},
+		{`.a/* x */.b, a/**/b, a/**//**/b, :is(a/* x */b, / /**/ *)::before{margin:0}`, `.a/**/.b[d-x],a/**/b[d-x],a/**/b[d-x],:is(a/**/b, / *)[d-x]::before{margin:0}`},
+		{`[title="a\"]"], [x='\'']::after{margin:0}`, `[title="a\"]"][d-x],[x='\''][d-x]::after{margin:0}`},
+		{`[class~="sm:p-4"]::after { content: "\201C" }`, `[class~="sm:p-4"][d-x]::after{content:"\201C"}`},
+		{"p::after { content: \"a\\\r\nb\\41\r\nc\\\fd\"; }", "p[d-x]::after{content:\"a\\\r\nb\\41\r\nc\\\fd\"}"},
 		{`p { content: "} { /* not a comment */"; margin : 0 ; }`, `p[d-x]{content:"} { /* not a comment */";margin:0}`},
 		{`p { font: 16px / 1.5 a , b; margin: calc( 1px + 2px ) auto !important }`, `p[d-x]{font:16px / 1.5 a,b;margin:calc(1px + 2px) auto !important}`},
 		{`p { background: url( "a b.png" ) , URL(img/x.png); }`, `p[d-x]{background:url("a b.png"),url(img/x.png)}`},
@@ -365,6 +374,51 @@ log(html());`)
 		`<div APP="" class="b"><p APP="">top</p><section CARD=""><h2 CARD="">card</h2><i APP="">slot 1</i><svg CARD=""><circle r="1" CARD=""></circle></svg></section><span><i APP="">plain</i></span><b APP="">if</b><ul APP=""><li den-click="0" APP="">2</li></ul><button APP="">class</button></div>`)
 }
 
+// The CSS of a style block must never change how the CSS after it reads.
+// styleCase compiles a component whose style block holds body, with the
+// design tokens $t, $c, $l, $d and $f (a den.Token, Color, Length,
+// Duration and Font) set to toks. A compile error is fine. Otherwise the
+// CSS must have passed the build's own check (an internal error is a
+// failure: den's scanner and the CSS tokenizer disagreed), and with a
+// sentinel rule after it, as the app's style.css would be, the tokenizer
+// must read the sentinel as a rule of its own, with every rule before it
+// narrowed to the component. It returns whether the block compiled.
+func styleCase(t testing.TB, body string, toks [5]string) bool {
+	t.Helper()
+	src := "component App() {\n\tstyle {\n" + body + "\n\t}\n\t<p>x</p>\n}\n"
+	f, err := Parse("app.den", src)
+	if err != nil {
+		return false
+	}
+	den := types.NewPackage("den", "den")
+	pkg := types.NewPackage("main", "main")
+	info := &types.Info{Defs: map[*ast.Ident]types.Object{}}
+	for i, kind := range []string{"Token", "Color", "Length", "Duration", "Font"} {
+		typ := types.NewNamed(types.NewTypeName(token.NoPos, den, kind, nil), types.Typ[types.String], nil)
+		name := kind[:1]
+		c := types.NewConst(token.NoPos, pkg, name, typ, constant.MakeString(toks[i]))
+		pkg.Scope().Insert(c)
+		info.Defs[ast.NewIdent(name)] = c
+	}
+	ck := &checked{fset: token.NewFileSet(), info: info, pkg: pkg}
+	for _, c := range f.Components {
+		ck.comps = append(ck.comps, &checkedComponent{c: c})
+	}
+	scopes, css, errs := styles(ck)
+	for _, e := range errs {
+		if strings.Contains(e.Msg, "internal error") {
+			t.Fatalf("%v\nbody: %q\ntokens: %q", e, body, toks)
+		}
+	}
+	if len(errs) > 0 {
+		return false
+	}
+	if msg := sentinelCheck(css, scopes[f.Components[0]]); msg != "" {
+		t.Fatalf("%s\nbody: %q\ntokens: %q\nCSS: %q", msg, body, toks, css)
+	}
+	return true
+}
+
 // sentinelCheck reads css, with a sentinel rule after it, as a browser
 // would, and returns what is wrong.
 func sentinelCheck(css, scope string) string {
@@ -400,6 +454,136 @@ func sentinelCheck(css, scope string) string {
 		return ""
 	}
 	return scoped(items, true)
+}
+
+// Pieces of style blocks: mostly CSS, some of it broken.
+var (
+	fuzzSelectors = []string{".a", ".b", "p", "a", "li", "*", "#i", "ul > li", "a + b", "a ~ b", "a b", ".a.b",
+		"::before", ":after", ":hover", "::selection", ":not(.x)", ":is(.a, .b)", ":where(p)", ":has(> img)",
+		":nth-child(2n + 1)", "[x]", `[title="a b"]`, `[x='}{']`, `[href$=".pdf" i]`, `[x="\"]"]`, ":first-line",
+		"input::-webkit-input-placeholder", ".a/**/.b", "a /* c */ b", "_x", "-x", "é", "/", "*", "/**/", "a//**/*",
+		":is(//**/*)", "u/**/rl(x)"}
+	fuzzProps = []string{"color", "margin", "padding", "content", "background", "background-image", "animation",
+		"animation-name", "font-family", "font", "transition", "--x", "width", "border-color", "box-shadow", "quotes"}
+	fuzzValues = []string{"red", "1px", "0", "auto", "solid", "1px solid red", `"s"`, `'s'`, `"a;b}"`, `"\"" `, `'\''`,
+		"\"a\\\nb\"", `"\41 "`, "url(a.png)", `url("b.png")`, "url( c.png )", `image-set("a.png" 1x, url(b.png) 2x)`,
+		`src("x.woff")`, "calc(1px + 2px)", "var(--x)", "#fff", "rgb(0 0 0 / .5)", "!important", ",", "/", "attr(x)",
+		"counter(c)", "$t", "$t", "$t", "$c", "$l", "spin 1s linear", "fade", "a/**/b", "u/**/rl(x)", "#url(x)",
+		"@url(x)", "_url(x)", "-url(x)", "@url(a/*b)", "#url(a/*b)", "<!--", "<!--url(a/*b)", "[x]", "1e3", "-1.5e-2px", "50%", "a-->b", "0 0 1px $c", "\"<!--\"", "\"/*\"",
+		"'}'", "\"\\\r\n\"", "\"\\41\r\nx\"", "a\fb", "a\r\nb", "\"é😀\"", "é", "\u2028", "--a", "-->"}
+	fuzzNoise = []string{"'", "\"", "(", ")", "[", "]", "{", "}", ";", ":", ",", "\\", "/*", "*/", "/", "*", "<!--",
+		"-->", "<", ">", "@", "@media", "@keyframes x", "$", "$t", "$d", "$f", "url(", "URL(", "u", "rl(", "\f", "\r",
+		"\n", "\r\n", "\t", " ", "\x00", "\x01", "\x0b", "\x7f", "é", "\u2028", "\u00a0", "😀", "\xff", "#", "%", "-",
+		"_", "&", "!", "e", "1", ".", "\\\n", "\\31 ", "\"\\", "'\\\r\n'", "/**/", "\"\n", "}{", "){", "javascript:",
+		"expression(", "image-set(", "src(", "\\)", "\\]", "\\}", "\\{"}
+	// Token values that pass checkToken, then ones that do not.
+	fuzzTokens = [5][]string{
+		{"0 1px 2px red", "1.5", "bold", `"a b"`, "'x'", "fade", `"x.png"`, "'a' 'b'", `"a'b"`, "a-->b", "é", "rgb(0 0 0)"},
+		{"red", "#fff", "rgb(0 0 0 / .1)", "oklch(25% 0.02 260)", "transparent", "currentColor"},
+		{"0", "16px", "-1.5rem", "calc(100% - 2px)", "clamp(1rem, 2vw, 3rem)"},
+		{"150ms", "1s", "-.5s"},
+		{"system-ui", "system-ui, sans-serif", `"Segoe UI", serif`, "'a b'"},
+	}
+	fuzzBadTokens = []string{"", "a;b", "a}", `"a`, "(a", "a)", "x\fy", "url(x)", "<x", `\`, "a/*b", "nope", "#ff",
+		"rgb((0)", "16", "calc(1px", "fast", "1 s", "a,,b", "1x", "'\"'", "[a", "javascript:x"}
+)
+
+func pick(r *rand.Rand, xs []string) string { return xs[r.Intn(len(xs))] }
+
+// fuzzBlock writes a style block body from the grammar, then breaks it
+// with noise.
+func fuzzBlock(r *rand.Rand) string {
+	var b strings.Builder
+	decls := func() {
+		for n := r.Intn(4); n > 0; n-- {
+			b.WriteString(pick(r, fuzzProps) + ": ")
+			for m := 1 + r.Intn(3); m > 0; m-- {
+				b.WriteString(pick(r, fuzzValues) + " ")
+			}
+			b.WriteString("; ")
+		}
+	}
+	var rule func(depth int)
+	rule = func(depth int) {
+		switch k := r.Intn(10); {
+		case k < 6 || depth > 1:
+			for n := 1 + r.Intn(2); n > 0; n-- {
+				b.WriteString(pick(r, fuzzSelectors))
+				if n > 1 {
+					b.WriteString(pick(r, []string{", ", " ", " > ", ""}))
+				}
+			}
+			b.WriteString(" { ")
+			decls()
+			b.WriteString("}\n")
+		case k < 8:
+			b.WriteString(pick(r, []string{"@media (min-width: 1px)", "@supports (display: grid)", "@container (width > 1px)", "@MEDIA screen and (color)"}) + " { ")
+			for n := 1 + r.Intn(2); n > 0; n-- {
+				rule(depth + 1)
+			}
+			b.WriteString("}\n")
+		default:
+			b.WriteString("@keyframes " + pick(r, []string{"spin", "fade", "auto", "a_b"}) + " { from { ")
+			decls()
+			b.WriteString("} 50% { opacity: .5 } to { ")
+			decls()
+			b.WriteString("} }\n")
+		}
+	}
+	for n := 1 + r.Intn(3); n > 0; n-- {
+		rule(0)
+	}
+	s := b.String()
+	for n := max(0, r.Intn(6)-2); n > 0; n-- {
+		at := r.Intn(len(s) + 1)
+		cut := at
+		if r.Intn(3) == 0 {
+			cut = min(len(s), at+r.Intn(4))
+		}
+		s = s[:at] + pick(r, fuzzNoise) + s[cut:]
+	}
+	return s
+}
+
+func fuzzToks(r *rand.Rand) [5]string {
+	var toks [5]string
+	for i, vs := range fuzzTokens {
+		toks[i] = pick(r, vs)
+	}
+	// Every token is checked, used or not, so one bad value is an error.
+	switch r.Intn(6) {
+	case 0:
+		toks[r.Intn(5)] = pick(r, fuzzBadTokens)
+	case 1:
+		toks[0] += pick(r, fuzzNoise)
+	}
+	return toks
+}
+
+// TestStyleProperty runs styleCase on blocks made from a grammar and
+// broken with noise. DEN_STYLE_CASES=n runs n of them; FuzzStyle runs
+// more under go test -fuzz.
+func TestStyleProperty(t *testing.T) {
+	n := 25_000
+	if testing.Short() {
+		n = 2_000
+	}
+	if s := os.Getenv("DEN_STYLE_CASES"); s != "" {
+		n, _ = strconv.Atoi(s)
+	}
+	r := rand.New(rand.NewSource(1))
+	compiled := 0
+	for i := 0; i < n; i++ {
+		if styleCase(t, fuzzBlock(r), fuzzToks(r)) {
+			compiled++
+		}
+	}
+	// Most cases are errors; enough must compile for the test to mean
+	// something.
+	if compiled < n/10 {
+		t.Errorf("only %d of %d cases compiled", compiled, n)
+	}
+	t.Logf("%d cases, %d compiled", n, compiled)
 }
 
 // readCSS must read CSS as a browser does: it is what catches den's own
@@ -449,4 +633,68 @@ func TestReadCSS(t *testing.T) {
 			t.Errorf("%q passed", css)
 		}
 	}
+}
+
+// The blocks that broke style.css before, each in one of the ways found.
+var styleRegressions = []string{
+	`.a[x\] { color: red; }`,
+	`.a[title=x\] { color: red; }`,
+	`.a::before\, .b { color: red; }`,
+	`.\31 23::before, .a\:b { color: red; }`,
+	`:is(.a\) .b { color: red; }`,
+	`@media (min-width: 1px) { .a::after\{ color: red; } }`,
+	`.a:not(.b\) { color: red; }`,
+	`.a::before\{ color: red; }`,
+	`.a:after\{ color: red; }`,
+	".a::after { content: \"x\fy\"; }",
+	".a::after { content: \"x\\\fy\"; }",
+	".a\\\f.b { color: red; }",
+	`@keyframes auto { to { opacity: 1 } } .a { animation: auto 1s; }`,
+	`.a { background-image: image-set($t 1x); }`,
+	`.a { quotes: $t; }`,
+	`.a//**/* { color: red; }`,
+	`:is(//**/*) { color: red; }`,
+	`.a { background: @url(a/*b); }`,
+	`.a { background: url(a b); }`,
+	`.x[(]) ] { color: red; }`,
+}
+
+func TestStyleRegressions(t *testing.T) {
+	compiled := 0
+	defer func() {
+		if compiled == 0 {
+			t.Error("no case compiled, so none was read back")
+		}
+	}()
+	for _, body := range styleRegressions {
+		for _, tok := range []string{`"x.png"`, "'a\fb'", "'a'"} {
+			body := body + "\n.z { color: blue; }"
+			styleCase(t, body, [5]string{tok, "red", "1px", "1s", "serif"})
+			// And through the whole compiler.
+			res, err := compileOne("const T den.Token = " + strconv.Quote(tok) + "\ncomponent App() {\n\tstyle {\n" + body + "\n\t}\n\t<p>x</p>\n}\n")
+			switch {
+			case err != nil && strings.Contains(err.Error(), "internal error"):
+				t.Errorf("%q: %v", body, err)
+			case err == nil:
+				compiled++
+				app := &Component{Name: "App"}
+				if msg := sentinelCheck(res.CSS, scopeNames([]*Component{app})[app]); msg != "" {
+					t.Errorf("%q: %s", body, msg)
+				}
+			}
+		}
+	}
+}
+
+func FuzzStyle(f *testing.F) {
+	for _, body := range styleRegressions {
+		f.Add(body, `"x"`)
+	}
+	r := rand.New(rand.NewSource(2))
+	for i := 0; i < 50; i++ {
+		f.Add(fuzzBlock(r), fuzzToks(r)[0])
+	}
+	f.Fuzz(func(t *testing.T, body, tok string) {
+		styleCase(t, body, [5]string{tok, "red", "1px", "1s", "serif"})
+	})
 }

@@ -683,7 +683,7 @@ component App() {
 component App() {
     style { a:not(.b { margin: 0; } }
     <p>x</p>
-}`, `app.den:3:18: unclosed ( in selector`},
+}`, `app.den:3:18: unclosed (`},
 		// A form feed ends a CSS string, so a token holding one in quotes
 		// would turn the rest of style.css into part of the :root rule.
 		{"form feed in a token", `
@@ -723,8 +723,89 @@ component App() {
 			`app.den:3:33: unterminated string in style block`},
 		{"carriage return in a style block string", "\ncomponent App() {\n    style { p::after { content: \"a\rb\"; } }\n    <p>x</p>\n}",
 			`app.den:3:33: unterminated string in style block`},
+		// Outside strings a backslash is an error: escapes there are where
+		// den and browsers once disagreed about where a selector ends.
 		{"escaped line end in a selector", "\ncomponent App() {\n    style { .a\\\fb { margin: 0; } }\n    <p>x</p>\n}",
-			`app.den:3:15: a backslash cannot end a line in a selector`},
+			`app.den:3:15: backslash escapes are only allowed inside strings in style blocks`},
+		{"escaped bracket in an attribute selector", `
+component App() {
+    style { .a[x\] { color: red; } .z { color: blue; } }
+    <p>x</p>
+}`, `app.den:3:17: backslash escapes are only allowed inside strings in style blocks`},
+		{"escaped colon in a class", `
+component App() {
+    style { .a\:b { color: red; } }
+    <p>x</p>
+}`, `app.den:3:15: backslash escapes are only allowed inside strings in style blocks`},
+		{"escaped brace after a pseudo-element", `
+component App() {
+    style { .a::before\{ color: red; } .z { color: blue; } }
+    <p>x</p>
+}`, `app.den:3:23: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in a media condition", `
+component App() {
+    style { @media (min-width: 1px\)) { p { color: red; } } }
+    <p>x</p>
+}`, `app.den:3:35: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in a property name", `
+component App() {
+    style { p { col\or: red; } }
+    <p>x</p>
+}`, `app.den:3:20: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in an unquoted url", `
+component App() {
+    style { p { background: url(a\)b.png); } }
+    <p>x</p>
+}`, `app.den:3:34: backslash escapes are only allowed inside strings in style blocks`},
+		{"backslash in a value", `
+component App() {
+    style { p { margin: 1px\9; } }
+    <p>x</p>
+}`, `app.den:3:28: backslash escapes are only allowed inside strings in style blocks`},
+		{"control character in a style block", "\ncomponent App() {\n    style { p { margin: 1px\x01; } }\n    <p>x</p>\n}",
+			`app.den:3:28: a style block cannot contain the control character U+0001`},
+		{"bracket closed by a parenthesis", `
+component App() {
+    style { a[x=y) { color: red; } }
+    <p>x</p>
+}`, `app.den:3:14: unclosed [`},
+		{"unquoted url with a space", `
+component App() {
+    style { p { background: url(a b.png); } }
+    <p>x</p>
+}`, `app.den:3:34: unquoted url() cannot contain spaces, quotes or (; put the URL in quotes`},
+		{"url in a selector", `
+component App() {
+    style { :is(url(x)) { color: red; } }
+    <p>x</p>
+}`, `app.den:3:17: url() cannot be used in a selector`},
+		{"HTML comment opener in a style block", `
+component App() {
+    style { p { background: <!--url(x); } }
+    <p>x</p>
+}`, `app.den:3:29: <!-- is not allowed in a style block`},
+		{"less-than in a selector", `
+component App() {
+    style { a < b { color: red; } }
+    <p>x</p>
+}`, `app.den:3:15: unexpected < in selector`},
+		{"keyframes named auto", `
+component App() {
+    style { @keyframes auto { to { opacity: 1; } } }
+    <p>x</p>
+}`, `app.den:3:24: "auto" cannot name @keyframes: animation reads it as a keyword; choose another name`},
+		{"token in image-set", `
+const Img den.Token = "\"x.png\""
+component App() {
+    style { p { background-image: image-set($img 1x); } }
+    <p>x</p>
+}`, `app.den:4:45: design tokens cannot be used in image-set(): its URLs are checked when the app builds`},
+		{"token in src", `
+const Img den.Token = "\"x.png\""
+component App() {
+    style { p { background: src(type("image/png") $img); } }
+    <p>x</p>
+}`, `app.den:4:51: design tokens cannot be used in src()`},
 		{"keyframes named like an animation keyword", `
 component App() {
     style { @keyframes ease { to { opacity: 1; } } }
