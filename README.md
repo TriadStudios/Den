@@ -133,10 +133,12 @@ padding takes a length`).
 - **Checked CSS.** In style blocks, `url(...)` and the strings in
   `image-set()` and `src()` take the same URLs as a static `href`, and
   `expression(`, `javascript:`, `behavior` and `-moz-binding` are compile
-  errors. Design token values cannot contain control characters
-  (newlines and form feeds included), `;`, braces, `<`, backslashes,
-  `url(`, `javascript:` or comments, so a token can never end its string,
-  declaration or rule.
+  errors. Backslash escapes are allowed only inside strings, and the CSS
+  of every block is read back before it is written, so one component's
+  rules cannot run into the rules after them. Design token values cannot
+  contain control characters (newlines and form feeds included), `;`,
+  braces, `<`, backslashes, `url(`, `javascript:` or comments, so a token
+  can never end its string, declaration or rule.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
@@ -304,7 +306,7 @@ component Card(title string, children den.Children) {
   usual. `@keyframes fade` becomes local to the component, and
   `animation` and `animation-name` in the block follow it. A keyframes
   name cannot be one of the keywords those properties take, such as
-  `ease`, `linear`, `infinite` or `none`.
+  `auto`, `ease`, `linear`, `infinite` or `none`.
 - `$name` in a value is a design token: a package-level constant of type
   `den.Color`, `den.Length`, `den.Duration`, `den.Font` or `den.Token`,
   named in kebab case (`$radius-lg` is the constant `RadiusLg` or
@@ -337,7 +339,18 @@ component Card(title string, children den.Children) {
   `style.css`); at-rules other than `@media`, `@supports`, `@container` and
   `@keyframes` (`@import`, `@font-face` and the rest go in `style.css`);
   nested rules and `&`; and tokens in selectors, in `@media` conditions or
-  inside `url()`, where custom properties do not work.
+  inside `url()`, where custom properties do not work, or inside
+  `image-set()` and `src()`, whose URLs are checked when the app builds.
+- Backslash escapes are allowed only inside strings: `content: "\201C"`
+  is fine, `.sm\:p-4` is an error. To select a class with such
+  characters, match it as a string: `[class~="sm:p-4"]`. Brackets must
+  be closed by their own kind, an unquoted `url()` cannot contain spaces,
+  quotes or `(`, and control characters and `<!--` are errors. Each of
+  these is a place where a browser could read the CSS differently from
+  den and run one rule into the next. As a last check, den reads the CSS
+  it writes for each block again, with a separate CSS tokenizer that
+  follows the CSS syntax spec, and fails the build if a rule or
+  declaration would not come out as written.
 - A line among a component's Go statements that starts a statement with
   `style {` (or `style{`) begins a style block. In Go, such a line could
   only be a composite literal of a type named `style`, as in
