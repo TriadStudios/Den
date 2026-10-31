@@ -232,12 +232,13 @@ const (
 	partIf
 	partFor
 	partMotion // enter=, exit= and animate=
+	partKey    // {key x { ... }}
 )
 
 // part links a markup node to the Go AST that the type checker produced for it.
 type part struct {
 	kind  partKind
-	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor (key)
+	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor and partKey (key)
 	stmts []ast.Stmt     // partHandler
 	args  []ast.Expr     // partComponent, in param order
 	slots [][]Node       // partComponent: markup for each den.Children param
@@ -262,7 +263,7 @@ type checkedComponent struct {
 	c     *Component
 	decl  *ast.FuncDecl
 	stmts []ast.Stmt
-	parts map[Node]*part // keyed by *Interp, *If, *For or *Element (component use)
+	parts map[Node]*part // keyed by *Interp, *If, *For, *Key or *Element (component use)
 	attrs map[*Attr]*part
 }
 
@@ -858,7 +859,8 @@ func checkImport(file, lit string, pos Pos) *Error {
 // gen writes the Go that stands in for markup: every {expr} becomes a typed
 // call, every handler a func(e Event), every <Card .../> a call to Card, and
 // {if} and {for} become real Go if and for statements so their scopes and
-// types are Go's own.
+// types are Go's own. A {key x { ... }} becomes a block holding denKey(x),
+// typed like a {for} key, and then its content.
 type gen struct {
 	src      *strings.Builder
 	file     string
@@ -866,7 +868,7 @@ type gen struct {
 	errs     *ErrorList
 	own      map[string]string // check's own: the names the program claims, and how
 	motionBy map[string]string // den's motion names the program's own names take away
-	chain    []Node            // the {if} and {for} blocks whose top level is being written
+	chain    []Node            // the {if}, {for} and {key} blocks whose top level is being written
 }
 
 func (g *gen) d(p Pos) string { return lineDirective(g.file, p) }
@@ -906,6 +908,11 @@ func (g *gen) node(n Node) {
 		g.src.WriteString("\t}\n")
 	case *For:
 		fmt.Fprintf(g.src, "\t%sfor %s%s {\n", g.d(n.Pos_), g.d(n.HeaderPos), n.Header)
+		fmt.Fprintf(g.src, "\t%sdenKey(%s%s)\n", g.d(n.KeyPos), g.d(n.KeyPos), n.Key)
+		g.body(n, n.Body)
+		g.src.WriteString("\t}\n")
+	case *Key:
+		fmt.Fprintf(g.src, "\t%s{\n", g.d(n.Pos_))
 		fmt.Fprintf(g.src, "\t%sdenKey(%s%s)\n", g.d(n.KeyPos), g.d(n.KeyPos), n.Key)
 		g.body(n, n.Body)
 		g.src.WriteString("\t}\n")
@@ -978,7 +985,7 @@ func (g *gen) motionAttr(a *Attr) *Error {
 	case a.Name == "animate" && !inFor:
 		err = bad("animate works only on an element directly inside a {for} row, whose place it animates when the list changes")
 	case len(g.chain) == 0:
-		err = bad("%s works only on an element directly inside an {if} branch or a {for} row, which add and remove it", a.Name)
+		err = bad("%s works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it", a.Name)
 	}
 	fn := "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
 	if err != nil {
@@ -1024,7 +1031,7 @@ func (pr *pairer) motion(el *Element, a *Attr, x ast.Expr) {
 			return
 		}
 	}
-	msg := fmt.Sprintf("%s never plays: the {if} or {for} around <%s> reads no signal, so it never adds or removes it", a.Name, el.Tag)
+	msg := fmt.Sprintf("%s never plays: the {if}, {for} or {key} around <%s> reads no signal, so it never adds or removes it", a.Name, el.Tag)
 	if a.Name == "animate" {
 		msg = fmt.Sprintf("animate never plays: the {for} around <%s> reads no signal, so its rows never move", el.Tag)
 	}
@@ -1103,6 +1110,15 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 		pr.cc.parts[n] = &part{kind: partFor, expr: key, rng: rs}
 		pr.body(n, n.Body, rs.Body.List[1:])
 		return stmts[1:]
+	case *Key:
+		bs := stmts[0].(*ast.BlockStmt)
+		key := callArgs(bs.List[0])[0]
+		if _, ok := pr.ck.info.TypeOf(key).Underlying().(*types.Basic); !ok {
+			pr.errAt(key, "{key} values must be strings, numbers or bools, not %s", pr.ck.info.TypeOf(key))
+		}
+		pr.cc.parts[n] = &part{kind: partKey, expr: key}
+		pr.body(n, n.Body, bs.List[1:])
+		return stmts[1:]
 	case *Element:
 		if n.IsComponent() {
 			pt := &part{kind: partComponent, args: callArgs(stmts[0])}
@@ -1142,8 +1158,8 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 	return stmts
 }
 
-// blockReactive reports whether the {if} or {for} with part pt reads a
-// signal, so that its content can change.
+// blockReactive reports whether the {if}, {for} or {key} with part pt
+// reads a signal, so that its content can change.
 func (ck *checked) blockReactive(pt *part) bool {
 	if pt.kind == partFor {
 		return ck.reactive(pt.rng.X)

@@ -113,7 +113,7 @@ type Param struct {
 	hidden     bool // its type is den.Children, but the program has its own den
 }
 
-// Node is a markup node: *Element, *Text, *Interp, *If or *For.
+// Node is a markup node: *Element, *Text, *Interp, *If, *For or *Key.
 type Node interface{ pos() Pos }
 
 // Element is an HTML element, a component use (capitalised tag) or a
@@ -177,11 +177,21 @@ type For struct {
 	Body      []Node
 }
 
+// Key is `{key expr { ... }}` in markup: its content is built once, and
+// built again from scratch whenever the value of expr changes.
+type Key struct {
+	Pos_   Pos
+	Key    string
+	KeyPos Pos
+	Body   []Node
+}
+
 func (e *Element) pos() Pos { return e.Pos }
 func (t *Text) pos() Pos    { return t.Pos_ }
 func (i *Interp) pos() Pos  { return i.Pos_ }
 func (n *If) pos() Pos      { return n.Pos_ }
 func (n *For) pos() Pos     { return n.Pos_ }
+func (n *Key) pos() Pos     { return n.Pos_ }
 
 // IsComponent reports whether the tag names a component rather than HTML.
 func (e *Element) IsComponent() bool {
@@ -864,9 +874,14 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 		case rest[0] == '{' && p.controlWord() != "":
 			nodes = append(nodes, p.parseControl())
 		case rest[0] == '{':
+			start := p.off + 1
 			src, srcPos := p.readBraced()
 			if commentOnly(src) {
 				continue
+			}
+			if keyWithoutBody(src) {
+				kw := start + len(src) - len(strings.TrimLeft(src, " \t\r\n"))
+				p.failAt(p.posAt(kw), "{key} needs a body after its value: {key x { ... }}")
 			}
 			nodes = append(nodes, &Interp{Src: src, Pos_: srcPos})
 		default:
@@ -919,7 +934,7 @@ func commentOnly(src string) bool {
 	return true
 }
 
-// controlWord returns "if" or "for" when the '{' at p.off opens a
+// controlWord returns "if", "for" or "key" when the '{' at p.off opens a
 // control-flow block.
 func (p *parser_) controlWord() string {
 	save := p.off
@@ -931,7 +946,74 @@ func (p *parser_) controlWord() string {
 			return w
 		}
 	}
+	if p.atWord("key") && p.keyBlockAt() {
+		return "key"
+	}
 	return ""
+}
+
+// keyBlockAt reports whether the word key at p.off starts a {key} block.
+// key is not a Go keyword, so {key}, {key.Name} and {key + 1} are Go
+// expressions using a name key. The word starts a block only when
+// whitespace follows it and then something that can start an operand but
+// cannot continue an expression after a name (a letter, _ or other
+// character of a name, a digit, a quote, or a ! that is not !=; see
+// keyOperand), so no Go expression is read differently; and
+// only when the header ends with the { of a body, as an if header does.
+// So a key expression cannot start with ( or with a unary operator other
+// than !: {key (x) {...}} would be a call of key.
+func (p *parser_) keyBlockAt() (ok bool) {
+	i, ok := keyOperand(p.src, p.off+len("key"))
+	if !ok {
+		return false
+	}
+	save := p.off
+	defer func() {
+		p.off = save
+		if r := recover(); r != nil {
+			if _, bail := r.(bailout); !bail {
+				panic(r)
+			}
+			ok = false // an unterminated literal: the header has no end
+		}
+	}()
+	p.off = i
+	return p.headerEnd()
+}
+
+// keyOperand reports whether src[i:], just after the word key, is
+// whitespace and then something that can start an operand but cannot
+// continue an expression after a name, and returns the operand's offset.
+// No Go expression has the name key followed by such an operand.
+func keyOperand(src string, i int) (int, bool) {
+	if i >= len(src) || !isSpace(src[i]) {
+		return 0, false
+	}
+	for i < len(src) && isSpace(src[i]) {
+		i++
+	}
+	if i >= len(src) {
+		return 0, false
+	}
+	switch c := src[i]; {
+	case isLetter(c) || isDigit(c) || c >= utf8.RuneSelf || c == '"' || c == '\'' || c == '`':
+	case c == '!' && (i+1 >= len(src) || src[i+1] != '='):
+	default:
+		return 0, false
+	}
+	return i, true
+}
+
+// keyWithoutBody reports whether src, the inside of a {...} in markup
+// that is not a block, starts like a {key} block, as {key x} does: Go
+// would only say it is missing a comma.
+func keyWithoutBody(src string) bool {
+	s := strings.TrimLeft(src, " \t\r\n")
+	if !strings.HasPrefix(s, "key") {
+		return false
+	}
+	_, ok := keyOperand(s, len("key"))
+	return ok
 }
 
 func (p *parser_) parseControl() Node {
@@ -940,10 +1022,13 @@ func (p *parser_) parseControl() Node {
 	p.off++
 	p.skipSpace()
 	var n Node
-	if kw == "if" {
+	switch kw {
+	case "if":
 		n = p.parseIf()
-	} else {
+	case "for":
 		n = p.parseFor()
+	default:
+		n = p.parseKey()
 	}
 	p.skipSpace()
 	if p.peek() != '}' {
@@ -992,18 +1077,44 @@ func (p *parser_) parseFor() *For {
 	return n
 }
 
-// readHeader reads the Go source of an if or for header up to the '{' that
-// opens its body, consumes the '{' and returns the source and its offset.
-// As in Go, a '{' after a slice, array or map type starts a composite
-// literal, and a literal of a named type must be wrapped in parentheses.
+func (p *parser_) parseKey() *Key {
+	n := &Key{Pos_: p.posAt(p.off)}
+	p.off += len("key")
+	key, off := p.readHeader("key", n.Pos_)
+	n.Key, n.KeyPos = key, p.posAt(off)
+	n.Body = p.parseNodes(nil, n.Pos_)
+	return n
+}
+
+// readHeader reads the Go source of an if, for or key header up to the
+// '{' that opens its body, consumes the '{' and returns the source and its
+// offset.
 func (p *parser_) readHeader(kw string, kwPos Pos) (string, int) {
 	p.skipSpace()
 	start := p.off
-	depth := 0
-	for {
+	if !p.headerEnd() {
 		if p.eof() {
 			p.failAt(kwPos, "unterminated {%s", kw)
 		}
+		p.fail("expected { to start the %s body", kw)
+	}
+	src := strings.TrimRight(p.src[start:p.off], " \t\r\n")
+	if src == "" {
+		p.failAt(kwPos, "%s needs a condition before {", kw)
+	}
+	p.off++
+	return src, start
+}
+
+// headerEnd moves p.off from the start of a header to the '{' that opens
+// its body and reports true, or to a '}' that comes first, or to the end
+// of the source, and reports false. As in Go, a '{' after a slice, array
+// or map type starts a composite literal, and a literal of a named type
+// must be wrapped in parentheses.
+func (p *parser_) headerEnd() bool {
+	start := p.off
+	depth := 0
+	for !p.eof() {
 		if p.atLiteral() {
 			p.skipLiteral()
 			continue
@@ -1014,17 +1125,13 @@ func (p *parser_) readHeader(kw string, kwPos Pos) (string, int) {
 		case c == ')' || c == ']' || (c == '}' && depth > 0):
 			depth--
 		case c == '{' && depth == 0:
-			src := strings.TrimRight(p.src[start:p.off], " \t\r\n")
-			if src == "" {
-				p.failAt(kwPos, "%s needs a condition before {", kw)
-			}
-			p.off++
-			return src, start
+			return true
 		case c == '}' && depth == 0:
-			p.fail("expected { to start the %s body", kw)
+			return false
 		}
 		p.off++
 	}
+	return false
 }
 
 // afterTypeLit reports whether src ends in a slice, array or map type such

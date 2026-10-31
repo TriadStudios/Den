@@ -524,6 +524,14 @@ func (s *slotter) nodes(ns []mNode, frozen bool) {
 			s.existing(kEnd, kEnd+strings.IndexByte(s.src[kEnd:], '{'))
 			s.nodes(n.body, false)
 			s.ws(n.end-1, n.end-1)
+		case *mKey:
+			s.ws(n.off+1, n.keyAt)
+			s.existing(n.keyAt+3, n.keyOff)
+			kEnd := n.keyOff + len(n.key)
+			s.goCode(n.keyOff, kEnd)
+			s.existing(kEnd, n.bodyAt)
+			s.nodes(n.body, false)
+			s.ws(n.end-1, n.end-1)
 		}
 	}
 }
