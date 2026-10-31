@@ -182,6 +182,9 @@ const rafs = new Map();
 let rafID = 0, now = 0;
 globalThis.requestAnimationFrame = (f) => { rafs.set(++rafID, f); return rafID; };
 globalThis.cancelAnimationFrame = (id) => { rafs.delete(id); };
+// reportError is how the runtime reports an error it caught (an effect
+// that threw); here it logs the message, so tests see it.
+globalThis.reportError = (e) => console.log("reportError:", e?.message ?? e);
 
 // ---- helpers for test scripts ----------------------------------------------
 function html(n = root) {

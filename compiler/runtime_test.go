@@ -1824,3 +1824,661 @@ log(find("p").textContent, findAll("circle").length, findAll("input").length);
 finishAll();`)
 	expectLines(t, got, `enter;focus;`, `enter;focus; 1 1`)
 }
+
+// A block re-checks its condition before anything inside it runs again:
+// shrinking xs takes the <p> away instead of reading xs[1] past the end,
+// and the block keeps following xs afterwards.
+func TestRunGuardOrder(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    xs := signal([]string{"a", "b"})
+    <div>
+        {if len(xs.Get()) > 1 {
+            <p>{xs.Get()[1]}</p>
+        }}
+        <button onclick={xs.Set([]string{"a"})}>shrink</button>
+        <button onclick={xs.Set([]string{"a", "c", "d"})}>grow</button>
+    </div>
+}`, `
+log(html());
+click(find("button", "shrink")); await tick(); log(html());
+click(find("button", "grow")); await tick(); log(html());
+click(find("button", "shrink")); await tick(); log(html());
+click(find("button", "grow")); await tick(); log(html());`)
+	expectLines(t, got,
+		`<div><p>b</p><button>shrink</button><button>grow</button></div>`,
+		`<div><button>shrink</button><button>grow</button></div>`,
+		`<div><p>c</p><button>shrink</button><button>grow</button></div>`,
+		`<div><button>shrink</button><button>grow</button></div>`,
+		`<div><p>c</p><button>shrink</button><button>grow</button></div>`)
+}
+
+// Guards in their usual forms: an index into a slice, into a struct's
+// slice field and into a map's slice value; nested blocks; a component
+// that reads the guarded value through a signal prop, directly and through
+// a computed; and an else if chain. Whatever changes, a block re-checks
+// before anything inside it runs, so nothing reads past a guard.
+func TestRunGuards(t *testing.T) {
+	got := runApp(t, `
+type Item struct {
+    Name string
+    Tags []string
+}
+
+component Second(xs *Signal[[]string]) {
+    up := computed(xs.Get()[1] + "!")
+    <b>{xs.Get()[1]}/{up.Get()}</b>
+}
+
+component App() {
+    xs := signal([]string{"a", "b"})
+    it := signal(Item{Name: "n", Tags: []string{"t"}})
+    m := signal(map[string][]int{"k": {1}})
+    <div>
+        {if len(xs.Get()) > 1 {
+            <Second xs={xs} />
+            {if len(xs.Get()) > 2 {
+                <i>{xs.Get()[2]}</i>
+            }}
+        }}
+        {if len(it.Get().Tags) > 0 {
+            <u>{it.Get().Name}={it.Get().Tags[0]}</u>
+        }}
+        {if len(m.Get()["k"]) > 0 {
+            <s>{m.Get()["k"][0]}</s>
+        }}
+        {if len(xs.Get()) == 0 {
+            <p>none</p>
+        } else if len(xs.Get()) == 1 {
+            <p>one {xs.Get()[0]}</p>
+        } else {
+            <p>many {xs.Get()[1]}</p>
+        }}
+        <button onclick={xs.Set([]string{"a", "b", "c"})}>3</button>
+        <button onclick={xs.Set([]string{"a", "d"})}>2</button>
+        <button onclick={xs.Set([]string{"e"})}>1</button>
+        <button onclick={xs.Set(nil)}>0</button>
+        <button onclick={it.Set(Item{Name: "o"})}>it</button>
+        <button onclick={it.Set(Item{Name: "p", Tags: []string{"q"}})}>it2</button>
+        <button onclick={m.Set(map[string][]int{})}>m</button>
+        <button onclick={m.Set(map[string][]int{"k": {2}})}>m2</button>
+    </div>
+}`, `
+const show = () => log(findAll("div")[0].childNodes.filter((n) => n.tagName !== "button").map((n) => html(n) || n.textContent).join(""));
+show();
+for (const b of ["3", "2", "1", "0", "3", "1", "it", "m", "it2", "m2", "2", "0"]) {
+  click(find("button", b)); await tick(); show();
+}`)
+	expectLines(t, got,
+		`<b>b/b!</b><u>n=t</u><s>1</s><p>many b</p>`,
+		`<b>b/b!</b><i>c</i><u>n=t</u><s>1</s><p>many b</p>`,
+		`<b>d/d!</b><u>n=t</u><s>1</s><p>many d</p>`,
+		`<u>n=t</u><s>1</s><p>one e</p>`,
+		`<u>n=t</u><s>1</s><p>none</p>`,
+		`<b>b/b!</b><i>c</i><u>n=t</u><s>1</s><p>many b</p>`,
+		`<u>n=t</u><s>1</s><p>one e</p>`,
+		`<s>1</s><p>one e</p>`,
+		`<p>one e</p>`,
+		`<u>p=q</u><p>one e</p>`,
+		`<u>p=q</u><s>2</s><p>one e</p>`,
+		`<b>d/d!</b><u>p=q</u><s>2</s><p>many d</p>`,
+		`<u>p=q</u><s>2</s><p>none</p>`)
+}
+
+// In a keyed {for}, the list reconciles before any row runs again: a row
+// whose key is gone never reads its index past the end, and a row's own
+// {if} guards its item.
+func TestRunGuardRows(t *testing.T) {
+	got := runApp(t, `
+type Row struct {
+    ID   int
+    Tags *Signal[[]string]
+}
+
+component App() {
+    n := signal(3)
+    rows := signal([]Row{{1, signal([]string{"x", "y"})}, {2, signal([]string{"z"})}})
+    <div>
+        <ul>
+            {for i := range n.Get() key i {
+                <li>{i}:{n.Get() - i}</li>
+            }}
+        </ul>
+        <ol>
+            {for i, r := range rows.Get() key r.ID {
+                <li>{r.ID}={rows.Get()[i].ID}{if len(r.Tags.Get()) > 1 {
+                    <b>{r.Tags.Get()[1]}</b>
+                }}</li>
+            }}
+        </ol>
+        <button onclick={n.Set(1)}>n1</button>
+        <button onclick={n.Set(4)}>n4</button>
+        <button onclick={rows.Set(rows.Get()[1:])}>drop</button>
+        <button onclick={rows.Set(rows.Get()[:1])}>cut</button>
+        <button onclick={rows.Get()[0].Tags.Set([]string{"w"})}>untag</button>
+        <button onclick={rows.Get()[0].Tags.Set([]string{"w", "v"})}>tag</button>
+    </div>
+}`, `
+const show = () => log(html(find("ul")), html(find("ol")));
+show();
+for (const b of ["n1", "n4", "tag", "untag", "drop", "tag", "untag", "cut"]) {
+  click(find("button", b)); await tick(); show();
+}`)
+	expectLines(t, got,
+		`<ul><li>0:3</li><li>1:2</li><li>2:1</li></ul> <ol><li>1=1<b>y</b></li><li>2=2</li></ol>`,
+		`<ul><li>0:1</li></ul> <ol><li>1=1<b>y</b></li><li>2=2</li></ol>`,
+		`<ul><li>0:4</li><li>1:3</li><li>2:2</li><li>3:1</li></ul> <ol><li>1=1<b>y</b></li><li>2=2</li></ol>`,
+		`<ul><li>0:4</li><li>1:3</li><li>2:2</li><li>3:1</li></ul> <ol><li>1=1<b>v</b></li><li>2=2</li></ol>`,
+		`<ul><li>0:4</li><li>1:3</li><li>2:2</li><li>3:1</li></ul> <ol><li>1=1</li><li>2=2</li></ol>`,
+		`<ul><li>0:4</li><li>1:3</li><li>2:2</li><li>3:1</li></ul> <ol><li>2=2</li></ol>`,
+		`<ul><li>0:4</li><li>1:3</li><li>2:2</li><li>3:1</li></ul> <ol><li>2=2<b>v</b></li></ol>`,
+		`<ul><li>0:4</li><li>1:3</li><li>2:2</li><li>3:1</li></ul> <ol><li>2=2</li></ol>`,
+		`<ul><li>0:4</li><li>1:3</li><li>2:2</li><li>3:1</li></ul> <ol><li>2=2</li></ol>`)
+}
+
+// A page under a block that checks its route, by Matches or by the params
+// themselves, never runs with the params of a path the block no longer
+// shows it for. The app starts on a user's page, so the pages read the
+// route before their blocks do.
+func TestRunGuardRoute(t *testing.T) {
+	got := runAppWith(t, routeTypes+`
+func names() []string {
+    return []string{"ada", "ken"}
+}
+
+component User(user *Route[UserParams]) {
+    <p>{names()[user.Params().ID - 1]}</p>
+}
+
+component App() {
+    user := route[UserParams]("/users/:id")
+    <main>
+        {if user.Matches() {
+            <User user={user} />
+        }}
+        {if user.Params().ID >= 1 && user.Params().ID <= 2 {
+            <User user={user} />
+        } else {
+            <p>none</p>
+        }}
+        <a href="/">home</a>
+    </main>
+}`, `history.pushState(null, "", "/users/1");`, `
+const show = (u) => log(u, html(find("main")));
+show("start");
+for (const u of ["/users/2", "/", "/users/2", "/users/1", "/nowhere"]) {
+  visit(u); await tick(); show(u);
+}
+find("a").dispatch("click"); await tick(); show("home");
+visit("/users/2"); await tick(); show("/users/2");
+back(); await tick(); show("back");`)
+	expectLines(t, got,
+		`start <main><p>ada</p><p>ada</p><a href="/">home</a></main>`,
+		`/users/2 <main><p>ken</p><p>ken</p><a href="/">home</a></main>`,
+		`/ <main><p>none</p><a href="/">home</a></main>`,
+		`/users/2 <main><p>ken</p><p>ken</p><a href="/">home</a></main>`,
+		`/users/1 <main><p>ada</p><p>ada</p><a href="/">home</a></main>`,
+		`/nowhere <main><p>none</p><a href="/">home</a></main>`,
+		`home <main><p>none</p><a href="/">home</a></main>`,
+		`/users/2 <main><p>ken</p><p>ken</p><a href="/">home</a></main>`,
+		`back <main><p>none</p><a href="/">home</a></main>`)
+}
+
+// With transitions, a branch or row that leaves is freed before its
+// bindings could run again: it leaves showing what it showed, and nothing
+// reads past the guard that removed it.
+func TestMotionGuards(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    xs := signal([]string{"a", "b", "c"})
+    <div>
+        {if len(xs.Get()) > 1 {
+            <p exit={fade()}>{xs.Get()[1]}</p>
+        }}
+        <ul>
+            {for i, x := range xs.Get() key x {
+                <li exit={fade()}>{x}{xs.Get()[i]}</li>
+            }}
+        </ul>
+        <button onclick={xs.Set([]string{"a"})}>cut</button>
+        <button onclick={xs.Set([]string{"a", "d"})}>grow</button>
+    </div>
+}`, `
+log(html());
+click(find("button", "cut")); await tick();
+log(html(), running().join(" "));
+finishAll(); log(html());
+click(find("button", "grow")); await tick(); finishAll();
+log(html());`)
+	expectLines(t, got,
+		`<div><p>b</p><ul><li>aa</li><li>bb</li><li>cc</li></ul><button>cut</button><button>grow</button></div>`,
+		`<div><p>b</p><ul><li>aa</li><li>bb</li><li>cc</li></ul><button>cut</button><button>grow</button></div> p:b li:bb li:cc`,
+		`<div><ul><li>aa</li></ul><button>cut</button><button>grow</button></div>`,
+		`<div><p>d</p><ul><li>aa</li><li>dd</li></ul><button>cut</button><button>grow</button></div>`)
+}
+
+// An effect that throws is reported (reportError, which dom.js logs), the
+// rest of the update still lands, and the effect runs again when what it
+// read changes: a binding, an {if} condition and a computed alike. A
+// binding that throws as its branch is built is reported the same way, and
+// the branch is shown without it until it can run.
+func TestRunThrowingEffect(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    xs := signal([]string{"a", "b"})
+    ys := signal([]string{"y"})
+    i := signal(0)
+    n := signal(0)
+    show := signal(false)
+    at := computed(xs.Get()[i.Get()] + "!")
+    <div>
+        <p>{xs.Get()[i.Get()]}</p>
+        <b>{n.Get()}</b>
+        <u>{at.Get()}</u>
+        {if xs.Get()[i.Get()] == "b" {
+            <s>is b</s>
+        }}
+        {if show.Get() {
+            <i>{n.Get()}{ys.Get()[i.Get()]}</i>
+        }}
+        <button onclick={i.Set(5); n.Set(n.Get() + 1)}>bad</button>
+        <button onclick={i.Set(1)}>good</button>
+        <button onclick={show.Set(!show.Get())}>show</button>
+        <button onclick={n.Set(n.Get() + 1)}>n</button>
+        <button onclick={ys.Set([]string{"y", "z"})}>ys</button>
+    </div>
+}`, `
+log(html());
+click(find("button", "bad")); await tick(); log(html());
+click(find("button", "n")); await tick(); log(html());
+click(find("button", "good")); await tick(); log(html());
+click(find("button", "bad")); await tick(); log(html());
+click(find("button", "show")); await tick(); log(html());
+click(find("button", "ys")); await tick(); log(html());
+click(find("button", "good")); await tick(); log(html());`)
+	const tail = `<button>bad</button><button>good</button><button>show</button><button>n</button><button>ys</button></div>`
+	const oob = `reportError: den: index out of range`
+	expectLines(t, got,
+		`<div><p>a</p><b>0</b><u>a!</u>`+tail,
+		oob, oob, oob,
+		`<div><p>a</p><b>1</b><u>a!</u>`+tail,
+		`<div><p>a</p><b>2</b><u>a!</u>`+tail,
+		`<div><p>b</p><b>2</b><u>b!</u><s>is b</s>`+tail,
+		oob, oob, oob,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s>`+tail,
+		oob,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s><i>3</i>`+tail,
+		oob,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s><i>3</i>`+tail,
+		`<div><p>b</p><b>3</b><u>b!</u><s>is b</s><i>3z</i>`+tail)
+}
+
+// A computed value that throws throws again for every reader, in the same
+// update and later, rather than handing out its old value; and every reader
+// still depends on it, so all of them run again once its inputs change,
+// including an {if} whose condition read it and threw.
+func TestRunThrowingComputed(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    xs := signal([]string{"a", "b"})
+    i := signal(0)
+    on := signal(true)
+    name := signal("x")
+    c := computed(xs.Get()[i.Get()])
+    <div>
+        {if on.Get() && c.Get() == "f" {
+            <s>is f</s>
+        }}
+        <p>{name.Get() + c.Get()}</p>
+        <b>{c.Get()}</b>
+        <button onclick={on.Set(true); i.Set(5); name.Set("y")}>bad</button>
+        <button onclick={on.Set(false)}>off</button>
+        <button onclick={xs.Set([]string{"a", "b", "c", "d", "e", "f"})}>grow</button>
+        <button onclick={name.Set("z")}>name</button>
+    </div>
+}`, `
+const show = () => log(html(find("div")).replace(/<button>.*$/, ""));
+show();
+click(find("button", "off")); await tick(); show();
+click(find("button", "bad")); await tick(); show();
+click(find("button", "name")); await tick(); show();
+click(find("button", "grow")); await tick(); show();`)
+	const oob = `reportError: den: index out of range`
+	expectLines(t, got,
+		`<div><p>xa</p><b>a</b>`,
+		`<div><p>xa</p><b>a</b>`,
+		oob, oob, oob,
+		`<div><p>xa</p><b>a</b>`,
+		oob,
+		`<div><p>xa</p><b>a</b>`,
+		`<div><s>is f</s><p>zf</p><b>f</b>`)
+}
+
+// A {for} whose new row panics while it is built (here in a prop, outside
+// any binding) keeps its old rows and frees the rows it built before that
+// one in the same pass, so none of them keeps running out of sight (their
+// bindings would report when vals shrinks), and it tries again when its
+// list changes. A binding that panics in a new row is reported and its row
+// is shown, as in a branch.
+func TestRunThrowingRow(t *testing.T) {
+	got := runApp(t, `
+component Item(v string, vals *Signal[[]string]) {
+    <li>{v}{vals.Get()[1]}</li>
+}
+
+component App() {
+    keys := signal([]int{0})
+    vals := signal([]string{"a", "b"})
+    <div>
+        <ul>
+            {for _, k := range keys.Get() key k {
+                <Item v={vals.Get()[k]} vals={vals} />
+            }}
+        </ul>
+        <ol>
+            {for _, k := range keys.Get() key k {
+                <li>{vals.Get()[k]}</li>
+            }}
+        </ol>
+        <button onclick={keys.Set([]int{0, 1, 2})}>three</button>
+        <button onclick={vals.Set([]string{"a"})}>one</button>
+        <button onclick={vals.Set([]string{"a", "b", "c"})}>vals3</button>
+    </div>
+}`, `
+const show = () => log(html(find("ul")), html(find("ol")));
+show();
+for (const b of ["three", "one", "vals3", "three"]) { click(find("button", b)); await tick(); show(); }`)
+	const oob = `reportError: den: index out of range`
+	expectLines(t, got,
+		`<ul><li>ab</li></ul> <ol><li>a</li></ol>`,
+		oob, oob,
+		`<ul><li>ab</li></ul> <ol><li>a</li><li>b</li><li></li></ol>`,
+		oob, oob, oob,
+		`<ul><li>ab</li></ul> <ol><li>a</li><li>b</li><li></li></ol>`,
+		`<ul><li>ab</li></ul> <ol><li>a</li><li>b</li><li>c</li></ol>`,
+		`<ul><li>ab</li><li>bb</li><li>cb</li></ul> <ol><li>a</li><li>b</li><li>c</li></ol>`)
+}
+
+// The same with transitions: a row that panics while it is built frees
+// the rows built before it in that pass, the rows kept stay, and rows
+// whose keys are gone still leave.
+func TestMotionThrowingRow(t *testing.T) {
+	got := runApp(t, `
+component Val(v string, vals *Signal[[]string]) {
+    <b>{v}{vals.Get()[1]}</b>
+}
+
+component App() {
+    keys := signal([]int{0, 1})
+    vals := signal([]string{"a", "b"})
+    <div>
+        <ul>
+            {for _, k := range keys.Get() key k {
+                <li exit={fade()}><Val v={vals.Get()[k]} vals={vals} /></li>
+            }}
+        </ul>
+        <button onclick={keys.Set([]int{1, 2})}>shift</button>
+        <button onclick={keys.Set([]int{1, 0, 2, 3})}>more</button>
+        <button onclick={vals.Set([]string{"a"})}>one</button>
+        <button onclick={vals.Set([]string{"a", "b", "c", "d"})}>four</button>
+    </div>
+}`, `
+const show = () => log(html(find("ul")), running().join(" "));
+show();
+click(find("button", "shift")); await tick(); show();
+finishAll(); show();
+click(find("button", "more")); await tick(); show();
+click(find("button", "one")); await tick(); show();
+click(find("button", "four")); await tick(); show();
+click(find("button", "shift")); await tick(); finishAll(); show();
+click(find("button", "more")); await tick(); finishAll(); show();`)
+	const oob = `reportError: den: index out of range`
+	expectLines(t, got,
+		`<ul><li><b>ab</b></li><li><b>bb</b></li></ul> `,
+		oob,
+		`<ul><li><b>ab</b></li><li><b>bb</b></li></ul> li:ab`,
+		`<ul><li><b>bb</b></li></ul> `,
+		oob,
+		`<ul><li><b>bb</b></li></ul> `,
+		oob,
+		`<ul><li><b>bb</b></li></ul> `,
+		`<ul><li><b>bb</b></li></ul> `,
+		`<ul><li><b>bb</b></li><li><b>cb</b></li></ul> `,
+		`<ul><li><b>bb</b></li><li><b>ab</b></li><li><b>cb</b></li><li><b>db</b></li></ul>`)
+}
+
+// stored and hash save each write as it is made, Update included: a
+// write in the update that also removes the component holding the signal
+// still lands, whichever comes first.
+func TestStoredInBranch(t *testing.T) {
+	got := runApp(t, `
+component Panel(open *Signal[bool]) {
+    theme := stored("theme", "light")
+    h := hash()
+    <div>
+        <p>{theme.Get()} {h.Get()}</p>
+        <button onclick={theme.Set("dark"); h.Set("#dark"); open.Set(false)}>saveclose</button>
+        <button onclick={open.Set(false); theme.Update(func(s string) string { return s + "!" }); h.Set("#blue")}>closesave</button>
+    </div>
+}
+
+component App() {
+    open := signal(true)
+    <main>
+        {if open.Get() {
+            <Panel open={open} />
+        }}
+        <button onclick={open.Set(true)}>open</button>
+    </main>
+}`, `
+log("start", localStorage.getItem("theme"), location.hash);
+click(find("button", "saveclose")); await tick();
+log(localStorage.getItem("theme"), location.hash, html(find("main")));
+click(find("button", "open")); await tick();
+log(find("p").textContent);
+click(find("button", "closesave")); await tick();
+log(localStorage.getItem("theme"), location.hash);`)
+	expectLines(t, got,
+		`start "light" `,
+		`"dark" #dark <main><button>open</button></main>`,
+		`dark #dark`,
+		`"dark!" #blue`)
+}
+
+// An owner that a run in the walk makes due again is checked again before
+// the effect runs: here a new row writes the signal that the {if} in an
+// older row reads.
+func TestUpdateOrderWalkRestale(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $effect $text $if $for $h $cm $frag $scope $free", `
+const G = $signal(1), Y = $signal("y0"), L = $signal([0]);
+let bad = 0;
+const root = $h("div");
+const [n] = $scope(() => {
+  const f = $frag(), a = $cm(), b = $cm();
+  f.append(a, b);
+  $for(a, b, () => L.get(), (v) => v, (v) => {
+    const e = $h("li");
+    if (v === 1) G.set(0);
+    const a2 = $cm(), b2 = $cm();
+    e.append(a2, b2);
+    $if(a2, b2, () => G.get() > 0, () => {
+      const t = document.createTextNode("");
+      $text(t, () => { if (!(G.v > 0)) bad++; return Y.get(); });
+      return t;
+    });
+    return e;
+  }, false);
+  return f;
+});
+root.append(n);
+log(html(root));
+Y.set("y1"); L.set([0, 1]);
+await new Promise((r) => setImmediate(r));
+log(html(root), "runs past the guard:", bad);`)
+	expectLines(t, got, `<div><li>y0</li></div>`, `<div><li></li><li></li></div> runs past the guard: 0`)
+}
+
+// Two effects that keep setting each other trip the update loop guard,
+// and effects outside the loop still run, then and afterwards.
+func TestUpdateLoopGuard(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $effect $scope $free", `
+const errs = []; console.error = (...a) => errs.push(a.join(" "));
+const x = $signal(0), y = $signal(0), z = $signal(0);
+let zr = 0, ar = 0;
+$scope(() => {
+  $effect(() => { ar++; y.set(x.get() + 1); });
+  $effect(() => { x.set(y.get() + 1); });
+  $effect(() => { z.get(); zr++; });
+});
+x.set(5); z.set(1);
+await new Promise((r) => setImmediate(r));
+log(JSON.stringify(errs), zr, ar > 100);
+z.set(2);
+await new Promise((r) => setImmediate(r));
+log(zr);`)
+	expectLines(t, got, `["den: update loop"] 2 true`, `3`)
+}
+
+// Readers are kept one at a time or in a Set, told apart by add and
+// delete: signal values that have add or delete members, and readers
+// added and removed, must not confuse that.
+func TestSignalReaderSets(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $effect $scope $free", `
+const weird = { add() { throw new Error("add called"); }, delete() { throw new Error("delete called"); } };
+const s = $signal(weird), m = $signal(new Map([["add", 1]])), st = $signal(new Set([1]));
+const runs = [0, 0, 0, 0];
+const scopes = [0, 1, 2, 3].map((i) => $scope(() => $effect(() => { s.get(); m.get(); st.get(); runs[i]++; }))[1]);
+$free(scopes[1]); $free(scopes[0]);
+s.set({ add: 1, delete: 2 }); m.set(new Map()); st.set(new Set());
+await new Promise((r) => setImmediate(r));
+log(runs.join(","), s.o instanceof Set ? "Set(" + s.o.size + ")" : typeof s.o);
+$free(scopes[2]); $free(scopes[3]);
+s.set(3);
+await new Promise((r) => setImmediate(r));
+log(runs.join(","));
+const c = $computed(() => ({ add: s.get(), delete: 1 }));
+let cr = 0;
+const [, sc] = $scope(() => { $effect(() => { c.get(); cr++; }); $effect(() => { c.get(); cr++; }); });
+s.set(4);
+await new Promise((r) => setImmediate(r));
+$free(sc);
+s.set(5);
+await new Promise((r) => setImmediate(r));
+log(cr, c.o instanceof Set ? "Set(" + c.o.size + ")" : String(c.o));`)
+	expectLines(t, got, `1,1,2,2 Set(2)`, `1,1,2,2`, `4 Set(0)`)
+}
+
+// TestUpdateOrderRandom builds random trees of {if} and keyed {for}
+// blocks, plain and with motion, around bindings and computed values over
+// a few signals; applies random batches of writes; and after each batch
+// checks that no block, binding or computed ran while a block around it
+// would no longer show it, and that the DOM equals a fresh render of the
+// final state. The seeds are fixed.
+func TestUpdateOrderRandom(t *testing.T) {
+	got := runRuntime(t, "$signal $computed $text $if $for $ifm $form $h $cm $frag $scope $free", `
+globalThis.$evs = [];
+let bad = 0, runs = 0, errors = 0, mismatches = 0, trees = 0, batches = 0;
+globalThis.reportError = (e) => { if (errors++ < 3) log("error:", e?.stack ?? e); };
+// mulberry32
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const NS = 3, int = (r, n) => Math.floor(r() * n);
+let S, L;
+// A tree is a list of specs: a text binding over signal s (a computed when
+// c, showing its row when row), an {if} on S[s] > t with an optional else,
+// or a {for} over L (src -1) or over 0..S[src]-1, using its index when ui.
+// m picks the motion variant.
+function gen(r, depth, inRow) {
+  const out = [];
+  for (let n = 1 + int(r, 3); n > 0; n--) {
+    const x = r();
+    if (depth >= 3 || x < 0.3) out.push({ k: "text", s: int(r, NS), c: r() < 0.3, row: inRow && r() < 0.6 });
+    else if (x < 0.65) out.push({ k: "if", s: int(r, NS), t: int(r, 4), m: r() < 0.3, yes: gen(r, depth + 1, inRow), no: r() < 0.4 ? gen(r, depth + 1, inRow) : null });
+    else out.push({ k: "for", src: r() < 0.5 ? -1 : int(r, NS), m: r() < 0.3, ui: r() < 0.5, kids: gen(r, depth + 1, true) });
+  }
+  return out;
+}
+function randList(r) {
+  const a = [0, 1, 2, 3, 4, 5].filter(() => r() < 0.5);
+  for (let i = a.length - 1; i > 0; i--) { const j = int(r, i + 1); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+const items = (src, v) => (src < 0 ? v : Array.from({ length: v }, (_, i) => i));
+const read = (src) => items(src, src < 0 ? L.get() : S[src].get());
+// now is the list as set, read without tracking, for the guards.
+const now = (src) => items(src, src < 0 ? L.v : S[src].v);
+// check counts a run, and a bad one if a guard around it no longer holds.
+function check(ctx) { runs++; if (!ctx.every((g) => g())) bad++; }
+function build(specs, ctx, row) {
+  const f = $frag();
+  for (const sp of specs) {
+    if (sp.k === "text") {
+      const el = $h("b"), t = document.createTextNode("");
+      el.append(t);
+      f.append(el);
+      const val = () => {
+        check(ctx);
+        let s = sp.s + "=" + S[sp.s].get();
+        if (row && sp.row) s += "|" + row.v + (row.ui ? "@" + row.i + ":" + read(row.src)[row.i] : "");
+        return s;
+      };
+      const c = sp.c ? $computed(val) : null;
+      $text(t, c ? () => { check(ctx); return c.get() + "'"; } : val);
+    } else if (sp.k === "if") {
+      const a = $cm(), b = $cm(), g = () => S[sp.s].v > sp.t;
+      f.append(a, b);
+      const branch = (kids, tag, h) => () => {
+        const e = $h(tag);
+        if (sp.m) e.$out = { k: { opacity: 0 }, d: 50 };
+        e.append(build(kids, [...ctx, h], row));
+        return e;
+      };
+      (sp.m ? $ifm : $if)(a, b, () => { check(ctx); return S[sp.s].get() > sp.t; }, branch(sp.yes, "i", g), sp.no && branch(sp.no, "u", () => !g()));
+    } else {
+      const a = $cm(), b = $cm();
+      f.append(a, b);
+      (sp.m ? $form : $for)(a, b, () => { check(ctx); return read(sp.src); }, (v) => v, (v, i) => {
+        const e = $h("li"), live = () => (sp.ui ? now(sp.src)[i] === v : now(sp.src).includes(v));
+        if (sp.m) e.$out = { k: { opacity: 0 }, d: 50 };
+        e.append(String(v), build(sp.kids, [...ctx, live], { v, i, ui: sp.ui, src: sp.src }));
+        return e;
+      }, sp.ui);
+    }
+  }
+  return f;
+}
+for (let seed = 1; seed <= 500; seed++) {
+  const r = rng(seed);
+  S = Array.from({ length: NS }, () => $signal(int(r, 5)));
+  L = $signal(randList(r));
+  const specs = gen(r, 0, false), root = $h("div");
+  const [n, scope] = $scope(() => build(specs, [], null));
+  root.append(n);
+  trees++;
+  for (let k = 0; k < 20; k++) {
+    for (let w = 1 + int(r, 3); w > 0; w--) {
+      const x = int(r, NS + 1);
+      if (x === NS) L.set(randList(r));
+      else S[x].set(int(r, 5));
+    }
+    // setImmediate runs after the flush, sooner than tick's timer.
+    await new Promise((r) => setImmediate(r));
+    batches++;
+    finishAll();
+    anims.length = 0;
+    const fresh = $h("div"), [m, s2] = $scope(() => build(specs, [], null));
+    fresh.append(m);
+    if (html(root) !== html(fresh) && mismatches++ < 3) log("seed", seed, "batch", k, "\n got:", html(root), "\nwant:", html(fresh));
+    $free(s2);
+  }
+  $free(scope);
+}
+log("trees:", trees, "batches:", batches, "runs:", runs > 100000, "bad runs:", bad, "mismatches:", mismatches, "errors:", errors);`)
+	expectLines(t, got, `trees: 500 batches: 10000 runs: true bad runs: 0 mismatches: 0 errors: 0`)
+}

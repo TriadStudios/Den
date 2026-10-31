@@ -38,10 +38,10 @@ field or method Titel)` before any JavaScript is written.
 
 | | JS shipped, gzipped |
 | --- | --- |
-| `examples/counter` (two counters, a computed value, a bound input) | 2.3 KB |
-| `examples/todos` (add, toggle, remove, filter) | 3.9 KB |
-| `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.3 KB |
-| `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.1 KB |
+| `examples/counter` (two counters, a computed value, a bound input) | 2.4 KB |
+| `examples/todos` (add, toggle, remove, filter) | 4.0 KB |
+| `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.4 KB |
+| `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.2 KB |
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
@@ -270,9 +270,25 @@ component App() {
 **State**
 - `signal(v)`, `computed(expr)`, `.Get()`, `.Set(v)`, `.Update(func)`.
 - `stored(key, initial)`: a signal kept in localStorage as JSON and decoded
-  back into Go types.
-- `hash()`: a signal holding `location.hash`, for simple routing. To route
-  by URL path, use `route` and `path` (below).
+  back into Go types. Each `Set` or `Update` is saved as it is made.
+- `hash()`: a signal holding `location.hash`, for simple routing; setting
+  it sets `location.hash` at once. To route by URL path, use `route` and
+  `path` (below).
+- Changes land together: the signals a handler sets update the page once,
+  in a microtask after it returns, and nothing sees some of them but not
+  the others. An `{if}` or `{for}` checks its condition or list again
+  before anything inside it runs, so a guard holds:
+  `{if len(xs.Get()) > 1 { <p>{xs.Get()[1]}</p> }}` takes the `<p>` away
+  when `xs` shrinks, and never reads past the end.
+- A binding that panics (an index out of range, say) is reported with
+  `reportError`, as an uncaught error would be, and the rest of the
+  update still lands; the binding runs again when what it read changes.
+  A `computed` that panics panics again for each binding that reads it,
+  until its own inputs change. A binding that panics as its branch or row
+  is built is reported the same way, and the branch or row is shown
+  without it. A panic outside bindings while a branch or row is built (in
+  a component's statements or a prop) leaves that `{if}` branch out, or
+  keeps the `{for}`'s old rows, until its condition or list changes again.
 
 **Routing**
 

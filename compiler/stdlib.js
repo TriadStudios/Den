@@ -20,24 +20,28 @@ function $atoi(s) {
 }
 // stored keeps a signal in localStorage as JSON. dec turns parsed JSON back
 // into den values and throws if it does not fit the type, in which case the
-// initial value is used.
+// initial value is used. Each write is saved as it is made (Update calls
+// set too), not by an effect: an effect belongs to the block around it, and
+// an update that wrote the signal and removed that block would be lost.
 function $stored(key, init, dec) {
   let v = init;
   try { const j = localStorage.getItem(key); if (j !== null) v = dec(JSON.parse(j)); } catch {}
-  const s = $signal(v);
-  $effect(() => { const v = s.get(); try { localStorage.setItem(key, JSON.stringify(v, $json)); } catch {} });
+  const s = $signal(v), set = s.set, put = (v) => { try { localStorage.setItem(key, JSON.stringify(v, $json)); } catch {} };
+  s.set = (v) => { put(v); set.call(s, v); };
+  put(v);
   return s;
 }
 function $json(k, v) { return v instanceof Map ? Object.fromEntries(v) : v instanceof $Slice ? $arr(v) : v; }
 function $want(v, t) { if (typeof v !== t) throw 0; return v; }
 function $list(v) { if (!Array.isArray(v)) throw 0; return v; }
 function $obj(v) { if (typeof v !== "object" || !v || Array.isArray(v)) throw 0; return v; }
-// hash is a signal holding location.hash, kept in sync both ways.
+// hash is a signal holding location.hash, kept in sync both ways. Like
+// stored, a write moves location.hash as it is made, not by an effect.
 function $hash() {
-  const s = $signal(location.hash), f = () => s.set(location.hash);
+  const s = $signal(location.hash), set = s.set, f = () => s.set(location.hash);
+  s.set = (v) => { if (location.hash !== v) location.hash = v; set.call(s, v); };
   addEventListener("hashchange", f);
   $cleanup(() => removeEventListener("hashchange", f));
-  $effect(() => { const h = s.get(); if (location.hash !== h) location.hash = h; });
   return s;
 }
 // path is one signal per app, holding location.pathname. Setting it pushes
@@ -200,17 +204,18 @@ function $form(a, b, list, key, row, ui, hs) {
   let rows = [], ran = false;
   const out = new Map(), rm = (m) => { const p = $where(rows); m.remove(); $glide(p, rows); };
   $effect(() => {
-    const items = list(), l = $listener;
-    $listener = null;
-    try {
+    const items = list();
+    // $scope runs the rest untracked, and makes this effect the owner of
+    // the rows it builds.
+    $scope(() => {
       const ix = items.$k, now = new Map();
       items.forEach((v, n) => { const i = ix ? ix[n] : n, k = key(v, i); now.has(k) || now.set(k, [v, i]); });
       const keep = rows.filter((r) => now.has(r.k));
       const gone = rows.filter((r) => !now.has(r.k)), had = new Set(keep.map((r) => r.k)), p = $where(keep);
-      gone.forEach((r) => $free(r.d));
       // When $reconcile can reuse no row it clears the whole list at once,
       // leaving nodes too. Building the first row again here, in its
-      // place, gives it one to reuse.
+      // place, gives it one to reuse. It is built before anything is freed,
+      // so if building it throws, the rows are as they were.
       if ((gone.length || out.size) && keep.length && !keep.some((r) => { const [v, i] = now.get(r.k); return Object.is(v, r.v) && (!ui || i === r.i); })) {
         const r = keep[0], [v, i] = now.get(r.k), [f, d] = $scope(() => row(v, i)), g = f.nodeType === 11;
         keep[0] = { k: r.k, v, i, d, p: -1, h: hs, a: g ? f.firstChild : f, b: g ? f.lastChild : f };
@@ -219,13 +224,16 @@ function $form(a, b, list, key, row, ui, hs) {
         $free(r.d);
         $nodes(r).forEach((m) => m.remove());
       }
+      gone.forEach((r) => $free(r.d));
       const ns = gone.flatMap($nodes);
-      rows = $reconcile(a, b, keep, items, key, row, ui, hs);
-      $exit(ns, out, rm);
+      // If $reconcile throws, it has freed the rows it built and moved no
+      // nodes, so the rows kept are the list, and the gone ones still leave.
+      rows = keep;
+      try { rows = $reconcile(a, b, keep, items, key, row, ui, hs); } finally { $exit(ns, out, rm); }
       if (ran) rows.forEach((r) => had.has(r.k) || $enter($nodes(r)));
       $glide(p, rows);
       ran = true;
-    } finally { $listener = l; }
+    });
   });
   $cleanup(() => { rows.forEach((r) => $free(r.d)); $gone(out); });
 }
