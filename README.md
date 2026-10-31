@@ -109,11 +109,11 @@ app.den:2:8: package "fmt" is not available in den; you can import strconv, stri
 ```
 
 Other checks: missing props, wrong prop types, unknown names, unused
-variables and imports, mismatched tags, list keys that are not strings,
-numbers or bools, calling a component as a function, children or slots
-a component does not take, route patterns that do not fit their params,
-transitions where they could never play, and design tokens that do not
-exist, hold a bad value or are used in the
+variables and imports, mismatched tags, list and `{key}` keys that are
+not strings, numbers or bools, calling a component as a function,
+children or slots a component does not take, route patterns that do
+not fit their params, transitions where they could never play, and
+design tokens that do not exist, hold a bad value or are used in the
 wrong kind of property (`app.den:9:30: $surface is a den.Color, but
 padding takes a length`).
 
@@ -185,14 +185,14 @@ reported as `file:line:col` and left alone, and the exit status is 2.
 
 What it changes:
 - Go is formatted as `gofmt` formats it: declarations, statements,
-  props, and the Go in markup (`{expr}`, attribute values, handlers and
-  `{if}` and `{for}` headers). A handler written on one line stays on
-  one line if it is short.
+  props, and the Go in markup (`{expr}`, attribute values, handlers,
+  `{if}` and `{for}` headers and `{key}` values). A handler written on
+  one line stays on one line if it is short.
 - Markup is indented with tabs. An element holding only text and
   `{expr}`s goes on one line if it fits in 100 columns (a tab counts as
-  4), and so does any element, `{if}` or `{for}` written on one line
-  that fits. Otherwise children go on lines of their own, wherever that
-  changes nothing (below). A start tag that does not fit has one
+  4), and so does any element, `{if}`, `{for}` or `{key}` written on one
+  line that fits. Otherwise children go on lines of their own, wherever
+  that changes nothing (below). A start tag that does not fit has one
   attribute per line. Quoted attribute values keep their text, in `"`
   unless they hold one, except that a carriage return in one is written
   `&#13;`, the same character to den, so the file can end its lines with
@@ -231,6 +231,20 @@ different behavior.
 - `{if cond { ... } else if ... { ... } else { ... }}`.
 - `{for i, x := range xs key x.ID { ... }}` over slices, arrays, maps and
   ints. The key is required and must be a string, number or bool.
+- `{key x { ... }}` builds its content once, and again from scratch
+  whenever the value of `x` changes: the old content goes, with the state
+  of the components in it, and nothing is kept. The same value changes
+  nothing. `x` is read like an `{if}` condition, so it follows the signals
+  it reads, and like a `{for}` key it must be a string, number or bool. A
+  key that reads no signal never changes, and its content is built once.
+  `key` is not a Go keyword, so `{key}`, `{key.Name}`, `{key + 1}`,
+  `{key(x)}` and `{key[0]}` are still expressions using a name `key`. A
+  block starts only where `key` is followed by whitespace and then a
+  name, a number starting with a digit, a string or rune literal, or a
+  `!` that is not `!=`, and its value ends with the `{` of the body. Any
+  other start, such as `(`, `[`, `.5`, `-x`, `*p`, `&x` or a comment,
+  leaves the `{...}` an expression, so such a value is written another
+  way: `{key 0 - x { ... }}` or `{key int(-x) { ... }}`.
 - SVG elements, and `autofocus` on elements added after the page loads.
 
 **Children and slots**
@@ -276,8 +290,8 @@ component App() {
   `path` (below).
 - Changes land together: the signals a handler sets update the page once,
   in a microtask after it returns, and nothing sees some of them but not
-  the others. An `{if}` or `{for}` checks its condition or list again
-  before anything inside it runs, so a guard holds:
+  the others. An `{if}`, `{for}` or `{key}` checks its condition, list or
+  value again before anything inside it runs, so a guard holds:
   `{if len(xs.Get()) > 1 { <p>{xs.Get()[1]}</p> }}` takes the `<p>` away
   when `xs` shrinks, and never reads past the end.
 - A binding that panics (an index out of range, say) is reported with
@@ -344,7 +358,11 @@ component User(user *Route[UserParams]) {
   called `e.PreventDefault()`.
 - Props are values, read when the component is made. A page that should
   follow its params from one URL to the next takes the route, as `User`
-  does above, rather than `user.Params().ID`.
+  does above, rather than `user.Params().ID`. The page itself stays when
+  only its params change (the `{if}` around it still matches), and so does
+  the state it keeps in its own signals, such as an open dialog. To give
+  it a fresh start for each user, put it in a key block:
+  `{key user.Params().ID { <User user={user} /> }}`.
 - These are compile errors, reported at the pattern or at `T`: a pattern
   that is not a constant or does not start with `/`; a param with no name,
   a name that is not a Go identifier or is used twice, a catch-all that is
@@ -482,11 +500,13 @@ component Dot(target *Signal[float64]) {
   size. `.For(d)` sets how long it takes (200ms otherwise), where `d` is a
   constant `den.Duration`: `"150ms"`, `"0.2s"` or a design token const.
   Entering eases out and leaving eases in.
-- They go on an HTML or SVG element directly inside an `{if}` branch or a
-  `{for}` row, the elements that block adds and removes. An `{if}` or
-  `{for}` directly inside the branch or row counts as well, so an
-  `else if` chain animates as one block, and rows of a list directly in a
-  branch leave with it.
+- They go on an HTML or SVG element directly inside an `{if}` branch, a
+  `{for}` row or a `{key}` block, the elements that block adds and
+  removes. A block directly inside the branch, row or key block counts as
+  well, so an `else if` chain animates as one block, and rows of a list
+  directly in a branch leave with it. When a key block's value changes,
+  its old content leaves while the new content enters, as when a row's
+  key goes and another comes.
 - When the block changes, new elements enter while the old ones leave. A
   leaving element's bindings and handlers stop at once, so it keeps
   showing what it showed last. It takes no more input: it is made `inert`
@@ -523,11 +543,11 @@ component Dot(target *Signal[float64]) {
   parts it uses: an `{if}` with transitions ships no list or spring code.
 - These are compile errors: `enter`, `exit` or `animate` given a string,
   no value or a value of the wrong type, put on a component, not directly
-  inside an `{if}` branch or a `{for}` row (`animate`: a `{for}` row), or
-  inside blocks that read no signal and so never change
-  (`app.den:3:25: enter never plays: the {if} or {for} around <p> reads no
-  signal, so it never adds or removes it`); a transition that reads a
-  signal; a `slide` direction that is not one of the four constants; a
+  inside an `{if}` branch, a `{for}` row or a `{key}` block (`animate`: a
+  `{for}` row), or inside blocks that read no signal and so never change
+  (`app.den:3:25: enter never plays: the {if}, {for} or {key} around <p>
+  reads no signal, so it never adds or removes it`); a transition that
+  reads a signal; a `slide` direction that is not one of the four constants; a
   `.For` duration that is not a constant, not a number of ms or s,
   negative, or too long; and den's functions used as values
   (`f := slide`).

@@ -1050,11 +1050,11 @@ component Card() {
 component App() {
     show := signal(true)
     <div>{if show.Get() { <div><p enter={fade()}>x</p></div> }}</div>
-}`, `app.den:4:35: enter works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+}`, `app.den:4:35: enter works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it`},
 		{"exit on a component's root", `
 component App() {
     <p exit={fade()}>x</p>
-}`, `app.den:3:8: exit works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+}`, `app.den:3:8: exit works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it`},
 		{"enter in slot markup", `
 component App() {
     show := signal(true)
@@ -1062,7 +1062,7 @@ component App() {
 }
 component Card(children den.Children) {
     <div>{children}</div>
-}`, `app.den:4:36: enter works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+}`, `app.den:4:36: enter works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it`},
 		{"animate in an if", `
 component App() {
     show := signal(true)
@@ -1121,7 +1121,7 @@ component App() {
 		{"enter in an if that never changes", `
 component App() {
     <div>{if 1 > 0 { <p enter={fade()}>x</p> }}</div>
-}`, `app.den:3:25: enter never plays: the {if} or {for} around <p> reads no signal, so it never adds or removes it`},
+}`, `app.den:3:25: enter never plays: the {if}, {for} or {key} around <p> reads no signal, so it never adds or removes it`},
 		{"animate in a for that never changes", `
 component App() {
     show := signal(true)
@@ -1171,6 +1171,51 @@ component App() {
     l := layout()
     <Layout />
 }`, `app.den:6:10: layout is not available because this program has a component named Layout; rename it`},
+		{"struct key in a key block", `
+type P struct{ A int }
+component App() {
+    p := signal(P{1})
+    <div>{key p.Get() { <p>x</p> }}</div>
+}`, `app.den:5:15: {key} values must be strings, numbers or bools, not P`},
+		{"slice key in a key block", `
+component App() {
+    xs := signal([]int{1})
+    <div>{key xs.Get() { <p>x</p> }}</div>
+}`, `app.den:4:15: []int does not satisfy comparable`},
+		{"key block without a body", `
+component App() {
+    x := signal(1)
+    <div>{key x.Get()}</div>
+}`, `app.den:4:11: {key} needs a body after its value: {key x { ... }}`},
+		{"key block not closed", `
+component App() {
+    x := signal(1)
+    <div>{key x.Get() { <p>x</p> }</div>
+}`, `app.den:4:35: expected } to close the {key opened at line 4`},
+		{"key block with else", `
+component App() {
+    x := signal(1)
+    <div>{key x.Get() { <p>x</p> } else { <p>y</p> }}</div>
+}`, `app.den:4:36: expected } to close the {key opened at line 4`},
+		{"key block at the end of the file", `
+component App() {
+    x := signal(1)
+    <div>{key x.Get() { <p>x</p>
+}`, `app.den:5:2: expected } to close the {key opened at line 4`},
+		{"animate in a key block", `
+component App() {
+    x := signal(1)
+    <div>{key x.Get() { <p animate={layout()}>x</p> }}</div>
+}`, `app.den:4:28: animate works only on an element directly inside a {for} row, whose place it animates when the list changes`},
+		{"exit below the top of a key block", `
+component App() {
+    x := signal(1)
+    <div>{key x.Get() { <div><p exit={fade()}>x</p></div> }}</div>
+}`, `app.den:4:33: exit works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it`},
+		{"enter in a key block that never changes", `
+component App() {
+    <div>{key 1 { <p enter={fade()}>x</p> }}</div>
+}`, `app.den:3:22: enter never plays: the {if}, {for} or {key} around <p> reads no signal, so it never adds or removes it`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1190,7 +1235,7 @@ component App() {
 component App() {
     t := fade()
     <p exit={t}>x</p>
-}`, `app.den:4:8: exit works only on an element directly inside an {if} branch or a {for} row, which add and remove it`},
+}`, `app.den:4:8: exit works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it`},
 		{"animate in an if using a variable", `
 component App() {
     show := signal(true)
@@ -1455,6 +1500,16 @@ component App() {
     xs := signal([]int{1})
     <ul>{for _, x := range xs.Get() key x { <li animate={layout()}>{x}</li> }}</ul>
 }`, []string{"$form", "$glide", "animate(", "$evs"}},
+		{"key", `
+component App() {
+    n := signal(0)
+    <div>{key n.Get() { <p exit={fade()}>{n.Get()}</p> }}</div>
+}`, []string{"$form", "$glide", "animate(", "$m0", "$evs"}},
+		{"key without transitions", `
+component App() {
+    n := signal(0)
+    <div>{key n.Get() { <p>{n.Get()}</p> }}</div>
+}`, nil},
 		{"spring", `
 component App() {
     x := spring(1)
@@ -1545,4 +1600,132 @@ component Map() {
     <i>{len(s)}</i>
 }`, `log(html());`)
 	expectLines(t, got, `<div><p>34</p><p>yes</p><p>no</p><p>5 <i>1</i></p></div>`)
+}
+
+// countMarkup counts the {key} blocks and the {...} expressions in ns, at
+// any depth.
+func countMarkup(ns []Node, keys, exprs *int) {
+	for _, n := range ns {
+		switch n := n.(type) {
+		case *Interp:
+			*exprs++
+		case *Key:
+			*keys++
+			countMarkup(n.Body, keys, exprs)
+		case *If:
+			countMarkup(n.Then, keys, exprs)
+			countMarkup(n.Else, keys, exprs)
+		case *For:
+			countMarkup(n.Body, keys, exprs)
+		case *Element:
+			countMarkup(n.Children, keys, exprs)
+			for _, s := range n.Slots {
+				countMarkup(s.Children, keys, exprs)
+			}
+		}
+	}
+}
+
+// The word key starts a {key} block only where no Go expression can have
+// the name key: followed by whitespace and then a name, a number, a
+// string or a ! that is not !=, with a { ending the header. Everything
+// else is an expression, as it was before key blocks, here with a
+// variable named key; den fmt reads markup the same way and keeps each
+// one what it was.
+func TestKeyBlockOrExpression(t *testing.T) {
+	for _, c := range []struct {
+		src         string
+		keys, exprs int
+		html        string
+	}{
+		{`
+component App() {
+    key := "k"
+    <p>{key}|{ key }|{key /* c */}</p>
+}`, 0, 3, `<p>k|k|k</p>`},
+		{`
+type K struct{ Name string }
+
+component App() {
+    key := K{"n"}
+    <p>{key.Name}{key .Name}</p>
+}`, 0, 2, `<p>nn</p>`},
+		{`
+component App() {
+    key := func(x int) int { return x * 2 }
+    x := 3
+    <p>{key (x)}{key(x)}{key (1) + key (x)}</p>
+}`, 0, 3, `<p>668</p>`},
+		{`
+component App() {
+    key := []int{4}
+    <p>{key[0]}{key [0]}{len(key)}</p>
+}`, 0, 3, `<p>441</p>`},
+		{`
+type T struct{ v int }
+
+component App() {
+    key := 5
+    <p>{key - T{1}.v}</p>
+}`, 0, 1, `<p>4</p>`},
+		{`
+component App() {
+    key := 1
+    <p>{key == 1} {key != 1} {key + 1} {key - 1} {key * 2} {key / 1} {key % 2} {key & 1} {key | 2} {key ^ 1} {key << 1} {key >> 1} {key < 2} {key <= 0} {key > 0} {key >= 1}</p>
+}`, 0, 16, `<p>true false 2 0 2 1 1 1 3 0 2 0 true false true true</p>`},
+		{`
+component App() {
+    key := true
+    b := false
+    <p>{key && b} {key || b}</p>
+}`, 0, 2, `<p>false true</p>`},
+		{`
+component App() {
+    <ul>{for _, key := range []int{1, 2} key key {<li>{key}{key * 10}</li>}}</ul>
+}`, 0, 2, `<ul><li>110</li><li>220</li></ul>`},
+		{`
+type K struct{ Name string }
+
+component App() {
+    x := 1
+    b := false
+    k := K{"n"}
+    <p>{key x {<b>{x}</b>}}{key "s" {s}}{key 1 {1}}{key 'c' {c}}{key ` + "`r`" + ` {r}}{key !b {!}}{key k.Name {{k.Name}}}{
+        key
+        x {x}}{key 0 - x {-}}</p>
+}`, 9, 2, `<p><b>1</b>s1cr!nx-</p>`},
+		{`
+component App() {
+    key := 2
+    <p>{key key {<i>{key}</i>{key key + 1 {{key + 1}}}}}</p>
+}`, 2, 2, `<p><i>2</i>3</p>`},
+	} {
+		f, err := Parse("app.den", c.src)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, c.src)
+		}
+		keys, exprs := 0, 0
+		countMarkup([]Node{f.Components[len(f.Components)-1].Root}, &keys, &exprs)
+		if keys != c.keys || exprs != c.exprs {
+			t.Errorf("%d key blocks and %d expressions, want %d and %d:\n%s", keys, exprs, c.keys, c.exprs, c.src)
+		}
+		expectLines(t, runApp(t, c.src, `log(html());`), c.html)
+		formatted, err := Format("app.den", []byte(c.src))
+		if err != nil {
+			t.Fatalf("den fmt: %v\n%s", err, c.src)
+		}
+		g, err := Parse("app.den", string(formatted))
+		if err != nil {
+			t.Fatalf("formatted: %v\n%s", err, formatted)
+		}
+		keys, exprs = 0, 0
+		countMarkup([]Node{g.Components[len(g.Components)-1].Root}, &keys, &exprs)
+		if keys != c.keys || exprs != c.exprs {
+			t.Errorf("formatted: %d key blocks and %d expressions, want %d and %d:\n%s", keys, exprs, c.keys, c.exprs, formatted)
+		}
+		want, _ := compileOne(c.src)
+		if got, err := compileOne(string(formatted)); err != nil || got.JS != want.JS {
+			t.Errorf("formatted, it compiles differently: %v\n%s", err, formatted)
+		}
+	}
 }

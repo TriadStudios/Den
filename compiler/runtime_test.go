@@ -2024,6 +2024,176 @@ back(); await tick(); show("back");`)
 		`back <main><p>none</p><a href="/">home</a></main>`)
 }
 
+// {key x { ... }} builds its content again when x changes. This is the
+// trial app's page that kept its confirm dialog from /items/1 on /items/2,
+// and on Back: under a key block each id gets a new Item, with its own
+// state, and keeps it while the id stays (/items/1/ is the same id).
+func TestRunKeyBlock(t *testing.T) {
+	got := runApp(t, `
+type P struct {
+    ID int
+}
+
+component App() {
+    r := route[P]("/items/:id")
+    <div>
+        {if r.Matches() {
+            {key r.Params().ID {
+                <Item r={r} />
+            }}
+        }}
+    </div>
+}
+
+component Item(r *Route[P]) {
+    confirming := signal(false)
+    <div>
+        <button onclick={confirming.Set(true)}>Delete...</button>
+        {if confirming.Get() {
+            <p>Really delete item {r.Params().ID}?</p>
+        }}
+    </div>
+}`, `
+const show = () => log(location.pathname, html());
+visit("/items/1"); await tick(); show();
+click(find("button")); await tick(); show();
+visit("/items/2"); await tick(); show();
+click(find("button")); await tick(); show();
+back(); await tick(); show();
+click(find("button")); await tick();
+const b = find("button");
+visit("/items/1/"); await tick(); show(); log(find("button") === b);
+visit("/other"); await tick(); show();
+visit("/items/1"); await tick(); show();`)
+	expectLines(t, got,
+		`/items/1 <div><div><button>Delete...</button></div></div>`,
+		`/items/1 <div><div><button>Delete...</button><p>Really delete item 1?</p></div></div>`,
+		`/items/2 <div><div><button>Delete...</button></div></div>`,
+		`/items/2 <div><div><button>Delete...</button><p>Really delete item 2?</p></div></div>`,
+		`/items/1 <div><div><button>Delete...</button></div></div>`,
+		`/items/1/ <div><div><button>Delete...</button><p>Really delete item 1?</p></div></div>`,
+		`true`,
+		`/other <div></div>`,
+		`/items/1 <div><div><button>Delete...</button></div></div>`)
+}
+
+// Key blocks in list rows, in slot markup and with a key that never
+// changes. A row's key block is rebuilt when its value changes, not when
+// the signals it reads change to give the same value; handlers that use
+// only the row's item, delegated through the row's element, still find
+// it from inside the block; and the rows the list keeps keep their key
+// blocks' content.
+func TestRunKeyBlockPlaces(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    n := signal(0)
+    ids := signal([]int{1, 2})
+    sel := signal(0)
+    <div>
+        <button onclick={n.Set(n.Get() + 1)}>n</button>
+        <button onclick={ids.Set([]int{2, 3})}>ids</button>
+        <ul>
+            {for _, id := range ids.Get() key id {
+                <li>{key n.Get() / 2 {
+                    <i onclick={sel.Set(id)}>{id}</i>
+                    <Count id={id} n={n.Get()} />
+                }}</li>
+            }}
+        </ul>
+        <Box>{key n.Get()%2 == 0 {<Count id={0} n={n.Get()} />}}</Box>
+        {key "static" {<b>static {n.Get()}</b>}}
+        <p>{sel.Get()}</p>
+    </div>
+}
+
+component Count(id int, n int) {
+    clicks := signal(0)
+    <span onclick={clicks.Set(clicks.Get() + 1)}>{id}:{n}:{clicks.Get()}</span>
+}
+
+component Box(children den.Children) {
+    <section>{children}</section>
+}`, `
+const show = () => log(html().replaceAll("<button>n</button><button>ids</button>", ""));
+show();
+for (const s of findAll("span")) click(s);
+click(findAll("i")[1]); await tick(); show();
+click(find("button", "n")); await tick(); show();
+click(find("button", "n")); await tick(); show();
+for (const s of findAll("span")) click(s);
+click(find("button", "ids")); await tick(); show();
+click(findAll("i")[1]); await tick(); show();`)
+	expectLines(t, got,
+		`<div><ul><li><i den-click="0">1</i><span>1:0:0</span></li><li><i den-click="0">2</i><span>2:0:0</span></li></ul><section><span>0:0:0</span></section><b>static 0</b><p>0</p></div>`,
+		`<div><ul><li><i den-click="0">1</i><span>1:0:1</span></li><li><i den-click="0">2</i><span>2:0:1</span></li></ul><section><span>0:0:1</span></section><b>static 0</b><p>2</p></div>`,
+		// n is 1: the rows' keys (n/2) stay 0, the box's (n%2 == 0) changes.
+		`<div><ul><li><i den-click="0">1</i><span>1:0:1</span></li><li><i den-click="0">2</i><span>2:0:1</span></li></ul><section><span>0:1:0</span></section><b>static 1</b><p>2</p></div>`,
+		`<div><ul><li><i den-click="0">1</i><span>1:2:0</span></li><li><i den-click="0">2</i><span>2:2:0</span></li></ul><section><span>0:2:0</span></section><b>static 2</b><p>2</p></div>`,
+		`<div><ul><li><i den-click="0">2</i><span>2:2:1</span></li><li><i den-click="0">3</i><span>3:2:0</span></li></ul><section><span>0:2:1</span></section><b>static 2</b><p>2</p></div>`,
+		`<div><ul><li><i den-click="0">2</i><span>2:2:1</span></li><li><i den-click="0">3</i><span>3:2:0</span></li></ul><section><span>0:2:1</span></section><b>static 2</b><p>3</p></div>`)
+}
+
+// When the same update changes a key and what the old content reads, the
+// old content is freed before its bindings could run with the new values:
+// the old Row (i is 2) would read past the end of a list of one.
+func TestRunKeyBlockGuard(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    n := signal(3)
+    at := signal(2)
+    <div>
+        <button onclick={n.Set(1); at.Set(0)}>shrink</button>
+        {key at.Get() {
+            <Row n={n} i={at.Get()} />
+        }}
+    </div>
+}
+
+component Row(n *Signal[int], i int) {
+    <p>{[]string{"a", "b", "c"}[:n.Get()][i]}</p>
+}`, `
+log(html());
+click(find("button")); await tick();
+log(html());`)
+	expectLines(t, got,
+		`<div><button>shrink</button><p>c</p></div>`,
+		`<div><button>shrink</button><p>a</p></div>`)
+}
+
+// With enter and exit transitions, a key block's old content leaves while
+// the new content enters, as a row does when its key goes and another
+// comes; nothing plays when the page is built. A key that comes back while
+// its old content is leaving gets new content.
+func TestMotionKeyBlock(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    n := signal(0)
+    <div>
+        <button onclick={n.Set(n.Get() + 1)}>n</button>
+        <button onclick={n.Set(0)}>zero</button>
+        {key n.Get() {
+            <p enter={fade()} exit={fade()}>{n.Get()}</p>
+        }}
+    </div>
+}`, logAnims+`
+const [inc, zero] = findAll("button");
+const show = () => log(html().replaceAll("<button>n</button><button>zero</button>", ""), "|", running().join(" "), "|");
+show(); logNew();
+click(inc); await tick();
+show(); log(findAll("p")[0].inert, findAll("p")[1].inert); logNew();
+click(zero); await tick();
+show();
+finishAll(); show();`)
+	expectLines(t, got,
+		`<div><p>0</p></div> |  |`,
+		`<div><p>0</p><p>1</p></div> | p:0 p:1 |`,
+		`true false`,
+		`p:0 {"opacity":0} {"duration":200,"easing":"ease-in","fill":"forwards"}`,
+		`p:1 {"opacity":0,"offset":0} {"duration":200,"easing":"ease-out","fill":"none"}`,
+		`<div><p>0</p><p>1</p><p>0</p></div> | p:0 p:1 p:1 p:0 |`,
+		`<div><p>0</p></div> |  |`)
+}
+
 // With transitions, a branch or row that leaves is freed before its
 // bindings could run again: it leaves showing what it showed, and nothing
 // reads past the guard that removed it.

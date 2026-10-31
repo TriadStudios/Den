@@ -709,7 +709,7 @@ func (f *formatter) goHeader(kw, src string, off, indent int) string {
 // ---- markup, as written ----------------------------------------------------
 
 // An mNode is markup as written: *mText, *mInterp, *mComment, *mElem, *mIf,
-// *mFor, or *mWord once text is split.
+// *mFor, *mKey, or *mWord once text is split.
 type mNode any
 
 type mText struct {
@@ -765,6 +765,15 @@ type mFor struct {
 	key       string
 	keyOff    int
 	body      []mNode
+}
+
+type mKey struct {
+	off, end int
+	keyAt    int // the word key
+	key      string
+	keyOff   int
+	bodyAt   int // the { of the body
+	body     []mNode
 }
 
 type mWord struct{ s string }
@@ -938,10 +947,13 @@ func (p *lparser) control() mNode {
 	p.off++
 	p.skipSpace()
 	var n mNode
-	if kw == "if" {
+	switch kw {
+	case "if":
 		n = p.ifBlock()
-	} else {
+	case "for":
 		n = p.forBlock()
+	default:
+		n = p.keyBlock()
 	}
 	p.skipSpace()
 	p.expect("}")
@@ -949,6 +961,8 @@ func (p *lparser) control() mNode {
 	case *mIf:
 		n.off, n.end = off, p.off
 	case *mFor:
+		n.off, n.end = off, p.off
+	case *mKey:
 		n.off, n.end = off, p.off
 	}
 	return n
@@ -988,6 +1002,15 @@ func (p *lparser) forBlock() *mFor {
 	return n
 }
 
+func (p *lparser) keyBlock() *mKey {
+	n := &mKey{keyAt: p.off}
+	p.off += len("key")
+	n.key, n.keyOff = p.readHeader("key", Pos{})
+	n.bodyAt = p.off - 1
+	n.body, _ = p.nodes(false)
+	return n
+}
+
 // ---- markup layout ---------------------------------------------------------
 
 // A content list (the children of an element, or the body of a block) is
@@ -1019,7 +1042,7 @@ type seqCtx int
 const (
 	ctxElem  seqCtx = iota // an HTML or SVG element
 	ctxComp                // a component element or a slot, whose blank edge text is dropped
-	ctxBlock               // an {if} or {for} body, whose edge spaces are trimmed
+	ctxBlock               // an {if}, {for} or {key} body, whose edge spaces are trimmed
 )
 
 // fragile reports whether a word is made only of characters that
@@ -1115,7 +1138,7 @@ func isWord(n mNode) bool { _, ok := n.(*mWord); return ok }
 // where it was glued to its neighbour.
 func blockAtom(n mNode) bool {
 	switch n.(type) {
-	case *mElem, *mIf, *mFor, *mComment:
+	case *mElem, *mIf, *mFor, *mKey, *mComment:
 		return true
 	}
 	return false
@@ -1299,7 +1322,7 @@ func (m *mprinter) atom(a mNode, frozen bool) {
 			return
 		}
 		m.element(a)
-	case *mIf, *mFor:
+	case *mIf, *mFor, *mKey:
 		m.control(a)
 	}
 }
@@ -1363,6 +1386,18 @@ func (m *mprinter) control(n mNode) {
 		m.write("{for " + m.f.goHeader("for", n.header, n.headerOff, d) + " key " + m.f.goExpr(n.key, n.keyOff, d) + " {")
 		m.block(newSeq(n.body, ctxBlock, false), d, false)
 		m.write("}}")
+	case *mKey:
+		if m.oneLine(n.off, n.end) {
+			if flat, ok := m.flat(n); ok && m.fits(flat) {
+				m.write(flat)
+				return
+			}
+		}
+		// Like a {for} key, the key is an expression to den (the argument of
+		// denKey), not a header whose parentheses gofmt would drop.
+		m.write("{key " + m.f.goExpr(n.key, n.keyOff, d) + " {")
+		m.block(newSeq(n.body, ctxBlock, false), d, false)
+		m.write("}}")
 	}
 }
 
@@ -1419,6 +1454,10 @@ func (m *mprinter) flat(n mNode) (string, bool) {
 		key, ok2 := one(m.f.goExpr(n.key, n.keyOff, m.depth))
 		body, ok3 := m.flatSeq(newSeq(n.body, ctxBlock, false))
 		return "{for " + header + " key " + key + " {" + body + "}}", ok && ok2 && ok3
+	case *mKey:
+		key, ok := one(m.f.goExpr(n.key, n.keyOff, m.depth))
+		body, ok2 := m.flatSeq(newSeq(n.body, ctxBlock, false))
+		return "{key " + key + " {" + body + "}}", ok && ok2
 	}
 	return "", false
 }
@@ -1734,6 +1773,10 @@ func sameNode(a, b Node) (Pos, bool) {
 		}
 	case *For:
 		if b, ok := b.(*For); ok && sameGo('f', a.Header, b.Header) && sameGo('x', a.Key, b.Key) {
+			return sameNodes(a.Body, b.Body)
+		}
+	case *Key:
+		if b, ok := b.(*Key); ok && sameGo('x', a.Key, b.Key) {
 			return sameNodes(a.Body, b.Body)
 		}
 	case *Element:
