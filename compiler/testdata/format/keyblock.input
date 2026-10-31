@@ -1,0 +1,48 @@
+// {key x { ... }} blocks, and {...} that only look like them: a name
+// key followed by an operator, (, [ or . is an expression.
+
+type P struct {
+	ID int
+}
+
+type T struct{ v int }
+
+component App() {
+    r := route[P]("/items/:id")
+    n := signal(0)
+    ids := signal([]int{1, 2})
+    key := func(x int) int { return x * 2 }
+    keys := []int{3}
+<div>
+{if r.Matches(){
+    {  key   r.Params().ID{
+<Item r={r}/>
+    }}
+}}
+<ul>
+{for _,id:=range ids.Get() key id {
+<li>{key n.Get()/2 {<Count id={id} n={n.Get()}/>}}</li>
+}}
+</ul>
+<Box>{key n.Get()%2==0 {<b exit={fade()}>{n.Get()}</b>
+<i>two</i>}}</Box>
+{key
+    n.Get() * (n.Get() + 1) /* a comment */ {
+<p>{n.Get()}</p>}}
+{key "static" {<p>once</p>}}
+<p>{key (n.Get())} {keys[0]} {key(1) - T{1}.v} {key (2) == 4}</p>
+</div>
+}
+
+component Item(r *Route[P]) {
+    confirming := signal(false)
+    <div><button onclick={confirming.Set(true)}>Delete...</button>{if confirming.Get() {<p>Really delete item {r.Params().ID}?</p>}}</div>
+}
+
+component Count(id int, n int) {
+    <span>{id}:{n}</span>
+}
+
+component Box(children den.Children) {
+    <section>{children}</section>
+}

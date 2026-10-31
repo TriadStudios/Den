@@ -13,7 +13,7 @@ import (
 )
 
 // Motion: enter={fade()}, exit={slide("left").For(Fast)} and
-// animate={layout()} on elements that an {if} or {for} adds, and
+// animate={layout()} on elements that an {if}, {for} or {key} adds, and
 // spring(target). The checks that need types are here; gen and the pairer
 // in check.go check the attributes' form and place.
 
@@ -129,6 +129,10 @@ func motionIn(nodes []Node, layout bool) bool {
 				return true
 			}
 		case *For:
+			if motionIn(n.Body, layout) {
+				return true
+			}
+		case *Key:
 			if motionIn(n.Body, layout) {
 				return true
 			}

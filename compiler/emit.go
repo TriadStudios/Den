@@ -340,7 +340,7 @@ type tnode struct {
 	attrs    []*Attr // static attributes
 	children []*tnode
 	src      Node   // the markup node that needs code after cloning
-	end      *tnode // reactive {if} or {for}: the anchor after its content
+	end      *tnode // reactive {if}, {for} or {key}: the anchor after its content
 	need     bool   // code needs a reference to this node
 	v        string // that reference
 }
@@ -432,7 +432,7 @@ func (e *emitter) tnodes(nodes []Node, svg ns) []*tnode {
 			}
 			t.children = e.tnodes(n.Children, t.svg.inner(n.Tag))
 			out = append(out, t)
-		case *If, *For:
+		case *If, *For, *Key:
 			start := &tnode{kind: 'c', svg: svg, src: n, need: true}
 			out = append(out, start)
 			if e.reactiveNode(n) {
@@ -635,6 +635,8 @@ func (e *emitter) bind(ts []*tnode) {
 			e.ifNode(t, n)
 		case *For:
 			e.forNode(t, n)
+		case *Key:
+			e.keyNode(t, n)
 		}
 	}
 }
@@ -821,6 +823,27 @@ func (e *emitter) forNode(t *tnode, n *For) {
 		fn, e.motion = "$form", true
 	}
 	e.line("%s(%s, %s, () => %s, (%s) => %s, %s, %t%s);", fn, t.v, t.end.v, list, params, e.expr(pt.expr), block, useIndex, table)
+}
+
+// keyNode emits {key}. A key that reads no signal never changes, so the
+// content is built once, in place of its placeholder, as a {for} over a
+// list that reads no signal is (its keys are not evaluated either).
+// Otherwise the content is the one row of a keyed list whose item and key
+// are the key's value: $for keeps the row while the value stays the same
+// and builds a new one, freeing the old, when it changes. With transitions,
+// $form plays them as for any row that leaves and one that comes.
+func (e *emitter) keyNode(t *tnode, n *Key) {
+	if t.end == nil {
+		if len(n.Body) > 0 {
+			e.line("%s.replaceWith(%s);", t.v, e.instantiate(n.Body, t.svg))
+		}
+		return
+	}
+	fn := "$for"
+	if motionIn(n.Body, false) {
+		fn, e.motion = "$form", true
+	}
+	e.line("%s(%s, %s, () => [%s], (k) => k, %s, false);", fn, t.v, t.end.v, e.expr(e.cc.parts[n].expr), e.block("", n.Body, t.svg))
 }
 
 // loopVar returns the JS name of a range variable, or "" if there is none.
