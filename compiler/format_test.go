@@ -253,6 +253,8 @@ func TestFormatErrors(t *testing.T) {
 		{"attribute", "component App() {\n    <p class={f(}></p>\n}\n", "app.den:2:17: missing ',' before newline in argument list"},
 		{"handler", "component App() {\n    <button onclick={x := }>b</button>\n}\n", "app.den:2:27: expected operand, found '}'"},
 		{"if header", "component App() {\n    <div>{if x == {\n        <p />\n    }}</div>\n}\n", "app.den:2:18: expected operand, found '{'"},
+		{"escape from an expression", "component App() {\n    <p>{1); f(2}</p>\n}\n", "app.den:2:10: unexpected ): there is no ( for it to close"},
+		{"line comment before an if body", "component App() {\n    <div>{if x // c\n    {<p />}}</div>\n}\n", "app.den:2:16: a // comment cannot come right before the { of the if body; use /* */ or put it inside the body"},
 		{"params", "component App(a int b) {\n    <p />\n}\n", "app.den:1:15: invalid parameter list: missing ',' in parameter list"},
 		{"go after a component", "component App() {\n    <p />\n}\n\nfunc f(\n", "app.den:5:8: expected ')', found 'EOF'"},
 		{"crlf", "type T struct {\r\n    A int\r\n\r\nfunc f() {}\r\n\r\ncomponent App() {\r\n    <p />\r\n}\r\n", "app.den:4:1: expected '}', found 'func'"},

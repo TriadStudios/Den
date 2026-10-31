@@ -289,6 +289,7 @@ func check(files []*File) (*checked, error) {
 	// of the declarations (keeping positions) and written after the package
 	// clause.
 	var declSrc strings.Builder
+	var declFrags []fragment // at offsets in declSrc
 	imports := map[string]bool{}
 	var importSrc strings.Builder
 	for _, f := range files {
@@ -304,7 +305,10 @@ func check(files []*File) (*checked, error) {
 					fmt.Fprintf(&importSrc, "import %s%s\n", lineDirective(f.Name, im.pos), im.spec)
 				}
 			}
-			declSrc.WriteString("\n" + lineDirective(f.Name, d.Pos) + code + "\n")
+			declSrc.WriteString("\n" + lineDirective(f.Name, d.Pos))
+			declFrags = append(declFrags, fragment{start: declSrc.Len(), end: declSrc.Len() + len(code), last: -1,
+				src: code, file: f.Name, pos: d.Pos, what: "this Go declaration", must: "complete"})
+			declSrc.WriteString(code + "\n")
 		}
 	}
 	// own holds the names the program gives a meaning of its own at the top
@@ -384,22 +388,22 @@ func check(files []*File) (*checked, error) {
 	} else {
 		src.WriteString(preludeDen)
 	}
-	src.WriteString(declSrc.String())
 	g := &gen{src: &src, byName: byName, errs: &errs, own: own, motionBy: motionBy}
+	for _, fr := range declFrags {
+		fr.start += src.Len()
+		fr.end += src.Len()
+		g.frags = append(g.frags, fr)
+	}
+	src.WriteString(declSrc.String())
 	for _, f := range files {
 		for _, c := range f.Components {
-			g.file = c.File
-			fmt.Fprintf(&src, "\nfunc %s(%s%s) {", c.Name, lineDirective(c.File, c.ParamsPos), c.ParamsSrc)
-			src.WriteString(lineDirective(c.File, c.StmtsPos))
-			src.WriteString(c.StmtsSrc)
-			src.WriteString("\n\tdenMark()\n")
-			g.node(c.Root)
-			src.WriteString("}\n")
+			g.function(c)
 		}
 	}
 	// Keep going after markup errors so the type checker can report the rest.
+	code := src.String()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, preludeFile, src.String(), parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, preludeFile, code, parser.SkipObjectResolution)
 	if err != nil {
 		if list, ok := err.(scanner.ErrorList); ok {
 			for _, e := range list {
@@ -408,6 +412,12 @@ func check(files []*File) (*checked, error) {
 			return nil, errs.sorted()
 		}
 		return nil, err
+	}
+	// Go must read what gen wrote around the program's Go as gen wrote it,
+	// or the pairer would pair the wrong statements; and that Go would be
+	// type-checked as something else.
+	if err := g.checkShapes(code, fset, file); err != nil {
+		return nil, append(errs, err).sorted()
 	}
 
 	info := &types.Info{
@@ -566,16 +576,26 @@ next:
 		for _, c := range f.Components {
 			fd := decls[c.Name]
 			cc := &checkedComponent{c: c, decl: fd, parts: map[Node]*part{}, attrs: map[*Attr]*part{}}
+			pr := &pairer{ck: out, cc: cc}
+			// The markup's statements follow the denMark() that gen writes
+			// after the component's own statements, which may call it too.
+			var body []ast.Stmt
+			if fd != nil && fd.Body != nil {
+				body = fd.Body.List
+			}
 			mark := -1
-			for i, s := range fd.Body.List {
-				if isMark(s) {
+			for i := len(body) - 1; i >= 0; i-- {
+				if isMark(body[i]) {
 					mark = i
 					break
 				}
 			}
-			cc.stmts = fd.Body.List[:mark]
-			pr := &pairer{ck: out, cc: cc}
-			pr.node(c.Root, fd.Body.List[mark+1:])
+			if mark < 0 {
+				pr.internal(c.NamePos, "the Go den wrote for component %s has no denMark()", c.Name)
+			} else {
+				cc.stmts = body[:mark]
+				pr.done(c.Root.Pos, pr.node(c.Root, body[mark+1:]))
+			}
 			errs = append(errs, pr.errs...)
 			out.comps = append(out.comps, cc)
 		}
@@ -867,9 +887,286 @@ type gen struct {
 	own      map[string]string // check's own: the names the program claims, and how
 	motionBy map[string]string // den's motion names the program's own names take away
 	chain    []Node            // the {if} and {for} blocks whose top level is being written
+	frags    []fragment        // the program's Go that gen copied into src, in order
+	shapes   []shape           // what gen wrote around it, in order
+	funcs    []int             // the offsets of the components' funcs
 }
 
 func (g *gen) d(p Pos) string { return lineDirective(g.file, p) }
+
+// A fragment is a piece of the program's own Go that gen copies into the
+// file it writes: an {expr}, an attribute value, an if or for header, a
+// list key, the parameters or statements of a component, a declaration.
+// What gen writes around it must stay as gen wrote it: Go must read the
+// fragment as ending where it ends, never closing a bracket gen opened or
+// running on, as a comment or literal, into gen's code (checkShapes).
+type fragment struct {
+	start, end int // its bytes in the file
+	last       int // where the last token that starts in it starts, once scanned
+	src        string
+	file       string
+	pos        Pos    // where src starts in file
+	what, must string // for errors: "<what> must be <must>"
+}
+
+// frag writes src, the program's Go at pos in g.file, after a line
+// directive for it, and records it as a fragment for checkShapes.
+func (g *gen) frag(pos Pos, src, what, must string) int {
+	g.src.WriteString(g.d(pos))
+	g.frags = append(g.frags, fragment{start: g.src.Len(), end: g.src.Len() + len(src), last: -1,
+		src: src, file: g.file, pos: pos, what: what, must: must})
+	g.src.WriteString(src)
+	return len(g.frags) - 1
+}
+
+// A shape is Go that gen wrote around fragments, from offset at: a call
+// such as denText(x), an if or for statement, the call of a component, a
+// component's func. check reports whether go/parser read it as gen wrote
+// it, by the offsets of gen's own tokens, which line directives in the
+// program's Go do not change. If not, it returns the fragment to blame
+// (-1: the last one before at) and the offset in it to report (-1: its
+// start).
+type shape struct {
+	at    int
+	check func(ix *goIndex) (ok bool, frag, off int)
+}
+
+// expect adds the shape that starts at offset at and is checked by check.
+func (g *gen) expect(at int, check func(ix *goIndex) (bool, int, int)) {
+	g.shapes = append(g.shapes, shape{at, check})
+}
+
+// call writes fn(x) as a statement after the line directive d, where x is
+// the Go src at pos, a fragment that is what and must be one expression.
+func (g *gen) call(d, fn string, pos Pos, src, what string) {
+	g.src.WriteString("\t" + d)
+	at := g.src.Len()
+	g.src.WriteString(fn + "(")
+	f := g.frag(pos, src, what, "one Go expression")
+	rp := g.src.Len()
+	g.src.WriteString(")\n")
+	g.expect(at, func(ix *goIndex) (bool, int, int) {
+		c := ix.call(at, fn, rp)
+		switch {
+		case c == nil:
+			return false, f, -1
+		case len(c.Args) > 1:
+			return false, f, ix.off(c.Args[1].Pos())
+		case c.Ellipsis.IsValid():
+			return false, f, ix.off(c.Ellipsis)
+		}
+		return len(c.Args) == 1, f, -1
+	})
+}
+
+// function writes the Go function that stands for component c: its
+// parameters, its statements, denMark() and the Go for its markup.
+func (g *gen) function(c *Component) {
+	g.file = c.File
+	g.src.WriteString("\n")
+	at := g.src.Len()
+	g.funcs = append(g.funcs, at)
+	g.src.WriteString("func " + c.Name + "(")
+	lp := g.src.Len() - 1
+	params := g.frag(c.ParamsPos, c.ParamsSrc, "the parameter list of "+c.Name, "Go parameters")
+	rp := g.src.Len()
+	g.src.WriteString(") {")
+	stmts := g.frag(c.StmtsPos, c.StmtsSrc, "the statements of "+c.Name, "complete Go statements")
+	g.src.WriteString("\n\t")
+	mark := g.src.Len()
+	g.src.WriteString("denMark()\n")
+	rb := -1
+	g.expect(at, func(ix *goIndex) (bool, int, int) {
+		fd := ix.funcs[at]
+		if fd == nil || fd.Recv != nil || fd.Type.TypeParams != nil || fd.Type.Results != nil ||
+			ix.off(fd.Type.Params.Opening) != lp || ix.off(fd.Type.Params.Closing) != rp {
+			return false, params, -1
+		}
+		if fd.Body == nil || ix.off(fd.Body.Lbrace) != rp+len(") ") || ix.off(fd.Body.Rbrace) != rb {
+			return false, stmts, -1
+		}
+		// The markup's Go is written after denMark(), which must be a
+		// statement of its own: not the end of the component's last one,
+		// as in defer denMark().
+		for _, s := range fd.Body.List {
+			if es, ok := s.(*ast.ExprStmt); ok {
+				if c, ok := es.X.(*ast.CallExpr); ok && c == ix.call(mark, "denMark", mark+len("denMark(")) && len(c.Args) == 0 {
+					return true, 0, 0
+				}
+			}
+		}
+		return false, stmts, g.frags[stmts].last
+	})
+	g.node(c.Root)
+	rb = g.src.Len()
+	g.src.WriteString("}\n")
+}
+
+// checkShapes makes sure that go/parser read src, the file gen wrote (and
+// parsed as file), as gen wrote it around the program's Go. It returns the
+// error for the first fragment that Go reads otherwise: one that ends gen's
+// code early, by closing a bracket gen opened or with Go such as a label
+// that takes gen's next statement in, or that runs on into gen's code as a
+// comment, a literal or an open bracket. Parse rejects such Go in markup
+// with a better message (fragmentEscape), but the pairer and everything
+// after it rely on this check, not on that one.
+//
+// It goes by the offsets of tokens in src, which line directives in the
+// program's Go do not change. First every token: a bracket must be closed
+// by a bracket of the code it was opened in (the same fragment, or gen's
+// own), and the first token gen wrote after a fragment must be read as a
+// token where gen wrote it, not as part of a comment or literal that the
+// fragment started. Then the shapes: the calls, statements and functions
+// gen wrote must be where gen wrote them, with gen's own brackets.
+func (g *gen) checkShapes(src string, fset *token.FileSet, file *ast.File) *Error {
+	tf := token.NewFileSet().AddFile("", -1, len(src))
+	var s scanner.Scanner
+	s.Init(tf, []byte(src), nil, scanner.ScanComments)
+	type opened struct {
+		tok       token.Token
+		frag, off int
+	}
+	var open []opened
+	in, due := 0, 0 // the first fragment not ended before the token; the first whose next token is due
+	for {
+		pos, tok, _ := s.Scan()
+		off := tf.Offset(pos)
+		for ; due < len(g.frags); due++ {
+			fr := &g.frags[due]
+			next := fr.end + len(src[fr.end:]) - len(strings.TrimLeft(src[fr.end:], " \t\r\n"))
+			if next > off {
+				break
+			}
+			if next < off {
+				return g.escape(due, fr.last)
+			}
+		}
+		if tok == token.EOF {
+			break
+		}
+		for in < len(g.frags) && g.frags[in].end <= off {
+			in++
+		}
+		frag := -1
+		if in < len(g.frags) && g.frags[in].start <= off {
+			frag = in
+			g.frags[in].last = off
+		}
+		switch tok {
+		case token.LPAREN, token.LBRACK, token.LBRACE:
+			open = append(open, opened{tok, frag, off})
+		case token.RPAREN, token.RBRACK, token.RBRACE:
+			if len(open) == 0 {
+				return g.escapeNear(frag, off)
+			}
+			top := open[len(open)-1]
+			open = open[:len(open)-1]
+			if top.frag >= 0 && (top.frag != frag || top.tok != openerOf[tok]) {
+				return g.escape(top.frag, top.off)
+			}
+			if top.frag != frag || top.tok != openerOf[tok] {
+				return g.escapeNear(frag, off)
+			}
+		}
+	}
+	if len(open) > 0 {
+		return g.escapeNear(open[0].frag, open[0].off)
+	}
+	ix := newGoIndex(fset, file, g.funcs)
+	for _, sh := range g.shapes {
+		if ok, frag, off := sh.check(ix); !ok {
+			if frag < 0 {
+				return g.escapeNear(-1, sh.at)
+			}
+			return g.escape(frag, off)
+		}
+	}
+	return nil
+}
+
+// escapeNear is the error for fragment frag, or if that is -1, for the last
+// fragment that starts before offset off.
+func (g *gen) escapeNear(frag, off int) *Error {
+	if frag < 0 {
+		frag = sort.Search(len(g.frags), func(i int) bool { return g.frags[i].start >= off }) - 1
+	}
+	if frag < 0 {
+		return &Error{File: preludeFile, Pos: Pos{1, 1}, Msg: "internal error: den could not read back the Go it wrote; please report"}
+	}
+	return g.escape(frag, off)
+}
+
+// escape is the error for fragment frag, which Go reads as going past its
+// end, at offset off in the file if that is in the fragment, or else at its
+// start.
+func (g *gen) escape(frag, off int) *Error {
+	fr := g.frags[frag]
+	pos := fr.pos
+	if fr.start <= off && off <= fr.end {
+		before := fr.src[:off-fr.start]
+		if nl := strings.LastIndexByte(before, '\n'); nl >= 0 {
+			pos = Pos{Line: pos.Line + strings.Count(before, "\n"), Col: len(before) - nl}
+		} else {
+			pos.Col += len(before)
+		}
+	}
+	return &Error{File: fr.file, Pos: pos, Msg: fmt.Sprintf("%s must be %s; Go would read this together with the code den writes around it", fr.what, fr.must)}
+}
+
+// goIndex finds the nodes of the components' funcs in a parsed file by the
+// offsets of their tokens.
+type goIndex struct {
+	tf    *token.File
+	funcs map[int]*ast.FuncDecl  // by the offset of func
+	calls map[int]*ast.CallExpr  // by the offset of (
+	ifs   map[int]*ast.IfStmt    // by the offset of if
+	fors  map[int]*ast.BlockStmt // the body of a for statement, by the offset of for
+}
+
+func newGoIndex(fset *token.FileSet, file *ast.File, funcs []int) *goIndex {
+	ix := &goIndex{tf: fset.File(file.Pos()), funcs: map[int]*ast.FuncDecl{}, calls: map[int]*ast.CallExpr{},
+		ifs: map[int]*ast.IfStmt{}, fors: map[int]*ast.BlockStmt{}}
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && slices.Contains(funcs, ix.off(fd.Type.Func)) {
+			ix.funcs[ix.off(fd.Type.Func)] = fd
+			ast.Inspect(fd, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.CallExpr:
+					ix.calls[ix.off(n.Lparen)] = n
+				case *ast.IfStmt:
+					ix.ifs[ix.off(n.If)] = n
+				case *ast.ForStmt:
+					ix.fors[ix.off(n.For)] = n.Body
+				case *ast.RangeStmt:
+					ix.fors[ix.off(n.For)] = n.Body
+				}
+				return true
+			})
+		}
+	}
+	return ix
+}
+
+// off returns the offset of p in the file, or -1 for no position.
+func (ix *goIndex) off(p token.Pos) int {
+	if !p.IsValid() {
+		return -1
+	}
+	return ix.tf.Offset(p)
+}
+
+// call returns the call that Go read at offset at as a call of fn, with
+// its ( right after fn and its ) at offset rp, or nil if there is none.
+func (ix *goIndex) call(at int, fn string, rp int) *ast.CallExpr {
+	c := ix.calls[at+len(fn)]
+	if c == nil || ix.off(c.Rparen) != rp {
+		return nil
+	}
+	if id, ok := c.Fun.(*ast.Ident); !ok || id.Name != fn || ix.off(id.Pos()) != at {
+		return nil
+	}
+	return c
+}
 
 func (g *gen) nodes(ns []Node) {
 	for _, n := range ns {
@@ -895,20 +1192,64 @@ func (g *gen) inside(ns []Node) {
 func (g *gen) node(n Node) {
 	switch n := n.(type) {
 	case *Interp:
-		fmt.Fprintf(g.src, "\t%sdenText(%s%s)\n", g.d(n.Pos_), g.d(n.Pos_), n.Src)
+		g.call(g.d(n.Pos_), "denText", n.Pos_, n.Src, "this {...}")
 	case *If:
-		fmt.Fprintf(g.src, "\t%sif %s%s {\n", g.d(n.Pos_), g.d(n.CondPos), n.Cond)
+		g.src.WriteString("\t" + g.d(n.Pos_))
+		at := g.src.Len()
+		g.src.WriteString("if ")
+		cond := g.frag(n.CondPos, n.Cond, "this {if} condition", "one Go expression")
+		lb := g.src.Len() + len(" ")
+		g.src.WriteString(" {\n")
+		rb, elseLb, elseRb := -1, -1, -1
+		g.expect(at, func(ix *goIndex) (bool, int, int) {
+			s := ix.ifs[at]
+			switch {
+			case s == nil || s.Body == nil:
+				return false, cond, -1
+			case ix.off(s.Body.Lbrace) != lb:
+				return false, cond, ix.off(s.Body.Lbrace)
+			case ix.off(s.Body.Rbrace) != rb:
+				return false, cond, -1
+			case elseLb < 0:
+				return s.Else == nil, cond, -1
+			}
+			e, ok := s.Else.(*ast.BlockStmt)
+			return ok && ix.off(e.Lbrace) == elseLb && ix.off(e.Rbrace) == elseRb, cond, -1
+		})
 		g.body(n, n.Then)
+		g.src.WriteString("\t")
+		rb = g.src.Len()
 		if len(n.Else) > 0 {
-			g.src.WriteString("\t} else {\n")
+			g.src.WriteString("} else {\n")
+			elseLb = rb + len("} else ")
 			g.body(n, n.Else)
+			g.src.WriteString("\t")
+			elseRb = g.src.Len()
 		}
-		g.src.WriteString("\t}\n")
+		g.src.WriteString("}\n")
 	case *For:
-		fmt.Fprintf(g.src, "\t%sfor %s%s {\n", g.d(n.Pos_), g.d(n.HeaderPos), n.Header)
-		fmt.Fprintf(g.src, "\t%sdenKey(%s%s)\n", g.d(n.KeyPos), g.d(n.KeyPos), n.Key)
+		g.src.WriteString("\t" + g.d(n.Pos_))
+		at := g.src.Len()
+		g.src.WriteString("for ")
+		header := g.frag(n.HeaderPos, n.Header, "this {for} clause", "a Go range clause")
+		lb := g.src.Len() + len(" ")
+		g.src.WriteString(" {\n")
+		rb := -1
+		g.expect(at, func(ix *goIndex) (bool, int, int) {
+			body := ix.fors[at]
+			switch {
+			case body == nil:
+				return false, header, -1
+			case ix.off(body.Lbrace) != lb:
+				return false, header, ix.off(body.Lbrace)
+			}
+			return ix.off(body.Rbrace) == rb, header, -1
+		})
+		g.call(g.d(n.KeyPos), "denKey", n.KeyPos, n.Key, "this list key")
 		g.body(n, n.Body)
-		g.src.WriteString("\t}\n")
+		g.src.WriteString("\t")
+		rb = g.src.Len()
+		g.src.WriteString("}\n")
 	case *Element:
 		if n.IsComponent() {
 			if err := g.component(n); err != nil {
@@ -935,15 +1276,36 @@ func (g *gen) node(n Node) {
 			if a.Kind != AttrExpr {
 				continue
 			}
-			d := g.d(a.ValuePos)
 			if isEventAttr(a.Name) {
-				fmt.Fprintf(g.src, "\t%sdenHandler(func(e Event) {%s%s\n\t})\n", g.d(a.Pos), d, a.Value)
+				g.handler(a)
 			} else {
-				fmt.Fprintf(g.src, "\t%sdenAttr(%s%s)\n", d, d, a.Value)
+				g.call(g.d(a.ValuePos), "denAttr", a.ValuePos, a.Value, "this {...}")
 			}
 		}
 		g.inside(n.Children)
 	}
+}
+
+// handler writes denHandler(func(e Event) { ... }) around the statements
+// of the event handler a.
+func (g *gen) handler(a *Attr) {
+	g.src.WriteString("\t" + g.d(a.Pos))
+	at := g.src.Len()
+	g.src.WriteString("denHandler(func(e Event) {")
+	fn := at + len("denHandler(")
+	lb := g.src.Len() - 1
+	f := g.frag(a.ValuePos, a.Value, "this {...}", "Go statements")
+	g.src.WriteString("\n\t")
+	rb := g.src.Len()
+	g.src.WriteString("})\n")
+	g.expect(at, func(ix *goIndex) (bool, int, int) {
+		c := ix.call(at, "denHandler", rb+len("}"))
+		if c == nil || len(c.Args) != 1 || c.Ellipsis.IsValid() {
+			return false, f, -1
+		}
+		fl, ok := c.Args[0].(*ast.FuncLit)
+		return ok && ix.off(fl.Type.Func) == fn && ix.off(fl.Body.Lbrace) == lb && ix.off(fl.Body.Rbrace) == rb, f, -1
+	})
 }
 
 // motionAttrs are the attributes that animate an element: enter and exit
@@ -984,25 +1346,107 @@ func (g *gen) motionAttr(a *Attr) *Error {
 	if err != nil {
 		fn = "denAny"
 	}
-	d := g.d(a.ValuePos)
-	fmt.Fprintf(g.src, "\t%s%s(%s%s)\n", d, fn, d, a.Value)
+	g.call(g.d(a.ValuePos), fn, a.ValuePos, a.Value, "this {...}")
 	return err
 }
 
 // pairer walks markup in the same order as gen and links each node to the
 // checked Go statements that gen wrote for it.
+//
+// Those statements have the shape gen gave them: check rejects the program
+// when Go reads any of the program's Go in markup as ending the code gen
+// writes around it, or running on into the code after it (checkShapes).
+// The pairer still checks every shape it relies on, and that it pairs
+// every statement gen wrote, and reports a mismatch as an internal error
+// rather than panicking or pairing the wrong statements.
 type pairer struct {
 	ck    *checked
 	cc    *checkedComponent
 	errs  ErrorList
 	chain []Node // as in gen
+	bad   bool   // an internal error was reported: the rest is not paired
 }
 
-// body pairs the nodes of a body of block b, as gen.body wrote them.
+// internal reports that the statements gen wrote do not have the shape
+// the pairer expects, at the markup at p. Only the first one is reported.
+func (pr *pairer) internal(p Pos, format string, args ...any) {
+	if !pr.bad {
+		pr.bad = true
+		pr.errs = append(pr.errs, &Error{File: pr.cc.c.File, Pos: p, Msg: "internal error: " + fmt.Sprintf(format, args...) + "; please report"})
+	}
+}
+
+// done reports statements left once the nodes that gen wrote them for,
+// the markup at p, have all been paired.
+func (pr *pairer) done(p Pos, rest []ast.Stmt) {
+	if len(rest) > 0 {
+		pr.internal(p, "den wrote %d more statements for this markup than it paired", len(rest))
+	}
+}
+
+// next returns the first of stmts, which gen wrote for the markup at p, as
+// an S, and the statements after it. ok is false, with an internal error
+// reported, when there is none or it is something else.
+func next[S ast.Stmt](pr *pairer, p Pos, stmts []ast.Stmt) (s S, rest []ast.Stmt, ok bool) {
+	if pr.bad {
+		return s, nil, false
+	}
+	if len(stmts) == 0 {
+		pr.internal(p, "den wrote no statement for this markup")
+		return s, nil, false
+	}
+	if s, ok = stmts[0].(S); !ok {
+		pr.internal(p, "den wrote a %T for this markup, not a %T", stmts[0], s)
+		return s, nil, false
+	}
+	return s, stmts[1:], true
+}
+
+// call returns the arguments of the call that is the first of stmts, gen's
+// fn(args) for the markup at p, where fn is one of fns, and the statements
+// after it.
+func (pr *pairer) call(p Pos, stmts []ast.Stmt, fns ...string) ([]ast.Expr, []ast.Stmt, bool) {
+	es, rest, ok := next[*ast.ExprStmt](pr, p, stmts)
+	if !ok {
+		return nil, nil, false
+	}
+	return pr.callOf(p, es.X, fns...), rest, !pr.bad
+}
+
+// callOf returns the arguments of x, gen's call fn(args) for the markup at
+// p, where fn is one of fns.
+func (pr *pairer) callOf(p Pos, x ast.Expr, fns ...string) []ast.Expr {
+	call, ok := x.(*ast.CallExpr)
+	if !ok {
+		pr.internal(p, "den wrote a %T for this markup, not a call of %s", x, fns[0])
+		return nil
+	}
+	if id, ok := call.Fun.(*ast.Ident); !ok || !slices.Contains(fns, id.Name) {
+		pr.internal(p, "den wrote a call of %s for this markup, not of %s", types.ExprString(call.Fun), fns[0])
+		return nil
+	}
+	return call.Args
+}
+
+// arg returns the only argument of gen's call fn(x) for the markup at p.
+func (pr *pairer) arg(p Pos, stmts []ast.Stmt, fns ...string) (ast.Expr, []ast.Stmt, bool) {
+	args, rest, ok := pr.call(p, stmts, fns...)
+	if !ok {
+		return nil, nil, false
+	}
+	if len(args) != 1 {
+		pr.internal(p, "den wrote %d arguments to %s for this markup, not 1", len(args), fns[0])
+		return nil, nil, false
+	}
+	return args[0], rest, true
+}
+
+// body pairs the nodes of a body of block b, as gen.body wrote them, with
+// all of stmts.
 func (pr *pairer) body(b Node, ns []Node, stmts []ast.Stmt) {
 	defer func(c []Node) { pr.chain = c }(pr.chain)
 	pr.chain = append(pr.chain[:len(pr.chain):len(pr.chain)], b)
-	pr.nodes(ns, stmts)
+	pr.done(b.pos(), pr.nodes(ns, stmts))
 }
 
 // inside pairs nodes that are at the top level of no block, as gen.inside
@@ -1052,10 +1496,13 @@ func errorf(format string, args ...any) string {
 	return fmt.Sprintf(format, args...)
 }
 
-func callArgs(s ast.Stmt) []ast.Expr { return s.(*ast.ExprStmt).X.(*ast.CallExpr).Args }
-
+// nodes pairs ns with the statements gen wrote for them at the start of
+// stmts, and returns the statements after those.
 func (pr *pairer) nodes(ns []Node, stmts []ast.Stmt) []ast.Stmt {
 	for _, n := range ns {
+		if pr.bad {
+			return nil
+		}
 		stmts = pr.node(n, stmts)
 	}
 	return stmts
@@ -1064,25 +1511,44 @@ func (pr *pairer) nodes(ns []Node, stmts []ast.Stmt) []ast.Stmt {
 func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 	switch n := n.(type) {
 	case *Interp:
-		x := callArgs(stmts[0])[0]
+		x, rest, ok := pr.arg(n.Pos_, stmts, "denText")
+		if !ok {
+			return nil
+		}
 		if isChildren(pr.ck.info.TypeOf(x)) && pr.ck.reactive(x) {
 			pr.errAt(x, "den.Children shown in markup cannot depend on a signal; choose between them with {if} instead")
 		}
 		pr.cc.parts[n] = &part{kind: partText, expr: x}
-		return stmts[1:]
+		return rest
 	case *If:
-		is := stmts[0].(*ast.IfStmt)
+		is, rest, ok := next[*ast.IfStmt](pr, n.Pos_, stmts)
+		if !ok {
+			return nil
+		}
+		// Go would run it; den keeps only the condition of a markup if.
+		if is.Init != nil {
+			pr.errAt(is.Init, "if in markup cannot have an init statement; put it before the markup")
+		}
 		pr.cc.parts[n] = &part{kind: partIf, expr: is.Cond}
 		pr.body(n, n.Then, is.Body.List)
-		if len(n.Else) > 0 {
-			pr.body(n, n.Else, is.Else.(*ast.BlockStmt).List)
+		els, isBlock := is.Else.(*ast.BlockStmt)
+		switch {
+		case len(n.Else) > 0 && isBlock:
+			pr.body(n, n.Else, els.List)
+		case len(n.Else) > 0 || is.Else != nil:
+			pr.internal(n.Pos_, "den wrote an else of %T for this {if}, which has %d else nodes", is.Else, len(n.Else))
 		}
-		return stmts[1:]
+		return rest
 	case *For:
-		rs, ok := stmts[0].(*ast.RangeStmt)
+		if len(stmts) > 0 {
+			if fs, ok := stmts[0].(*ast.ForStmt); ok {
+				pr.errAt(fs, "for in markup must range over a slice, array, map or int: {for i, x := range xs key x.ID { ... }}")
+				return stmts[1:]
+			}
+		}
+		rs, rest, ok := next[*ast.RangeStmt](pr, n.Pos_, stmts)
 		if !ok {
-			pr.errAt(stmts[0], "for in markup must range over a slice, array, map or int: {for i, x := range xs key x.ID { ... }}")
-			return stmts[1:]
+			return nil
 		}
 		if rs.Tok == token.ASSIGN {
 			pr.errAt(rs, "for in markup must declare its variables with :=")
@@ -1096,50 +1562,100 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 		default:
 			pr.errAt(rs.X, "for in markup can range over slices, arrays, maps and ints, not %s", pr.ck.info.TypeOf(rs.X))
 		}
-		key := callArgs(rs.Body.List[0])[0]
+		key, body, ok := pr.arg(n.KeyPos, rs.Body.List, "denKey")
+		if !ok {
+			return nil
+		}
 		if _, ok := pr.ck.info.TypeOf(key).Underlying().(*types.Basic); !ok {
 			pr.errAt(key, "list keys must be strings, numbers or bools, not %s", pr.ck.info.TypeOf(key))
 		}
 		pr.cc.parts[n] = &part{kind: partFor, expr: key, rng: rs}
-		pr.body(n, n.Body, rs.Body.List[1:])
-		return stmts[1:]
+		pr.body(n, n.Body, body)
+		return rest
 	case *Element:
 		if n.IsComponent() {
-			pt := &part{kind: partComponent, args: callArgs(stmts[0])}
-			for i, p := range pr.ck.components[n.Tag].Params {
-				pt.slots = append(pt.slots, nil)
-				if !p.Children {
-					continue
-				}
-				if nodes, ok := slotContent(n, p); ok {
-					// gen wrote denSlot(func() { ... }) around the markup.
-					pt.slots[i] = nodes
-					fn := pt.args[i].(*ast.CallExpr).Args[0].(*ast.FuncLit)
-					pr.inside(nodes, fn.Body.List)
-				}
-			}
-			pr.cc.parts[n] = pt
-			return stmts[1:]
+			return pr.component(n, stmts)
 		}
 		for _, a := range n.Attrs {
 			if a.Kind != AttrExpr {
 				continue
 			}
-			arg := callArgs(stmts[0])[0]
+			fn := "denAttr"
 			switch {
 			case isEventAttr(a.Name):
-				pr.cc.attrs[a] = &part{kind: partHandler, stmts: arg.(*ast.FuncLit).Body.List}
+				fn = "denHandler"
+			case isMotionAttr(a.Name):
+				fn = "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
+			}
+			arg, rest, ok := pr.arg(a.Pos, stmts, fn)
+			if !ok {
+				return nil
+			}
+			stmts = rest
+			switch {
+			case isEventAttr(a.Name):
+				fl, ok := arg.(*ast.FuncLit)
+				if !ok {
+					pr.internal(a.Pos, "den wrote a %T for this handler, not a function", arg)
+					return nil
+				}
+				pr.cc.attrs[a] = &part{kind: partHandler, stmts: fl.Body.List}
 			case isMotionAttr(a.Name):
 				pr.cc.attrs[a] = &part{kind: partMotion, expr: arg}
 				pr.motion(n, a, arg)
 			default:
 				pr.cc.attrs[a] = &part{kind: partAttr, expr: arg}
 			}
-			stmts = stmts[1:]
 		}
 		return pr.inside(n.Children, stmts)
 	}
 	return stmts
+}
+
+// component pairs the use of a component, el, with the call of it that gen
+// wrote first in stmts, and the markup of its den.Children props with the
+// closures gen passed for them.
+func (pr *pairer) component(el *Element, stmts []ast.Stmt) []ast.Stmt {
+	args, rest, ok := pr.call(el.Pos, stmts, el.Tag)
+	if !ok {
+		return nil
+	}
+	c := pr.ck.components[el.Tag]
+	if c == nil {
+		pr.internal(el.Pos, "den paired a call of %s, which is no component", el.Tag)
+		return nil
+	}
+	params := c.Params
+	if len(args) != len(params) {
+		pr.internal(el.Pos, "den wrote %d arguments to %s, which has %d props", len(args), el.Tag, len(params))
+		return nil
+	}
+	pt := &part{kind: partComponent, args: args}
+	for i, p := range params {
+		pt.slots = append(pt.slots, nil)
+		if !p.Children {
+			continue
+		}
+		slot := pr.callOf(el.Pos, args[i], "denSlot")
+		nodes, filled := slotContent(el, p)
+		if pr.bad || len(slot) != 1 {
+			pr.internal(el.Pos, "den wrote %d arguments to denSlot for prop %s of %s, not 1", len(slot), p.Name, el.Tag)
+			return nil
+		}
+		if !filled {
+			continue // gen wrote denSlot(nil)
+		}
+		// gen wrote denSlot(func() { ... }) around the markup.
+		fn, ok := slot[0].(*ast.FuncLit)
+		if !ok {
+			pr.internal(el.Pos, "den wrote a %T for the markup of prop %s of %s, not a function", slot[0], p.Name, el.Tag)
+			return nil
+		}
+		pt.slots[i] = nodes
+		pr.done(el.Pos, pr.inside(nodes, fn.Body.List))
+	}
+	pr.cc.parts[el] = pt
+	return rest
 }
 
 // blockReactive reports whether the {if} or {for} with part pt reads a
@@ -1325,32 +1841,105 @@ func (g *gen) component(el *Element) *Error {
 			return bad(el.Pos, "<%s> is missing prop %q (%s)", el.Tag, p.Name, p.Type)
 		}
 	}
-	fmt.Fprintf(g.src, "\t%s%s(", g.d(el.Pos), el.Tag)
+	g.src.WriteString("\t" + g.d(el.Pos))
+	at := g.src.Len()
+	g.src.WriteString(el.Tag + "(")
+	// Each argument is a fragment (frag >= 0) or Go of gen's own at off.
+	type arg struct{ frag, off int }
+	var args []arg
+	rp := -1
+	g.expect(at, func(ix *goIndex) (bool, int, int) {
+		// blame finds the fragment of these arguments that holds offset
+		// off, or else the fragment of argument i or the last one before.
+		blame := func(i, off int) (bool, int, int) {
+			for _, a := range args {
+				if a.frag >= 0 && g.frags[a.frag].start <= off && off < g.frags[a.frag].end {
+					return false, a.frag, off
+				}
+			}
+			for j := min(i, len(args)-1); j >= 0; j-- {
+				if args[j].frag >= 0 {
+					return false, args[j].frag, -1
+				}
+			}
+			return false, -1, -1
+		}
+		c := ix.call(at, el.Tag, rp)
+		if c == nil {
+			return blame(len(args)-1, -1)
+		}
+		for i, a := range args {
+			if i >= len(c.Args) {
+				return blame(i, -1)
+			}
+			off := ix.off(c.Args[i].Pos())
+			if a.frag >= 0 && (off < g.frags[a.frag].start || off >= g.frags[a.frag].end) || a.frag < 0 && off != a.off {
+				return blame(i, off)
+			}
+		}
+		if len(c.Args) > len(args) {
+			return blame(len(args)-1, ix.off(c.Args[len(args)].Pos()))
+		}
+		// A variadic prop can take xs... as its value.
+		if c.Ellipsis.IsValid() {
+			off := ix.off(c.Ellipsis)
+			if len(args) == 0 || args[len(args)-1].frag < 0 || off >= g.frags[args[len(args)-1].frag].end {
+				return blame(len(args)-1, off)
+			}
+		}
+		return true, 0, 0
+	})
 	for i, p := range target.Params {
 		if i > 0 {
 			g.src.WriteString(", ")
 		}
 		if p.Children {
+			args = append(args, arg{-1, g.src.Len()})
 			nodes, ok := slotContent(el, p)
 			if !ok {
 				g.src.WriteString("denSlot(nil)")
 				continue
 			}
-			g.src.WriteString("denSlot(func() {\n")
-			g.inside(nodes)
-			g.src.WriteString("\t})")
+			g.slot(nodes)
 			continue
 		}
 		a := given[p.Name]
 		switch a.Kind {
 		case AttrStatic:
-			g.src.WriteString(g.d(a.ValuePos) + strconv.Quote(a.Value))
+			g.src.WriteString(g.d(a.ValuePos))
+			args = append(args, arg{-1, g.src.Len()})
+			g.src.WriteString(strconv.Quote(a.Value))
 		case AttrBool:
-			g.src.WriteString(g.d(a.Pos) + "true")
+			g.src.WriteString(g.d(a.Pos))
+			args = append(args, arg{-1, g.src.Len()})
+			g.src.WriteString("true")
 		case AttrExpr:
-			g.src.WriteString(g.d(a.ValuePos) + a.Value)
+			args = append(args, arg{g.frag(a.ValuePos, a.Value, "this {...}", "one Go expression"), -1})
 		}
 	}
+	rp = g.src.Len()
 	g.src.WriteString(")\n")
 	return nil
+}
+
+// slot writes denSlot(func() { ... }) around nodes, the markup passed to a
+// den.Children prop.
+func (g *gen) slot(nodes []Node) {
+	at := g.src.Len()
+	g.src.WriteString("denSlot(func() {\n")
+	fn := at + len("denSlot(")
+	lb := g.src.Len() - len("\n") - 1
+	rb := -1
+	g.expect(at, func(ix *goIndex) (bool, int, int) {
+		c := ix.call(at, "denSlot", rb+len("}"))
+		if c == nil || len(c.Args) != 1 || c.Ellipsis.IsValid() {
+			return false, -1, -1
+		}
+		fl, ok := c.Args[0].(*ast.FuncLit)
+		return ok && ix.off(fl.Type.Func) == fn && ix.off(fl.Body.Lbrace) == lb && ix.off(fl.Body.Rbrace) == rb, -1, -1
+	})
+	g.inside(nodes)
+	g.src.WriteString("\t")
+	rb = g.src.Len()
+	g.src.WriteString("})")
 }

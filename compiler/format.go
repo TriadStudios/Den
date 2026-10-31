@@ -625,23 +625,7 @@ func (f *formatter) goExpr(src string, off, indent int) string {
 }
 
 // endsInLineComment reports whether Go source src ends with a // comment.
-func endsInLineComment(src string) bool {
-	fset := token.NewFileSet()
-	file := fset.AddFile("", -1, len(src))
-	var s scanner.Scanner
-	s.Init(file, []byte(src), func(token.Position, string) {}, scanner.ScanComments)
-	last := ""
-	for {
-		_, tok, lit := s.Scan()
-		if tok == token.EOF {
-			return strings.HasPrefix(last, "//")
-		}
-		if tok == token.SEMICOLON && lit == "\n" {
-			continue
-		}
-		last = lit
-	}
-}
+func endsInLineComment(src string) bool { return lineCommentAtEnd(src) >= 0 }
 
 // goHandler formats src, the statements of an event handler at offset off,
 // for a line at indent. A handler is formatted as the body of a function

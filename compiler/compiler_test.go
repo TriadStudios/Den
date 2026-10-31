@@ -1171,6 +1171,216 @@ component App() {
     l := layout()
     <Layout />
 }`, `app.den:6:10: layout is not available because this program has a component named Layout; rename it`},
+		// Go in markup that would end the code den writes around it (here
+		// denText(...)) and add statements of its own. Before, the first
+		// compiled and dropped the 2; with an {if} after it, den panicked.
+		{"paren closing den's call in text", `
+component App() {
+    <p>{1); denText(2}</p>
+}`, `app.den:3:10: unexpected ): there is no ( for it to close`},
+		{"paren closing den's call in text before an if", `
+component App() {
+    x := signal(true)
+    <p>{1); denText(2}{if x.Get() { <b>y</b> }}</p>
+}`, `app.den:4:10: unexpected ): there is no ( for it to close`},
+		{"paren closing den's call in an attribute", `
+component App() {
+    <p title={"a"); denAttr("b"}>x</p>
+}`, `app.den:3:18: unexpected ): there is no ( for it to close`},
+		{"paren closing den's call in enter=", `
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p enter={fade()); denAny(1); denEnter(fade()}>x</p> }}</div>
+}`, `app.den:4:43: unexpected ): there is no ( for it to close`},
+		{"paren closing a component's call in a prop", `
+component App() {
+    <Card n={1); denAny(2} />
+}
+component Card(n int) {
+    <p>{n}</p>
+}`, `app.den:3:15: unexpected ): there is no ( for it to close`},
+		{"comma passing another argument in a prop", `
+component App() {
+    <Card n={1, 2, 3} rest={4} />
+}
+component Card(n int, rest ...int) {
+    <p>{n}</p>
+}`, `app.den:3:15: a prop takes one value; this , would pass another argument`},
+		// readBraced counts the { in the comment, Go does not.
+		{"brace closing a handler", `
+component App() {
+    n := signal(0)
+    <button onclick={/* { */ }); denAny(1); denHandler(func(e Event) { /* } */}>{n.Get()}</button>
+}`, `app.den:4:30: unexpected }: there is no { for it to close`},
+		{"paren closing den's call in a list key", `
+component App() {
+    xs := signal([]int{1})
+    <ul>{for _, x := range xs.Get() key x); denText(2 { <li>{x}</li> }}</ul>
+}`, `app.den:4:42: unexpected ): there is no ( for it to close`},
+		{"brace in a comment ending text", `
+component App() {
+    x := 1
+    <p>{x /* } */}</p>
+}`, `app.den:4:11: comment not terminated before the } that ends this {...}`},
+		{"unterminated comment in an attribute", `
+component App() {
+    x := 1
+    <p title={x /* no end}>y</p>
+}`, `app.den:4:17: comment not terminated before the } that ends this {...}`},
+		{"line comment ending text", `
+component App() {
+    x := 1
+    <p>{x // c}</p>
+}`, `app.den:4:11: a // comment cannot end an expression in markup: it runs past the }; use /* */`},
+		{"line comment ending a prop", `
+component App() {
+    <Card n={1 // c} />
+}
+component Card(n int) {
+    <p>{n}</p>
+}`, `app.den:3:16: a // comment cannot end an expression in markup: it runs past the }; use /* */`},
+		{"line comment before the body of an if", `
+component App() {
+    x := true
+    <div>{if x // c
+        { <p>c</p> }}</div>
+}`, `app.den:4:16: a // comment cannot come right before the { of the if body; use /* */ or put it inside the body`},
+		{"line comment before key", `
+component App() {
+    xs := []int{1}
+    <ul>{for _, x := range xs // c
+        key x { <li>{x}</li> }}</ul>
+}`, `app.den:4:31: a // comment cannot come right before key; use /* */`},
+		{"unmatched paren in an if header", `
+component App() {
+    x := true
+    <div>{if x) { <p>c</p> }}</div>
+}`, `app.den:4:15: unexpected ): there is no ( for it to close`},
+		// den kept only the condition: f() never ran, and v and ok were
+		// undefined in the JS.
+		{"if with an init statement", `
+func f() bool { return true }
+component App() {
+    x := signal(true)
+    <div>{if f(); x.Get() { <p>c</p> }}</div>
+}`, `app.den:5:14: if in markup cannot have an init statement; put it before the markup`},
+		{"if with an init statement ended by a newline", `
+func f() bool { return true }
+component App() {
+    x := signal(true)
+    <div>{if f()
+        x.Get() { <p>c</p> }}</div>
+}`, `app.den:5:14: if in markup cannot have an init statement; put it before the markup`},
+		{"if declaring its variables", `
+func pick(n int) (int, bool) { return n * 2, n > 1 }
+component App() {
+    n := signal(0)
+    <div>{if v, ok := pick(n.Get()); ok { <b>{v}</b> }}</div>
+}`, `app.den:5:14: if in markup cannot have an init statement; put it before the markup`},
+		{"brace closing a component's statements", `
+component App() {
+    x := 1
+    _ = x
+    }
+    func evil() {
+    <p>hi</p>
+}`, `app.den:5:5: unexpected }: there is no { for it to close`},
+		{"paren closing a component's parameters", `
+component App(a struct{ X int "(" }) {} ; func Evil(b struct{ Y int ")" }) {
+    <p>hi</p>
+}`, `app.den:2:36: unexpected ): there is no ( for it to close`},
+		{"unterminated comment in a component's parameters", `
+component App(a int /* ) {
+    <p>hi</p>
+}`, `app.den:2:21: comment not terminated before the ) that ends the parameter list`},
+		// den ends a {...} at its }, reading quotes but not comments, so a
+		// quote in a comment leaves a Go literal open: it ran on through
+		// den's Go to the next fragment with a quote in it, and compiled.
+		// Here the {if} went into the string, and the page showed den's Go.
+		{"raw string open across an if", "\ncomponent App() {\n    x := signal(true)\n" +
+			"    <p>{/* ` */ `}{if x.Get() { <b>y</b> }}{`); if false {}; denText(\"evil\" /* ` */}</p>\n}",
+			"app.den:4:17: raw string literal not terminated before the } that ends this {...}"},
+		{"raw string open from an attribute", "\ncomponent App() {\n" +
+			"    <p class={/* ` */ `}>{`); denText(\"injected\" /* ` */}</p>\n}",
+			"app.den:3:23: raw string literal not terminated before the } that ends this {...}"},
+		{"raw string open from a handler", "\ncomponent App() {\n    n := signal(0)\n" +
+			"    <div><button onclick={/* ` */ `}>a</button><p>{`); denText(n.Get() /* ` */}</p></div>\n}",
+			"app.den:4:35: raw string literal not terminated before the } that ends this {...}"},
+		// Props are written on one line, so a string runs into the next.
+		{"string open into the next prop", `
+component App() {
+    <Card a={/* " */ "} b={", 2 /* " */} />
+}
+component Card(a string, b int) {
+    <p>{a}{b}</p>
+}`, `app.den:3:22: string literal not terminated before the } that ends this {...}`},
+		{"rune open into the next prop", `
+component App() {
+    <Card a={/* ' */ '} b={'x' /* ' */} />
+}
+component Card(a rune, b rune) {
+    <p>{string(a)}{string(b)}</p>
+}`, `app.den:3:22: rune literal not terminated before the } that ends this {...}`},
+		// After den's /*line*/ comment, //line is a comment in den's file;
+		// read alone it was a line directive, and an invalid one, and that
+		// error ended the check. Before, the first dropped the 2 (on main)
+		// or was an internal error, and the second turned {if show.Get()}
+		// into if true and showed den's Go as text.
+		{"line comment before a paren closing den's call", `
+component App() {
+    <p>{//line x:0
+1); denText(2}</p>
+}`, `app.den:4:2: unexpected ): there is no ( for it to close`},
+		{"line comment before a paren closing den's call, CRLF", "\r\ncomponent App() {\r\n    <p>{//line x:0\r\n1); denText(2}</p>\r\n}",
+			`app.den:4:2: unexpected ): there is no ( for it to close`},
+		{"line comment before an if replaced through raw strings", "\ncomponent App() {\n    show := signal(false)\n" +
+			"    <div><button onclick={show.Set(!show.Get())}>t</button><p>{//line x:0\n" +
+			"\"a\"); if true { denText(\"always\") }; denText(/* \" */ ` /* \" */ }{if show.Get() {<b>{\"only when shown\"}</b>}}{//line x:0\n" +
+			"\" ` /* \" */}</p></div>\n}",
+			`app.den:5:4: unexpected ): there is no ( for it to close`},
+		{"line comment before raw strings hiding markup", "\ncomponent App() {\n" +
+			"    <p>{//line x:0\n1); denText(/* \" */ ` /* \" */ }<i>{undefinedThing}</i>{//line x:0\n\" `); denText(42 /* \" */}</p>\n}",
+			`app.den:4:2: unexpected ): there is no ( for it to close`},
+		{"line comment before a paren closing den's call in an attribute", `
+component App() {
+    <p title={//line x:0
+"t") //}>{"body"}</p>
+}`, `app.den:4:4: unexpected ): there is no ( for it to close`},
+		{"line comment before a brace closing a handler", `
+component App() {
+    n := signal(0)
+    <div><button onclick={//line :x
+n.Set(1) /* { */ }; n.Set(5); func() { //}>b</button><p>{n.Get()}</p></div>
+}`, `app.den:5:18: unexpected }: there is no { for it to close`},
+		// Statements that take den's next one in: defer denMark() before.
+		// That was an internal error, and on main a panic.
+		{"defer ending a component's statements", `
+component App() {
+    defer
+    <p>hi</p>
+}`, `app.den:3:5: the statements of App must be complete Go statements; Go would read this together with the code den writes around it`},
+		{"go ending a component's statements", "\ncomponent App() {\r\n    go\r\n    <p>hi</p>\r\n}",
+			`app.den:3:5: the statements of App must be complete Go statements; Go would read this together with the code den writes around it`},
+		{"label ending a component's statements", `
+component App() {
+    goto L
+L:
+    <p>hi</p>
+}`, `app.den:4:2: the statements of App must be complete Go statements; Go would read this together with the code den writes around it`},
+		{"two expressions in text", `
+component App() {
+    x := signal(1)
+    <p>{x.Get(), 2}</p>
+}`, `app.den:4:18: this {...} must be one Go expression; Go would read this together with the code den writes around it`},
+		// Card(two(, )) would be Card(two()), valid Go.
+		{"paren from one prop closed in the next", `
+func two() (int, int) { return 1, 2 }
+component Card(a, b int) {
+    <i>{a}{b}</i>
+}
+component App() {
+    <Card a={two(} b={)} />
+}`, `app.den:7:23: unexpected ): there is no ( for it to close`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

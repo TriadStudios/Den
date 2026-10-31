@@ -1,8 +1,6 @@
-// Edge cases: comments inside Go in markup, if with an init statement,
+// Edge cases: comments inside Go in markup, an if on several lines,
 // empty braces, slots that close themselves, <textarea>, a style block
 // between statements with a comment after it.
-
-func pick(n int) (int, bool) { return n * 2, n > 1 }
 
 func f2(a, b int) int { return a + b }
 
@@ -41,8 +39,8 @@ component App() {
             // reset
             n.Set(0)
         }>r</button>
-        <div>{if v, ok := pick(n.Get()); ok {
-            <b>{v}</b>
+        <div>{if n.Get() > 1 {
+            <b>{n.Get() * 2}</b>
         }}</div>
         <Box><:header /></Box>
         <Empty /><Empty2 /><Empty3 />
