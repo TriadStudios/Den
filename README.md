@@ -111,9 +111,9 @@ app.den:2:8: package "fmt" is not available in den; you can import strconv, stri
 Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list and `{key}` keys that are
 not strings, numbers or bools, calling a component as a function,
-children or slots a component does not take, route patterns that do not fit their params,
-transitions where they could never play, and design tokens that do not
-exist, hold a bad value or are used in the
+children or slots a component does not take, route patterns that do
+not fit their params, transitions where they could never play, and
+design tokens that do not exist, hold a bad value or are used in the
 wrong kind of property (`app.den:9:30: $surface is a den.Color, but
 padding takes a length`).
 
@@ -238,11 +238,13 @@ different behavior.
   it reads, and like a `{for}` key it must be a string, number or bool. A
   key that reads no signal never changes, and its content is built once.
   `key` is not a Go keyword, so `{key}`, `{key.Name}`, `{key + 1}`,
-  `{key(x)}` and `{key[0]}` are still expressions using a name `key`: a
-  block starts only where `key` is followed by whitespace and then a name,
-  a number, a string or a `!` that is not `!=`, and the value ends with
-  the `{` of the body. A value that starts with `(` or with another unary
-  operator is written another way, such as `{key 0 - x { ... }}`.
+  `{key(x)}` and `{key[0]}` are still expressions using a name `key`. A
+  block starts only where `key` is followed by whitespace and then a
+  name, a number starting with a digit, a string or rune literal, or a
+  `!` that is not `!=`, and its value ends with the `{` of the body. Any
+  other start, such as `(`, `[`, `.5`, `-x`, `*p`, `&x` or a comment,
+  leaves the `{...}` an expression, so such a value is written another
+  way: `{key 0 - x { ... }}` or `{key int(-x) { ... }}`.
 - SVG elements, and `autofocus` on elements added after the page loads.
 
 **Children and slots**
