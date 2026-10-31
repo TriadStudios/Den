@@ -922,43 +922,68 @@ func (g *gen) frag(pos Pos, src, what, must string) int {
 }
 
 // A shape is Go that gen wrote around fragments, from offset at: a call
-// such as denText(x), an if or for statement, the call of a component, a
-// component's func. check reports whether go/parser read it as gen wrote
-// it, by the offsets of gen's own tokens, which line directives in the
-// program's Go do not change. If not, it returns the fragment to blame
-// (-1: the last one before at) and the offset in it to report (-1: its
-// start).
+// such as denText(x), an if or for statement, a {key} block, the call of a
+// component, a component's func. check returns nil if go/parser read it as
+// gen wrote it, by the offsets of gen's own tokens, which line directives
+// in the program's Go do not change, and otherwise what to report.
 type shape struct {
 	at    int
-	check func(ix *goIndex) (ok bool, frag, off int)
+	check func(ix *goIndex) *blame
+}
+
+// A blame is what checkShapes reports for a shape: fragment frag (-1: the
+// last one before the shape) at offset off in the file (-1: where frag
+// starts), and why, which follows the fragment's name in the message (by
+// default, that it must be what it must be and Go reads it otherwise).
+type blame struct {
+	frag, off int
+	why       string
 }
 
 // expect adds the shape that starts at offset at and is checked by check.
-func (g *gen) expect(at int, check func(ix *goIndex) (bool, int, int)) {
+func (g *gen) expect(at int, check func(ix *goIndex) *blame) {
 	g.shapes = append(g.shapes, shape{at, check})
 }
 
+// argsBlame is the blame for a fragment that is one argument of a call gen
+// wrote, of which Go read n arguments in its place (more when it holds a
+// top-level comma), the second of them at offset second, or a ... at
+// offset dots (-1: none) after it.
+func (g *gen) argsBlame(f, n, second, dots int) *blame {
+	switch {
+	case n == 0 && commentOnly(g.frags[f].src):
+		return &blame{f, -1, "has only comments in it; it must be one Go expression"}
+	case n > 1:
+		return &blame{f, second, "must be one Go expression, not several"}
+	case dots >= 0:
+		return &blame{f, dots, "must be one Go expression; ... passes the elements of a slice, which only a variadic prop takes"}
+	}
+	return &blame{f, -1, ""}
+}
+
 // call writes fn(x) as a statement after the line directive d, where x is
-// the Go src at pos, a fragment that is what and must be one expression.
-func (g *gen) call(d, fn string, pos Pos, src, what string) {
+// the Go src at pos, a fragment that is what and must be one expression,
+// and returns the fragment.
+func (g *gen) call(d, fn string, pos Pos, src, what string) int {
 	g.src.WriteString("\t" + d)
 	at := g.src.Len()
 	g.src.WriteString(fn + "(")
 	f := g.frag(pos, src, what, "one Go expression")
 	rp := g.src.Len()
 	g.src.WriteString(")\n")
-	g.expect(at, func(ix *goIndex) (bool, int, int) {
+	g.expect(at, func(ix *goIndex) *blame {
 		c := ix.call(at, fn, rp)
 		switch {
 		case c == nil:
-			return false, f, -1
+			return &blame{f, -1, ""}
 		case len(c.Args) > 1:
-			return false, f, ix.off(c.Args[1].Pos())
-		case c.Ellipsis.IsValid():
-			return false, f, ix.off(c.Ellipsis)
+			return g.argsBlame(f, len(c.Args), ix.off(c.Args[1].Pos()), -1)
+		case len(c.Args) == 0 || c.Ellipsis.IsValid():
+			return g.argsBlame(f, len(c.Args), -1, ix.off(c.Ellipsis))
 		}
-		return len(c.Args) == 1, f, -1
+		return nil
 	})
+	return f
 }
 
 // function writes the Go function that stands for component c: its
@@ -978,26 +1003,30 @@ func (g *gen) function(c *Component) {
 	mark := g.src.Len()
 	g.src.WriteString("denMark()\n")
 	rb := -1
-	g.expect(at, func(ix *goIndex) (bool, int, int) {
+	g.expect(at, func(ix *goIndex) *blame {
 		fd := ix.funcs[at]
 		if fd == nil || fd.Recv != nil || fd.Type.TypeParams != nil || fd.Type.Results != nil ||
 			ix.off(fd.Type.Params.Opening) != lp || ix.off(fd.Type.Params.Closing) != rp {
-			return false, params, -1
+			return &blame{params, -1, ""}
 		}
 		if fd.Body == nil || ix.off(fd.Body.Lbrace) != rp+len(") ") || ix.off(fd.Body.Rbrace) != rb {
-			return false, stmts, -1
+			return &blame{stmts, -1, ""}
 		}
 		// The markup's Go is written after denMark(), which must be a
 		// statement of its own: not the end of the component's last one,
-		// as in defer denMark().
+		// as in defer denMark() or L: denMark(). Blame that statement.
+		last := g.frags[stmts].last
 		for _, s := range fd.Body.List {
 			if es, ok := s.(*ast.ExprStmt); ok {
 				if c, ok := es.X.(*ast.CallExpr); ok && c == ix.call(mark, "denMark", mark+len("denMark(")) && len(c.Args) == 0 {
-					return true, 0, 0
+					return nil
 				}
 			}
+			if off := ix.off(s.Pos()); off < mark {
+				last = off
+			}
 		}
-		return false, stmts, g.frags[stmts].last
+		return &blame{stmts, last, ""}
 	})
 	g.node(c.Root)
 	rb = g.src.Len()
@@ -1040,7 +1069,7 @@ func (g *gen) checkShapes(src string, fset *token.FileSet, file *ast.File) *Erro
 				break
 			}
 			if next < off {
-				return g.escape(due, fr.last)
+				return g.escape(due, fr.last, "")
 			}
 		}
 		if tok == token.EOF {
@@ -1064,7 +1093,7 @@ func (g *gen) checkShapes(src string, fset *token.FileSet, file *ast.File) *Erro
 			top := open[len(open)-1]
 			open = open[:len(open)-1]
 			if top.frag >= 0 && (top.frag != frag || top.tok != openerOf[tok]) {
-				return g.escape(top.frag, top.off)
+				return g.escape(top.frag, top.off, "")
 			}
 			if top.frag != frag || top.tok != openerOf[tok] {
 				return g.escapeNear(frag, off)
@@ -1076,11 +1105,11 @@ func (g *gen) checkShapes(src string, fset *token.FileSet, file *ast.File) *Erro
 	}
 	ix := newGoIndex(fset, file, g.funcs)
 	for _, sh := range g.shapes {
-		if ok, frag, off := sh.check(ix); !ok {
-			if frag < 0 {
+		if b := sh.check(ix); b != nil {
+			if b.frag < 0 {
 				return g.escapeNear(-1, sh.at)
 			}
-			return g.escape(frag, off)
+			return g.escape(b.frag, b.off, b.why)
 		}
 	}
 	return nil
@@ -1095,13 +1124,13 @@ func (g *gen) escapeNear(frag, off int) *Error {
 	if frag < 0 {
 		return &Error{File: preludeFile, Pos: Pos{1, 1}, Msg: "internal error: den could not read back the Go it wrote; please report"}
 	}
-	return g.escape(frag, off)
+	return g.escape(frag, off, "")
 }
 
-// escape is the error for fragment frag, which Go reads as going past its
-// end, at offset off in the file if that is in the fragment, or else at its
-// start.
-func (g *gen) escape(frag, off int) *Error {
+// escape is the error for fragment frag, at offset off in the file if that
+// is in the fragment, or else at its start: by default, that Go reads it
+// as going past its end; or why, which follows the fragment's name.
+func (g *gen) escape(frag, off int, why string) *Error {
 	fr := g.frags[frag]
 	pos := fr.pos
 	if fr.start <= off && off <= fr.end {
@@ -1112,7 +1141,10 @@ func (g *gen) escape(frag, off int) *Error {
 			pos.Col += len(before)
 		}
 	}
-	return &Error{File: fr.file, Pos: pos, Msg: fmt.Sprintf("%s must be %s; Go would read this together with the code den writes around it", fr.what, fr.must)}
+	if why == "" {
+		why = "must be " + fr.must + "; Go would read this together with the code den writes around it"
+	}
+	return &Error{File: fr.file, Pos: pos, Msg: fr.what + " " + why}
 }
 
 // goIndex finds the nodes of the components' funcs in a parsed file by the
@@ -1123,16 +1155,25 @@ type goIndex struct {
 	calls map[int]*ast.CallExpr  // by the offset of (
 	ifs   map[int]*ast.IfStmt    // by the offset of if
 	fors  map[int]*ast.BlockStmt // the body of a for statement, by the offset of for
+	// blocks holds the blocks that are statements of a block, not the
+	// body of an if, for or func, by the offset of {.
+	blocks map[int]*ast.BlockStmt
 }
 
 func newGoIndex(fset *token.FileSet, file *ast.File, funcs []int) *goIndex {
 	ix := &goIndex{tf: fset.File(file.Pos()), funcs: map[int]*ast.FuncDecl{}, calls: map[int]*ast.CallExpr{},
-		ifs: map[int]*ast.IfStmt{}, fors: map[int]*ast.BlockStmt{}}
+		ifs: map[int]*ast.IfStmt{}, fors: map[int]*ast.BlockStmt{}, blocks: map[int]*ast.BlockStmt{}}
 	for _, d := range file.Decls {
 		if fd, ok := d.(*ast.FuncDecl); ok && slices.Contains(funcs, ix.off(fd.Type.Func)) {
 			ix.funcs[ix.off(fd.Type.Func)] = fd
 			ast.Inspect(fd, func(n ast.Node) bool {
 				switch n := n.(type) {
+				case *ast.BlockStmt:
+					for _, s := range n.List {
+						if b, ok := s.(*ast.BlockStmt); ok {
+							ix.blocks[ix.off(b.Lbrace)] = b
+						}
+					}
 				case *ast.CallExpr:
 					ix.calls[ix.off(n.Lparen)] = n
 				case *ast.IfStmt:
@@ -1203,20 +1244,22 @@ func (g *gen) node(n Node) {
 		lb := g.src.Len() + len(" ")
 		g.src.WriteString(" {\n")
 		rb, elseLb, elseRb := -1, -1, -1
-		g.expect(at, func(ix *goIndex) (bool, int, int) {
+		g.expect(at, func(ix *goIndex) *blame {
 			s := ix.ifs[at]
 			switch {
 			case s == nil || s.Body == nil:
-				return false, cond, -1
+				return &blame{cond, -1, ""}
 			case ix.off(s.Body.Lbrace) != lb:
-				return false, cond, ix.off(s.Body.Lbrace)
+				return &blame{cond, ix.off(s.Body.Lbrace), ""}
 			case ix.off(s.Body.Rbrace) != rb:
-				return false, cond, -1
-			case elseLb < 0:
-				return s.Else == nil, cond, -1
+				return &blame{cond, -1, ""}
+			case elseLb < 0 && s.Else == nil:
+				return nil
 			}
-			e, ok := s.Else.(*ast.BlockStmt)
-			return ok && ix.off(e.Lbrace) == elseLb && ix.off(e.Rbrace) == elseRb, cond, -1
+			if e, ok := s.Else.(*ast.BlockStmt); ok && elseLb >= 0 && ix.off(e.Lbrace) == elseLb && ix.off(e.Rbrace) == elseRb {
+				return nil
+			}
+			return &blame{cond, -1, ""}
 		})
 		g.body(n, n.Then)
 		g.src.WriteString("\t")
@@ -1237,15 +1280,17 @@ func (g *gen) node(n Node) {
 		lb := g.src.Len() + len(" ")
 		g.src.WriteString(" {\n")
 		rb := -1
-		g.expect(at, func(ix *goIndex) (bool, int, int) {
+		g.expect(at, func(ix *goIndex) *blame {
 			body := ix.fors[at]
 			switch {
 			case body == nil:
-				return false, header, -1
+				return &blame{header, -1, ""}
 			case ix.off(body.Lbrace) != lb:
-				return false, header, ix.off(body.Lbrace)
+				return &blame{header, ix.off(body.Lbrace), ""}
+			case ix.off(body.Rbrace) != rb:
+				return &blame{header, -1, ""}
 			}
-			return ix.off(body.Rbrace) == rb, header, -1
+			return nil
 		})
 		g.call(g.d(n.KeyPos), "denKey", n.KeyPos, n.Key, "this list key")
 		g.body(n, n.Body)
@@ -1253,10 +1298,22 @@ func (g *gen) node(n Node) {
 		rb = g.src.Len()
 		g.src.WriteString("}\n")
 	case *Key:
-		fmt.Fprintf(g.src, "\t%s{\n", g.d(n.Pos_))
-		fmt.Fprintf(g.src, "\t%sdenKey(%s%s)\n", g.d(n.KeyPos), g.d(n.KeyPos), n.Key)
+		// A block of its own, statement of the block around it: { denKey(x); ... }.
+		g.src.WriteString("\t" + g.d(n.Pos_))
+		at := g.src.Len()
+		g.src.WriteString("{\n")
+		rb, key := -1, -1
+		g.expect(at, func(ix *goIndex) *blame {
+			if b := ix.blocks[at]; b != nil && ix.off(b.Rbrace) == rb {
+				return nil
+			}
+			return &blame{key, -1, ""}
+		})
+		key = g.call(g.d(n.KeyPos), "denKey", n.KeyPos, n.Key, "this {key} value")
 		g.body(n, n.Body)
-		g.src.WriteString("\t}\n")
+		g.src.WriteString("\t")
+		rb = g.src.Len()
+		g.src.WriteString("}\n")
 	case *Element:
 		if n.IsComponent() {
 			if err := g.component(n); err != nil {
@@ -1305,13 +1362,13 @@ func (g *gen) handler(a *Attr) {
 	g.src.WriteString("\n\t")
 	rb := g.src.Len()
 	g.src.WriteString("})\n")
-	g.expect(at, func(ix *goIndex) (bool, int, int) {
-		c := ix.call(at, "denHandler", rb+len("}"))
-		if c == nil || len(c.Args) != 1 || c.Ellipsis.IsValid() {
-			return false, f, -1
+	g.expect(at, func(ix *goIndex) *blame {
+		if c := ix.call(at, "denHandler", rb+len("}")); c != nil && len(c.Args) == 1 && !c.Ellipsis.IsValid() {
+			if fl, ok := c.Args[0].(*ast.FuncLit); ok && ix.off(fl.Type.Func) == fn && ix.off(fl.Body.Lbrace) == lb && ix.off(fl.Body.Rbrace) == rb {
+				return nil
+			}
 		}
-		fl, ok := c.Args[0].(*ast.FuncLit)
-		return ok && ix.off(fl.Type.Func) == fn && ix.off(fl.Body.Lbrace) == lb && ix.off(fl.Body.Rbrace) == rb, f, -1
+		return &blame{f, -1, ""}
 	})
 }
 
@@ -1871,46 +1928,63 @@ func (g *gen) component(el *Element) *Error {
 	type arg struct{ frag, off int }
 	var args []arg
 	rp := -1
-	g.expect(at, func(ix *goIndex) (bool, int, int) {
-		// blame finds the fragment of these arguments that holds offset
-		// off, or else the fragment of argument i or the last one before.
-		blame := func(i, off int) (bool, int, int) {
+	g.expect(at, func(ix *goIndex) *blame {
+		// in returns the fragment of these arguments that holds offset
+		// off, or -1.
+		in := func(off int) int {
 			for _, a := range args {
 				if a.frag >= 0 && g.frags[a.frag].start <= off && off < g.frags[a.frag].end {
-					return false, a.frag, off
+					return a.frag
 				}
 			}
+			return -1
+		}
+		// near blames the fragment of argument i, or of the last one
+		// before it that is a fragment.
+		near := func(i, off int) *blame {
 			for j := min(i, len(args)-1); j >= 0; j-- {
 				if args[j].frag >= 0 {
-					return false, args[j].frag, -1
+					return &blame{args[j].frag, off, ""}
 				}
 			}
-			return false, -1, -1
+			return &blame{-1, -1, ""}
 		}
 		c := ix.call(at, el.Tag, rp)
 		if c == nil {
-			return blame(len(args)-1, -1)
+			return near(len(args)-1, -1)
 		}
 		for i, a := range args {
 			if i >= len(c.Args) {
-				return blame(i, -1)
+				// Go read fewer: argument i has only comments.
+				if a.frag >= 0 {
+					return g.argsBlame(a.frag, 0, -1, -1)
+				}
+				return near(i, -1)
 			}
 			off := ix.off(c.Args[i].Pos())
-			if a.frag >= 0 && (off < g.frags[a.frag].start || off >= g.frags[a.frag].end) || a.frag < 0 && off != a.off {
-				return blame(i, off)
+			switch {
+			case a.frag >= 0 && in(off) == a.frag, a.frag < 0 && off == a.off:
+			case in(off) >= 0:
+				// Argument i starts in an earlier prop, which holds two.
+				return g.argsBlame(in(off), 2, off, -1)
+			default:
+				return near(i, -1)
 			}
 		}
 		if len(c.Args) > len(args) {
-			return blame(len(args)-1, ix.off(c.Args[len(args)].Pos()))
+			off := ix.off(c.Args[len(args)].Pos())
+			if f := in(off); f >= 0 {
+				return g.argsBlame(f, 2, off, -1)
+			}
+			return near(len(args)-1, -1)
 		}
 		// A variadic prop can take xs... as its value.
 		if c.Ellipsis.IsValid() {
-			off := ix.off(c.Ellipsis)
-			if len(args) == 0 || args[len(args)-1].frag < 0 || off >= g.frags[args[len(args)-1].frag].end {
-				return blame(len(args)-1, off)
+			if off := ix.off(c.Ellipsis); len(args) == 0 || in(off) < 0 || in(off) != args[len(args)-1].frag {
+				return near(len(args)-1, off)
 			}
 		}
-		return true, 0, 0
+		return nil
 	})
 	for i, p := range target.Params {
 		if i > 0 {
@@ -1953,13 +2027,13 @@ func (g *gen) slot(nodes []Node) {
 	fn := at + len("denSlot(")
 	lb := g.src.Len() - len("\n") - 1
 	rb := -1
-	g.expect(at, func(ix *goIndex) (bool, int, int) {
-		c := ix.call(at, "denSlot", rb+len("}"))
-		if c == nil || len(c.Args) != 1 || c.Ellipsis.IsValid() {
-			return false, -1, -1
+	g.expect(at, func(ix *goIndex) *blame {
+		if c := ix.call(at, "denSlot", rb+len("}")); c != nil && len(c.Args) == 1 && !c.Ellipsis.IsValid() {
+			if fl, ok := c.Args[0].(*ast.FuncLit); ok && ix.off(fl.Type.Func) == fn && ix.off(fl.Body.Lbrace) == lb && ix.off(fl.Body.Rbrace) == rb {
+				return nil
+			}
 		}
-		fl, ok := c.Args[0].(*ast.FuncLit)
-		return ok && ix.off(fl.Type.Func) == fn && ix.off(fl.Body.Lbrace) == lb && ix.off(fl.Body.Rbrace) == rb, -1, -1
+		return &blame{-1, -1, ""}
 	})
 	g.inside(nodes)
 	g.src.WriteString("\t")

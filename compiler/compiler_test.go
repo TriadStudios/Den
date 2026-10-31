@@ -1366,21 +1366,69 @@ component App() {
     goto L
 L:
     <p>hi</p>
-}`, `app.den:4:2: the statements of App must be complete Go statements; Go would read this together with the code den writes around it`},
+}`, `app.den:4:1: the statements of App must be complete Go statements; Go would read this together with the code den writes around it`},
+		// Before, Go's errors named den's own functions: too many arguments
+		// in call to denText, not enough arguments in call to denAttr,
+		// cannot use ... in call to non-variadic denText.
 		{"two expressions in text", `
 component App() {
     x := signal(1)
     <p>{x.Get(), 2}</p>
-}`, `app.den:4:18: this {...} must be one Go expression; Go would read this together with the code den writes around it`},
-		// Card(two(, )) would be Card(two()), valid Go.
+}`, `app.den:4:18: this {...} must be one Go expression, not several`},
+		{"only a comment in an attribute", `
+component App() {
+    <p title={/* c */}>x</p>
+}`, `app.den:3:15: this {...} has only comments in it; it must be one Go expression`},
+		{"only a comment in a prop", `
+component Card(n int) {
+    <p>{n}</p>
+}
+component App() {
+    <Card n={/* c */} />
+}`, `app.den:6:14: this {...} has only comments in it; it must be one Go expression`},
+		{"spread in text", `
+component App() {
+    xs := []int{1}
+    <p>{xs...}</p>
+}`, `app.den:4:11: this {...} must be one Go expression; ... passes the elements of a slice, which only a variadic prop takes`},
+		// Card(two(1, 2)) is valid Go: one call where den wrote two props.
+		// main panicked on it.
 		{"paren from one prop closed in the next", `
-func two() (int, int) { return 1, 2 }
+func two(a, b int) (int, int) { return a, b }
 component Card(a, b int) {
     <i>{a}{b}</i>
 }
 component App() {
-    <Card a={two(} b={)} />
-}`, `app.den:7:23: unexpected ): there is no ( for it to close`},
+    <Card a={two(1} b={2)} />
+}`, `app.den:7:25: unexpected ): there is no ( for it to close`},
+		// The value of a {key} block is written as denKey(x).
+		{"paren closing den's call in a key value", `
+component App() {
+    n := signal(0)
+    <div>{key n.Get()); denAny(0); 2 { <p>x</p> }}</div>
+}`, `app.den:4:22: unexpected ): there is no ( for it to close`},
+		// No block, as the ( of denText( is open at the {; main read a
+		// block and compiled denKey(n.Get()); denText(2).
+		{"paren closing den's call in what looks like a key block", `
+component App() {
+    n := signal(0)
+    <div>{key n.Get()); denText(2 {<p/>}}</div>
+}`, `app.den:4:22: unexpected ): there is no ( for it to close`},
+		{"line comment before the body of a key block", `
+component App() {
+    n := signal(0)
+    <div>{key n.Get() // c
+        { <p>x</p> }}</div>
+}`, `app.den:4:23: a // comment cannot come right before the { of the key body; use /* */ or put it inside the body`},
+		// den reads "a\ and the newline as one string, so the { after "c"
+		// starts the body; Go ends the string at the newline and reads a
+		// raw string from the ` on, through den's code to the next `.
+		{"raw string open from a key value", "\ncomponent App() {\n    n := signal(0)\n" +
+			"    <div>{key \"a\\\n` \" + \"c\" { <p>x</p> }}{`); denText(n.Get() /* ` */}</div>\n}",
+			"app.den:5:1: raw string literal not terminated before the { that starts the body"},
+		{"raw string open from text into a key value", "\ncomponent App() {\n    x := signal(1)\n" +
+			"    <p>{/* ` */ `}{key `); denText(1 /* ` */ x.Get() {<b>y</b>}}</p>\n}",
+			"app.den:4:17: raw string literal not terminated before the } that ends this {...}"},
 		{"struct key in a key block", `
 type P struct{ A int }
 component App() {

@@ -2,6 +2,8 @@ package compiler
 
 import (
 	"fmt"
+	"go/parser"
+	"go/token"
 	"math/rand"
 	"os"
 	"runtime/debug"
@@ -41,6 +43,7 @@ component App() {
 		{if @x.Get() > 0@ {<b>{@first(xs.Get())@}</b>} else {<i>none</i>}}
 		{if @(T{@x.Get()@}).v > 1@ {<u enter={@fade()@}>big</u>}}
 		<ul>{for @_, v := range xs.Get()@ key @v@ {<li animate={layout()@} onclick={@xs.Set(nil)@}>{v@}</li>}}</ul>
+		<p>{key x.Get()@ + @1@ {<s enter={fade()}>{@x.Get() * 2@}</s>}}</p>
 		<Badge n={@x.Get()@} />
 		<Pair a={@"p"@} b={@2@} />
 		<Card n={@x.Get()@}><span>{x.Get()@}</span></Card>
@@ -86,6 +89,14 @@ var fragmentEscapes = [][][2]string{
 	{{"title={@itoa(x.Get())@}", "title={//line x:0\nitoa(x.Get())) //}"}},
 	{{"onclick={@xs.Set(nil)@}", "onclick={//line x:0\n/* { */ }); denAny(1); denHandler(func(e Event) { /* } */}"}},
 	{{"{@x.Get()@} and", "{//line x:0\n\"a\"); denAny(/* \" */ ` /* \" */} and"}, {"{@len(xs.Get())@}", "{//line x:0\n\" `); denAny(len(xs.Get()) /* \" */}"}},
+	// A {key} value, written as denKey(x) in a block of its own.
+	{{"@ + @1@ {<s", "); denAny(0); 2 {<s"}},
+	{{"@ + @1@ {<s", " //line x:0\n); denAny(0); 2 {<s"}},
+	{{"@ + @1@ {<s", " + 1 // c\n {<s"}},
+	{{"@ + @1@ {<s", ") }; { denKey(0 {<s"}},
+	// den reads "a\ and the newline as one string; Go reads a raw string
+	// from the ` on, to the one in the {...} in the block.
+	{{"{key x.Get()@ + @1@ {", "{key \"a\\\n` \" + \"c\" {"}, {"{@x.Get() * 2@}", "{`); denAny(x.Get() /* ` */}"}},
 	// Statements that take den's next one in: defer denMark().
 	{{"xs := signal([]int{1, 2})", "xs := signal([]int{1, 2})\n\tdefer"}},
 	{{"xs := signal([]int{1, 2})", "xs := signal([]int{1, 2})\n\tgoto L\nL:"}},
@@ -301,7 +312,7 @@ func FuzzFragments(f *testing.F) {
 // into the Go it writes, and how gen writes it.
 type fragmentSlot struct {
 	src  *string
-	kind string // params, stmts, expr (text, attribute, motion, key), prop, handler, if, for
+	kind string // params, stmts, expr (text, attribute, motion, list key), key ({key} value), prop, handler, if, for
 }
 
 // fragmentSlots returns the Go fragments of the components of f.
@@ -319,6 +330,9 @@ func fragmentSlots(f *File) []fragmentSlot {
 				walk(n.Else)
 			case *For:
 				out = append(out, fragmentSlot{&n.Header, "for"}, fragmentSlot{&n.Key, "expr"})
+				walk(n.Body)
+			case *Key:
+				out = append(out, fragmentSlot{&n.Key, "key"})
 				walk(n.Body)
 			case *Element:
 				for _, a := range n.Attrs {
@@ -353,6 +367,8 @@ var shapeEscapes = map[string][]string{
 		"//line x:0\n$); denAny(0", "//line :x\n$); denAny(0", "//line x:0\r\n$); denAny(0",
 		"//line x:0\n\"a\"); if true { denAny(0) }; denAny($"},
 	"prop": {"$, 0", "$); denAny(0", "$ //", "$ /*", "//line x:0\n$); denAny(0", "//line x:0\n$, 0 //"},
+	"key": {"$); denAny(0", "$, 0", "$ //", "$ /*", "$ + /* ` */ `", "//line x:0\n$); denAny(0",
+		"$) }; { denKey(0", "$) }; denAny(0); { denKey(0", "$)\n\t}\n\tif true {\n\tdenKey(0"},
 	"handler": {"$ }); denAny(0); denHandler(func(e Event) {", "$\n}); denAny(0); denHandler(func(e Event) {",
 		"//line x:0\n$ }); denAny(0); denHandler(func(e Event) {", "$ /*", "$ + /* ` */ `"},
 	"if":     {"$ { }; if true", "$ { denAny(0) }; if true", "$ //", "denAny(0); $", "//line x:0\n$ { }; if true", "$) {", "$ /*"},
@@ -443,26 +459,29 @@ func TestFragmentShapes(t *testing.T) {
 			t.Errorf("the seed has no %s fragment", kind)
 		}
 	}
-	// Pair's {a}{b}.
-	var first []int
+	// Spans go across Pair's {a}{b}, and from the value of the {key}
+	// block to the fragment after it, in its body.
+	var pairs [][2]int
 	for i, s := range slots[:len(slots)-1] {
-		if s.kind == "expr" && *s.src == "a" && *slots[i+1].src == "b" {
-			first = []int{i, i + 1}
+		if s.kind == "expr" && *s.src == "a" && *slots[i+1].src == "b" || s.kind == "key" {
+			pairs = append(pairs, [2]int{i, i + 1})
 		}
 	}
-	if first == nil {
-		t.Fatal("the seed has no {a}{b}")
+	if len(pairs) != 2 {
+		t.Fatalf("the seed has %d pairs of fragments for spans, not 2", len(pairs))
 	}
-	for _, sp := range shapeSpans {
-		err := try(func(i int, s fragmentSlot) {
-			for j, at := range first {
-				if i == at {
-					*s.src = strings.ReplaceAll(sp[j], "$", *s.src)
+	for _, pair := range pairs {
+		for _, sp := range shapeSpans {
+			err := try(func(i int, s fragmentSlot) {
+				for j, at := range pair {
+					if i == at {
+						*s.src = strings.ReplaceAll(sp[j], "$", *s.src)
+					}
 				}
+			})
+			if err == nil {
+				t.Errorf("span %q across fragments %d checks", sp, pair)
 			}
-		})
-		if err == nil {
-			t.Errorf("span %q checks", sp)
 		}
 	}
 	// Noise before or after two or three fragments at random.
@@ -495,6 +514,40 @@ func TestFragmentShapes(t *testing.T) {
 	}
 }
 
+// TestKeyBlockShape makes sure checkShapes holds gen's block for a {key}
+// to its shape: a statement of its own, from gen's { to gen's }. Go in
+// fragments cannot change that without failing a check that comes before
+// it, so the test changes gen's own code: the block made the body of an
+// if, with every offset kept, must fail.
+func TestKeyBlockShape(t *testing.T) {
+	f, err := Parse("app.den", "component App() {\n\tx := signal(1)\n\t<div>{key x.Get() {<p>{x.Get()}</p>}}</div>\n}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &gen{src: &strings.Builder{}, errs: &ErrorList{}}
+	g.src.WriteString("package app\n")
+	g.function(f.Components[0])
+	shapes := func(code string) *Error {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "", code, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, code)
+		}
+		return g.checkShapes(code, fset, file)
+	}
+	code := g.src.String()
+	if err := shapes(code); err != nil {
+		t.Fatalf("%v\n%s", err, code)
+	}
+	// The block's { follows its line directive.
+	lb := strings.LastIndex(code[:strings.Index(code, "denKey(")], "{")
+	d := strings.LastIndex(code[:lb], "/*line")
+	iff := "if true" + strings.Repeat(" ", lb-d-len("if true"))
+	if err := shapes(code[:d] + iff + code[lb:]); err == nil || strings.Contains(err.Error(), "internal error") {
+		t.Errorf("the block as the body of an if: %v", err)
+	}
+}
+
 // TestFragmentEscape pins what fragmentEscape leaves to Go and what it
 // reports, and where.
 func TestFragmentEscape(t *testing.T) {
@@ -518,6 +571,8 @@ func TestFragmentEscape(t *testing.T) {
 		{"x /* c", fragExpr, 2, "comment not terminated before the } that ends this {...}"},
 		{"x /* a\nb", fragExpr, 2, "comment not terminated before the } that ends this {...}"},
 		{"x /* c", fragParams, 2, "comment not terminated before the ) that ends the parameter list"},
+		{"x + `", fragHeader, 4, "raw string literal not terminated before the { that starts the body"},
+		{"x); y", fragHeader, 1, "unexpected ): there is no ( for it to close"},
 		{"/* ` */ `", fragExpr, 8, "raw string literal not terminated before the } that ends this {...}"},
 		{"/* ` */ `\n", fragStmts, 8, "raw string literal not terminated before the } that ends this {...}"},
 		{`/* " */ "`, fragProp, 8, "string literal not terminated before the } that ends this {...}"},

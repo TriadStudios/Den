@@ -895,11 +895,13 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 			if commentOnly(src) {
 				continue
 			}
+			// Go that ends denText(...) early is reported as that, even
+			// when it looks like a {key} block that has no body.
+			p.checkFragment(src, start, fragExpr)
 			if keyWithoutBody(src) {
 				kw := start + len(src) - len(strings.TrimLeft(src, " \t\r\n"))
 				p.failAt(p.posAt(kw), "{key} needs a body after its value: {key x { ... }}")
 			}
-			p.checkFragment(src, start, fragExpr)
 			nodes = append(nodes, &Interp{Src: src, Pos_: srcPos})
 		default:
 			start := p.off
@@ -1094,7 +1096,7 @@ func (p *parser_) parseFor() *For {
 	if c := lineCommentAtEnd(head); c >= 0 {
 		p.failAt(p.posAt(off+c), "a // comment cannot come right before key; use /* */")
 	}
-	p.checkFragment(key, off+keyOff, fragExpr)
+	p.checkFragment(key, off+keyOff, fragHeader)
 	n.Header, n.HeaderPos = head, p.posAt(off)
 	n.Key, n.KeyPos = key, p.posAt(off+keyOff)
 	n.Body = p.parseNodes(nil, n.Pos_)
@@ -1105,6 +1107,8 @@ func (p *parser_) parseKey() *Key {
 	n := &Key{Pos_: p.posAt(p.off)}
 	p.off += len("key")
 	key, off := p.readHeader("key", n.Pos_)
+	// gen writes denKey(x) around the value, which it must not end.
+	p.checkFragment(key, off, fragHeader)
 	n.Key, n.KeyPos = key, p.posAt(off)
 	n.Body = p.parseNodes(nil, n.Pos_)
 	return n
@@ -1196,7 +1200,8 @@ func (p *parser_) headerEnd() (ok bool, stray, lineComment int) {
 type fragKind int
 
 const (
-	fragExpr   fragKind = iota // {expr}, attribute and motion values, list keys: the argument of a call, denText(x)
+	fragExpr   fragKind = iota // {expr}, attribute and motion values: the argument of a call, denText(x)
+	fragHeader                 // a list key or {key} value: the argument of denKey(x), which ends at the { of a body
 	fragProp                   // a component prop: one argument of the call of the component, Card(a, b)
 	fragStmts                  // a handler or the statements of a component: the body of a function
 	fragParams                 // the parameters of a component: func Card(a int)
@@ -1243,6 +1248,8 @@ func fragmentEscape(src string, k fragKind) (int, string) {
 		open[0] = token.LBRACE
 	case fragParams:
 		end = "the ) that ends the parameter list"
+	case fragHeader:
+		end = "the { that starts the body"
 	}
 	comma := -1 // a top-level , in a prop, until more code follows it
 	for {
