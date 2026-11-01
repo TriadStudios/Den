@@ -1474,6 +1474,41 @@ component App() {
 component App() {
     <div>{key 1 { <p enter={fade()}>x</p> }}</div>
 }`, `app.den:3:22: enter never plays: the {if}, {for} or {key} around <p> reads no signal, so it never adds or removes it`},
+		// A key that reads no signal is checked like the same Go in {...}
+		// text, where each of these is an error. Before, den never looked
+		// at such keys, and these compiled.
+		{"panic in a closure in a static key block", `
+func id(n int) int { return n }
+component App() {
+    <div>{key id(func() int { panic("x") }()) { <p>x</p> }}</div>
+}`, `app.den:4:31: panic is not supported here yet`},
+		{"go in a closure in a static key block", `
+func f() {}
+func id(n int) int { return n }
+component App() {
+    <div>{key id(func() int { go f(); return 1 }()) { <p>x</p> }}</div>
+}`, `app.den:5:31: this statement is not supported yet`},
+		{"den internal in a closure in a static key block", `
+func id(n int) int { return n }
+component App() {
+    <div>{key id(func() int { denText(1); return 1 }()) { <p>x</p> }}</div>
+}`, `app.den:4:31: denText is internal to den`},
+		{"panic in a closure in a static list key", `
+func id(n int) int { return n }
+component App() {
+    <ul>{for i := range 3 key id(func() int { panic("x") }()) + i { <li>{i}</li> }}</ul>
+}`, `app.den:4:47: panic is not supported here yet`},
+		{"go in a closure in a static list key", `
+func f() {}
+func id(n int) int { return n }
+component App() {
+    <ul>{for i := range 3 key id(func() int { go f(); return i }()) { <li>{i}</li> }}</ul>
+}`, `app.den:5:47: this statement is not supported yet`},
+		{"den internal in a closure in a static list key", `
+func id(n int) int { return n }
+component App() {
+    <ul>{for _, s := range []string{"a"} key id(func() int { denText(s); return 1 }()) { <li>{s}</li> }}</ul>
+}`, `app.den:4:62: denText is internal to den`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1985,5 +2020,66 @@ component App() {
 		if got, err := compileOne(string(formatted)); err != nil || got.JS != want.JS {
 			t.Errorf("formatted, it compiles differently: %v\n%s", err, formatted)
 		}
+	}
+}
+
+// A key that reads no signal is written as a statement, so that it is
+// evaluated, unless evaluating it can do nothing: names, constants and
+// fields reached without a pointer, in parentheses or not. Those are left
+// out, so programs using only them compile as they did before. Indexes,
+// divisions, fields through a pointer and calls can panic or do more.
+func TestStaticKeyStatements(t *testing.T) {
+	res, err := compileOne(`
+type Q struct{ N int }
+
+type P struct {
+    ID int
+    Q  Q
+}
+
+func f() int { return 1 }
+
+component App() {
+    p := P{ID: 1}
+    var pp *P
+    k := "a"
+    m := map[string]int{"a": 1}
+    xs := []int{1}
+    a, b := 4, 2
+    <div>
+        {key p.ID {<b/>}}
+        {key p.Q.N {<b/>}}
+        {key k {<b/>}}
+        {key len("ab") {<b/>}}
+        {key m[k] {<i/>}}
+        {key xs[0] {<i/>}}
+        {key a / b {<i/>}}
+        {key pp.ID {<i/>}}
+        {key f() {<i/>}}
+        <ul>
+            {for _, x := range xs key x {<b/>}}
+            {for _, q := range []P{p} key (q.Q).N {<b/>}}
+            {for i := range 1 key xs[i] {<i/>}}
+        </ul>
+    </div>
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, app, _ := strings.Cut(res.JS, "\nfunction App() {\n")
+	app, _, _ = strings.Cut(app, "\n}\n")
+	// The statements other than declarations, the return and the ones
+	// that put the content in place.
+	var stmts []string
+	for _, l := range strings.Split(app, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasSuffix(l, ";") && !strings.HasPrefix(l, "const ") && !strings.HasPrefix(l, "let ") &&
+			!strings.HasPrefix(l, "return ") && !strings.Contains(l, ".replaceWith(") && !strings.Contains(l, ".before(") {
+			stmts = append(stmts, l)
+		}
+	}
+	want := []string{"(m.get(k) ?? 0);", "$at(xs, 0);", "Math.trunc(a / b);", "pp.ID;", "f();", "$at(xs, i);"}
+	if !slices.Equal(stmts, want) {
+		t.Errorf("statements of App:\n%s\nwant:\n%s\n--- app.js ---\n%s", strings.Join(stmts, "\n"), strings.Join(want, "\n"), res.JS)
 	}
 }
