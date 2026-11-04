@@ -86,8 +86,14 @@ class Element extends Node {
   getAttribute(k) { return this.attributes.get(k) ?? null; }
   removeAttribute(k) { this.attributes.delete(k); }
   addEventListener(type, fn, capture) { ((capture ? this.captures : this.listeners)[type] ??= []).push(fn); }
-  focus() { document.activeElement = this; }
+  // focus records whether the element was in the document (under the
+  // app's root) when it was focused.
+  focus() { document.activeElement = this; this.focusedInDoc = root.contains(this); }
   blur() { if (document.activeElement === this) document.activeElement = null; }
+  // Only inputs and textareas have select, as in browsers; it and
+  // scrollIntoView count their calls.
+  get select() { return this.tagName === "input" || this.tagName === "textarea" ? () => { this.selects = (this.selects ?? 0) + 1; } : undefined; }
+  scrollIntoView() { this.scrolls = (this.scrolls ?? 0) + 1; }
   // animate records each animation in anims; finish() and cancel() end it.
   animate(k, o) { const a = new Animation(this, k, o); anims.push(a); return a; }
   // An element is where rect says, or else in a column: 10px down for each
@@ -185,6 +191,45 @@ globalThis.cancelAnimationFrame = (id) => { rafs.delete(id); };
 // reportError is how the runtime reports an error it caught (an effect
 // that threw); here it logs the message, so tests see it.
 globalThis.reportError = (e) => console.log("reportError:", e?.message ?? e);
+// Timers: once fakeTimers(wall) is called, the app's setTimeout,
+// setInterval, clearTimeout and clearInterval run on a fake clock (clock,
+// in ms from 0), performance.now() reads it, and Date.now() is wall plus
+// it. advance(ms) moves the clock on, running each timer that falls due in
+// order, with the microtasks it queues; pending() counts the timers set.
+// tick() and settle() still wait on node's own event loop.
+const realTimeout = setTimeout, realImmediate = setImmediate;
+let clock = 0, timerID = 0;
+const timers = new Map();
+function fakeTimers(wall = 0) {
+  const add = (f, ms, every) => {
+    ms = Math.max(Number(ms) || 0, 0);
+    timers.set(++timerID, { at: clock + ms, f, every: every ? Math.max(ms, 1) : 0 });
+    return timerID;
+  };
+  globalThis.setTimeout = (f, ms) => add(f, ms, false);
+  globalThis.setInterval = (f, ms) => add(f, ms, true);
+  globalThis.clearTimeout = globalThis.clearInterval = (id) => { timers.delete(id); };
+  Object.defineProperty(globalThis, "performance", { value: { timeOrigin: wall, now: () => clock }, configurable: true, writable: true });
+  Date.now = () => wall + clock;
+}
+function pending() { return timers.size; }
+async function advance(ms) {
+  // Microtasks queued before now run before any timer, as in browsers.
+  await settle();
+  const end = clock + ms;
+  for (;;) {
+    let id = 0, t = null;
+    for (const [i, u] of timers) if (u.at <= end && (!t || u.at < t.at)) { id = i; t = u; }
+    if (!t) break;
+    clock = t.at;
+    if (t.every) t.at += t.every;
+    else timers.delete(id);
+    t.f();
+    await settle();
+  }
+  clock = end;
+  await settle();
+}
 
 // ---- helpers for test scripts ----------------------------------------------
 function html(n = root) {
@@ -225,7 +270,10 @@ function visit(u) { history.pushState(null, "", u); traverse(0); }
 function key(el, k) { el.dispatch("keydown", { key: k }); }
 function check(el, on) { el.checked = on; el.dispatch("change"); }
 function input(el, value) { el.value = value; el.dispatch("input"); }
-function tick() { return new Promise((r) => setTimeout(r, 0)); }
+function tick() { return new Promise((r) => realTimeout(r, 0)); }
+// settle waits until the microtasks queued so far, and those they queue,
+// have run: den's flushes and onMount callbacks.
+function settle() { return new Promise((r) => realImmediate(r)); }
 function ops() { const n = domOps; domOps = 0; return n; }
 function log(...a) { console.log(...a); }
 // running lists the animations still running, as tag:text; finishAll

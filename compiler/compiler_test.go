@@ -1509,6 +1509,149 @@ func id(n int) int { return n }
 component App() {
     <ul>{for _, s := range []string{"a"} key id(func() int { denText(s); return 1 }()) { <li>{s}</li> }}</ul>
 }`, `app.den:4:62: denText is internal to den`},
+		// Lifecycle: onMount, onCleanup, after and every need the component
+		// instance calling them.
+		{"onMount in a top-level func", `
+func start() {
+    onMount(func() {})
+}
+component App() {
+    start()
+    <p>x</p>
+}`, `app.den:3:5: onMount can only be called in a component: in its statements, handlers or func literals`},
+		{"onCleanup in a top-level func", `
+func done() { onCleanup(func() {}) }
+component App() {
+    done()
+    <p>x</p>
+}`, `app.den:2:15: onCleanup can only be called in a component: in its statements, handlers or func literals`},
+		{"every in a top-level func", `
+import "time"
+func tick() { every(time.Second, func() {}) }
+component App() {
+    tick()
+    <p>x</p>
+}`, `app.den:3:15: every can only be called in a component: in its statements, handlers or func literals`},
+		{"after in a func literal in a top-level func", `
+import "time"
+func start() func() {
+    return func() { after(time.Second, func() {}) }
+}
+component App() {
+    f := start()
+    <button onclick={f()}>x</button>
+}`, `app.den:4:21: after can only be called in a component: in its statements, handlers or func literals`},
+		// and they, and ref, cannot be in Go that den evaluates again, or
+		// for each row or element.
+		{"after in computed", `
+import "time"
+component App() {
+    n := computed(func() int { after(time.Second, func() {}); return 1 }())
+    <p>{n.Get()}</p>
+}`, `app.den:4:32: after cannot be called in computed(...): it would run again each time the value is recomputed`},
+		{"ref in spring", `
+component App() {
+    x := spring(float64(len([]*Ref{ref()})))
+    <p>{x.Get()}</p>
+}`, `app.den:3:36: ref cannot be called in spring(...): it would run again each time the value is recomputed`},
+		{"onCleanup in computed in a handler", `
+component App() {
+    <button onclick={computed(func() int { onCleanup(func() {}); return 1 }())}>x</button>
+}`, `app.den:3:44: onCleanup cannot be called in computed(...): it would run again each time the value is recomputed`},
+		{"ref in markup text", `
+component App() {
+    <p>{len([]*Ref{ref()})}</p>
+}`, `app.den:3:20: ref cannot be called in markup {...}: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in an attribute", `
+component App() {
+    <p title={itoa(len([]*Ref{ref()}))}>x</p>
+}`, `app.den:3:31: ref cannot be called in markup {...}: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"after in an if condition", `
+import "time"
+component App() {
+    <div>{if after(time.Second, func() {}) != nil { x }}</div>
+}`, `app.den:4:14: after cannot be called in an {if} condition: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in a for clause", `
+component App() {
+    <ul>{for i := range len([]*Ref{ref()}) key i { <li>{i}</li> }}</ul>
+}`, `app.den:3:36: ref cannot be called in a {for} clause: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in a list key", `
+component App() {
+    <ul>{for i := range 3 key i + len([]*Ref{ref()}) { <li>{i}</li> }}</ul>
+}`, `app.den:3:46: ref cannot be called in a list key: den evaluates it for each row, again whenever the list changes`},
+		{"ref in a key value", `
+component App() {
+    <div>{key len([]*Ref{ref()}) { <p>x</p> }}</div>
+}`, `app.den:3:26: ref cannot be called in a {key} value: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in a prop", `
+component App() {
+    <Field box={ref()} />
+}
+component Field(box *Ref) {
+    <input ref={box} />
+}`, `app.den:3:17: ref cannot be called in a prop: den evaluates props each time it builds the component`},
+		{"ref in a transition", `
+func pick(r *Ref) Transition { return fade() }
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={pick(ref())}>x</p> }}</div>
+}`, `app.den:5:41: ref cannot be called in exit=: den evaluates it each time it makes the element`},
+		{"ref in ref=", `
+component App() {
+    <input ref={ref()} />
+}`, `app.den:3:17: ref cannot be called in ref=: den evaluates it each time it makes the element`},
+		{"ref= on a component", `
+component App() {
+    r := ref()
+    <Card ref={r} />
+}
+component Card() {
+    <p>card</p>
+}`, `app.den:4:11: ref works on HTML and SVG elements, not on components: <Card> has no prop "ref"; pass the *Ref as a prop and put ref= on an element inside`},
+		{"ref= with no value", `
+component App() {
+    <input ref />
+}`, `app.den:3:12: ref takes a *Ref in braces, like ref={box} where box := ref()`},
+		{"ref= with a string", `
+component App() {
+    <input ref="box" />
+}`, `app.den:3:12: ref takes a *Ref in braces, like ref={box} where box := ref()`},
+		{"ref= with a number", `
+component App() {
+    <input ref={1} />
+}`, `app.den:3:17: cannot use 1 (untyped int constant) as *Ref value in ref=`},
+		{"ref= that reads a signal", `
+component App() {
+    r := signal(ref())
+    <input ref={r.Get()} />
+}`, `app.den:4:17: ref= cannot depend on a signal: den reads it once, when it makes the element`},
+		{"ref with the program's own Ref", `
+type Ref int
+component App() {
+    r := ref()
+    <p>{r}</p>
+}`, `app.den:4:10: ref is not available because this program declares its own Ref; rename it`},
+		{"comparing times", `
+import "time"
+component App() {
+    same := time.Now() == time.Now()
+    <p>{same}</p>
+}`, `app.den:4:13: invalid operation: time.Now() == time.Now() (den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0)`},
+		{"comparing refs", `
+component App() {
+    same := *ref() != *ref()
+    <p>{same}</p>
+}`, `app.den:3:13: invalid operation: *ref() != *ref() (a Ref cannot be compared)`},
+		{"a Ref value", `
+component App() {
+    var r Ref
+    <button onclick={r.Focus()}>x</button>
+}`, `app.den:4:22: den's Ref is used only as a *Ref, made by ref(): a Ref value never holds an element`},
+		{"after as a value", `
+component App() {
+    f := after
+    <button onclick={f(0, func() {})}>x</button>
+}`, `app.den:3:10: after can only be called, not used as a value`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1535,6 +1678,24 @@ component App() {
     l := layout()
     <div>{if show.Get() { <p animate={l}>x</p> }}</div>
 }`, `app.den:5:30: animate works only on an element directly inside a {for} row, whose place it animates when the list changes`},
+		{"ref= in a for row", `
+component App() {
+    r := ref()
+    <ul>{for i := range 3 key i { <li><input ref={r} /></li> }}</ul>
+}`, `app.den:4:46: ref= inside a {for} row: every row would set the same ref`},
+		{"ref= in slot markup in a for row", `
+component App() {
+    r := ref()
+    <ul>{for i := range 3 key i { <Item><input ref={r} /></Item> }}</ul>
+}
+component Item(children den.Children) {
+    <li>{children}</li>
+}`, `app.den:4:48: ref= inside a {for} row: every row would set the same ref`},
+		{"ref= with the program's own Ref", `
+type Ref int
+component App() {
+    <input ref={1} />
+}`, `app.den:4:12: ref is not available because this program declares its own Ref; rename it`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)
