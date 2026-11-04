@@ -1812,7 +1812,7 @@ component App() {
 	dirs, _ := filepath.Glob("../examples/*")
 	dirs = append(dirs, "../bench/den")
 	for _, dir := range dirs {
-		if filepath.Base(dir) == "motion" {
+		if b := filepath.Base(dir); b == "motion" || b == "site" {
 			continue
 		}
 		files, _ := filepath.Glob(filepath.Join(dir, "*.den"))

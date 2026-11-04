@@ -1,0 +1,50 @@
+// Code is a code sample in a window with a file name. The samples are
+// raw string constants, since markup text collapses whitespace and <pre>
+// shows what it is given.
+component Code(name string, src string) {
+	style {
+		.code {
+			background: $code-bg;
+			border: 1px solid $code-line;
+			border-radius: $radius-lg;
+			box-shadow: $shadow;
+			min-width: 0;
+			overflow: hidden;
+		}
+		p {
+			display: flex;
+			gap: 6px;
+			margin: 0;
+			padding: 11px 14px;
+			border-bottom: 1px solid $code-line;
+			color: $code-muted;
+			font: 12px/12px $mono;
+		}
+		i {
+			width: 10px;
+			height: 10px;
+			border-radius: 50%;
+			background: $code-line;
+		}
+		i:last-of-type {
+			margin-right: 8px;
+		}
+		pre {
+			margin: 0;
+			padding: 16px 18px 18px;
+			overflow-x: auto;
+			color: $code-ink;
+			font: 13.5px/1.7 $mono;
+			tab-size: 4;
+		}
+		@media (max-width: 560px) {
+			pre {
+				font-size: 12.5px;
+			}
+		}
+	}
+	<div class="code">
+		<p><i /><i /><i />{name}</p>
+		<pre>{src}</pre>
+	</div>
+}

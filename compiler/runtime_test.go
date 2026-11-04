@@ -1271,6 +1271,115 @@ back(); back(); log(await page(), findAll("a").find((a) => a.textContent === "Ne
 		`People | No person 8Next idAll people | /people/8 /people/9`)
 }
 
+// TestSiteExample walks through examples/site, den's own site, on the
+// test DOM: routing with page transitions (the old page leaves, inert,
+// while the new one enters), the typed docs param, the live demos, the
+// stored theme and the menu that closes on navigation.
+func TestSiteExample(t *testing.T) {
+	files, _ := filepath.Glob("../examples/site/*.den")
+	var src []byte
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src = append(append(src, b...), '\n')
+	}
+	got := runApp(t, string(src), `
+const header = () => find("header");
+const pages = () => find("main").childNodes.filter((n) => n.tagName === "div");
+const button = (label) => findAll("button").find((b) => b.getAttribute("aria-label")?.startsWith(label));
+// state is the nav link marked current, the newest page's h1, the path
+// and how many pages main holds.
+const state = () => "[" + findAll("a", header()).filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.textContent).join("") +
+  "] " + findAll("h1", pages().at(-1)).map((h) => h.textContent).join("") + " | " + location.pathname + " | " + pages().length;
+// settle ends the transitions and returns the state before and after;
+// before, each page shows whether it is inert and the duration of the
+// transition it is playing (exit 150ms, enter 300ms) or "-".
+const playing = (p) => anims.find((a) => a.el === p && a.playState === "running")?.o.duration ?? "-";
+const settle = async () => { await tick(); const s = state() + " " + pages().map((p) => p.inert + ":" + playing(p)).join(","); finishAll(); return s + " -> " + state(); };
+const go = (text) => { find("a", text).dispatch("click"); return settle(); };
+const visitAndSettle = (u) => { visit(u); return settle(); };
+const chips = () => findAll("p").filter((p) => p.getAttribute("class") === "chip").map((p) => p.textContent + (p.inert ? " (leaving)" : "")).join(", ");
+log(state());
+click(find("button", "+")); click(find("button", "+")); click(find("button", "−")); await tick();
+log(find("output").parentNode.textContent);
+log(await go("Features"));
+input(find("input"), "Ada"); await tick();
+log(find("input").parentNode.textContent, localStorage.getItem("den-name"));
+log(chips());
+click(find("button", "Toggle")); await tick();
+log(chips()); finishAll(); log(chips());
+log(await go("Performance"));
+log(findAll("rect").filter((r) => r.getAttribute("width") !== "100%").map((r) => r.getAttribute("width")).join(" "));
+log(await go("Docs"));
+log(await go("First component →"));
+log(findAll("a", findAll("nav")[1]).filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.textContent).join(""),
+  "|", findAll("a", pages()[0]).filter((a) => a.parentNode.getAttribute("class") === "pager").map((a) => a.textContent + " " + a.getAttribute("href")).join(", "));
+log(await visitAndSettle("/docs/nope"), "|", findAll("p", pages()[0]).map((p) => p.textContent).join(""));
+log(await visitAndSettle("/docs/other"), "|", findAll("p", pages()[0]).map((p) => p.textContent).join(""));
+log(await visitAndSettle("/docs"));
+log(await go("Why den"), "|", findAll("tr").length, findAll("tr")[1].textContent);
+log(await visitAndSettle("/nowhere"), "|", findAll("p", pages()[0]).map((p) => p.textContent).join(""));
+back(); log(await settle());
+const theme = () => find("div").getAttribute("class") + " " + localStorage.getItem("den-theme") + " " + button("Theme").getAttribute("aria-label");
+log(theme());
+for (let i = 0; i < 3; i++) { click(button("Theme")); await tick(); log(theme()); }
+const menu = () => find("nav").getAttribute("class") + " " + button("Menu").getAttribute("aria-expanded");
+log(menu());
+click(button("Menu")); await tick(); log(menu());
+click(button("Menu")); await tick(); log(menu());
+click(button("Menu")); await tick(); log(menu());
+log(await go("Features"), "|", menu());
+click(button("Menu")); await tick(); log(menu());
+back(); log(await settle(), "|", menu());`)
+	expectLines(t, got,
+		`[] Go-syntax UI, compiled to tiny JavaScript | / | 1`,
+		`−1+Doubled: 2`,
+		`[Features] Features | /features | 2 true:150,false:300 -> [Features] Features | /features | 1`,
+		`Hello, Ada! Reload: it stays. "Ada"`,
+		`Scaled in, slides out`,
+		`Scaled in, slides out (leaving), Slid in, scales out`,
+		`Slid in, scales out`,
+		`[Performance] As fast as hand-written JavaScript | /performance | 2 true:150,false:300 -> [Performance] As fast as hand-written JavaScript | /performance | 1`,
+		`54% 77% 96% 79% 73% 83% 78% 74% 68% 75% 84% 77%`,
+		`[Docs] Install | /docs/install | 2 true:150,false:300 -> [Docs] Install | /docs/install | 1`,
+		`[Docs] First component | /docs/first-component | 2 true:150,false:300 -> [Docs] First component | /docs/first-component | 1`,
+		`First component | ← Install /docs/install, Routing → /docs/routing`,
+		`[Docs] No such page | /docs/nope | 2 true:150,false:300 -> [Docs] No such page | /docs/nope | 1 | The guide has no page “nope”.`,
+		`[Docs] No such page | /docs/other | 2 true:150,false:300 -> [Docs] No such page | /docs/other | 1 | The guide has no page “other”.`,
+		`[Docs] Install | /docs | 2 true:150,false:300 -> [Docs] Install | /docs | 1`,
+		`[Why den] For Go developers who ship to the browser | /why | 2 true:150,false:300 -> [Why den] For Go developers who ship to the browser | /why | 1 | 7 You writeGoJSXSvelte filesJSX`,
+		`[] Nothing lives here | /nowhere | 2 true:150,false:300 -> [] Nothing lives here | /nowhere | 1 | No page at /nowhere. Go home.`,
+		`[Why den] For Go developers who ship to the browser | /why | 2 true:150,false:300 -> [Why den] For Go developers who ship to the browser | /why | 1`,
+		`site system "system" Theme: system`,
+		`site light "light" Theme: light`,
+		`site dark "dark" Theme: dark`,
+		`site system "system" Theme: system`,
+		` false`,
+		`open true`,
+		` false`,
+		`open true`,
+		`[Features] Features | /features | 2 true:150,false:300 -> [Features] Features | /features | 1 |  false`,
+		`open true`,
+		`[Why den] For Go developers who ship to the browser | /why | 2 true:150,false:300 -> [Why den] For Go developers who ship to the browser | /why | 1 |  false`)
+
+	// The home page shows Counter's source beside the running Counter, so
+	// the sample must be that source.
+	s := strings.ReplaceAll(string(src), "\r\n", "\n")
+	if i := strings.Index(s, "\ncomponent Counter() {"); i < 0 {
+		t.Error("no component Counter in examples/site")
+	} else if j := strings.Index(s[i:], "\n}\n"); !strings.Contains(s, "counterSrc = `"+s[i+1:i+j+2]+"`") {
+		t.Error("counterSrc in examples/site/home.den is not the source of Counter")
+	}
+
+	// The theme is read back from localStorage when the page loads, and
+	// the first page is built without transitions.
+	got = runAppWith(t, string(src), `localStorage.setItem("den-theme", '"dark"');`, `
+log(find("div").getAttribute("class"), find("main").childNodes.filter((n) => n.tagName === "div").length, running().length);`)
+	expectLines(t, got, `site dark 1 0`)
+}
+
 // A program that has its own path, route or Route, as a declaration, a
 // component or an import, keeps it, as on main; route and Route give way
 // together, path on its own. Explicitly instantiated generics, den's and

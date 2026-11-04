@@ -1,0 +1,71 @@
+// The home page: the pitch, a component beside its live result, the
+// numbers and the features.
+
+type Card struct {
+	Title string
+	Text  string
+}
+
+const counterSrc = `component Counter() {
+	count := signal(0)
+	double := computed(count.Get() * 2)
+	<div class="counter">
+		<button onclick={count.Set(count.Get() - 1)}>−</button>
+		<output>{count.Get()}</output>
+		<button onclick={count.Set(count.Get() + 1)}>+</button>
+		<p>Doubled: {double.Get()}</p>
+	</div>
+}`
+
+func cards() []Card {
+	return []Card{
+		{"Checked by Go", "go/types checks every expression."},
+		{"No virtual DOM", "Only what reads a signal updates."},
+		{"Secure by default", "Strict CSP, Trusted Types, no innerHTML."},
+		{"Typed routes", "URL params fill a typed struct."},
+		{"Scoped styles", "Scoped at build time, with typed tokens."},
+		{"Motion built in", "Enter, exit, layout and springs."},
+	}
+}
+
+func stats() []Card {
+	return []Card{{"3.0 KB", "runtime, gzipped"}, {"5.4 KB", "TodoMVC, gzipped"}, {"1.00×", "the time of vanilla JS"}, {"0", "npm packages"}}
+}
+
+component Home() {
+	<div>
+		<section class="hero">
+			<p class="pill">Experimental</p>
+			<h1>Go-syntax UI, <em>compiled to tiny JavaScript</em></h1>
+			<p class="lede">
+				Go's own type checker checks every component. No virtual DOM, no WebAssembly, no npm.
+			</p>
+			<p>
+				<a class="btn primary" href="/docs/install">Get started →</a>
+				<a class="btn" href="/features">Features</a>
+			</p>
+			<code>go install github.com/TriadStudios/Den/cmd/den@latest</code>
+		</section>
+		<section class="split">
+			<Code name="counter.den" src={counterSrc} />
+			<div class="live">
+				<small>Live result</small>
+				<Counter />
+			</div>
+		</section>
+		<section class="stats">
+			{for _, s := range stats() key s.Title {
+				<p><b>{s.Title}</b>{s.Text}</p>
+			}}
+		</section>
+		<h2 class="center">Small by design, safe by default</h2>
+		<section class="cards">
+			{for _, c := range cards() key c.Title {
+				<article>
+					<h3>{c.Title}</h3>
+					<p>{c.Text}</p>
+				</article>
+			}}
+		</section>
+	</div>
+}

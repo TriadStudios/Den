@@ -1,0 +1,32 @@
+// The live demos. Counter is the component the home page shows as code.
+
+component Counter() {
+	count := signal(0)
+	double := computed(count.Get() * 2)
+	<div class="counter">
+		<button onclick={count.Set(count.Get() - 1)}>−</button>
+		<output>{count.Get()}</output>
+		<button onclick={count.Set(count.Get() + 1)}>+</button>
+		<p>Doubled: {double.Get()}</p>
+	</div>
+}
+
+component Greeter() {
+	name := stored("den-name", "Gopher")
+	<div class="demo">
+		<input value={name.Get()} oninput={name.Set(e.Value())} aria-label="Your name" />
+		<p>Hello, {name.Get()}! Reload: it stays.</p>
+	</div>
+}
+
+component Toggle() {
+	on := signal(false)
+	<div class="demo">
+		<button class="btn" onclick={on.Set(!on.Get())}>Toggle</button>
+		{if on.Get() {
+			<p class="chip" enter={slide("up")} exit={scale()}>Slid in, scales out</p>
+		} else {
+			<p class="chip" enter={scale()} exit={slide("down")}>Scaled in, slides out</p>
+		}}
+	</div>
+}

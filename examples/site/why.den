@@ -1,0 +1,43 @@
+// Why den: how it differs, and when to pick something else. Qualitative
+// only: no numbers for other frameworks.
+
+// compare is the table: a header row, then one row per question.
+func compare() [][]string {
+	return [][]string{
+		{"", "den", "React", "Svelte", "Solid"},
+		{"You write", "Go", "JSX", "Svelte files", "JSX"},
+		{"Types", "Go's, always", "TS, optional", "TS, optional", "TS, optional"},
+		{"Updates", "Signals", "Virtual DOM", "Signals", "Signals"},
+		{"Toolchain", "One Go binary", "npm", "npm", "npm"},
+		{"Strict CSP", "Built in", "Up to you", "Up to you", "Up to you"},
+		{"Ecosystem", "Tiny", "Huge", "Large", "Growing"},
+	}
+}
+
+component Why() {
+	<section>
+		<header>
+			<h1>For Go developers who ship to the browser</h1>
+			<p class="lede">Your language and type checker, and no JavaScript toolchain.</p>
+		</header>
+		<div class="scroll">
+			<table>
+				{for i, row := range compare() key i {
+					<tr>
+						{for j, cell := range row key j {
+							{if i == 0 || j == 0 {
+								<th>{cell}</th>
+							} else {
+								<td>{cell}</td>
+							}}
+						}}
+					</tr>
+				}}
+			</table>
+		</div>
+		<h2>When to pick something else</h2>
+		<p>
+			Den is experimental: no server rendering yet, no methods or interfaces in its Go, and an ecosystem of one repository.
+		</p>
+	</section>
+}

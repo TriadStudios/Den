@@ -1,0 +1,72 @@
+// Getting started: /docs/:slug, a typed route param. App picks the page
+// from the slug, so that each one enters and leaves like any other page.
+
+type Doc struct {
+	Slug  string
+	Title string
+	Text  string
+	Code  string
+}
+
+func guide() []Doc {
+	return []Doc{
+		{"install", "Install", "Den is one Go binary. It needs Go 1.24 or later.", `go install github.com/TriadStudios/Den/cmd/den@latest
+den dev myapp    # serve, reload on save
+den build myapp  # write myapp/dist/`},
+		{"first-component", "First component", "An app is a directory of .den files with an App component.", `component App() {
+	name := signal("world")
+	<input value={name.Get()} oninput={name.Set(e.Value())} />
+}`},
+		{"routing", "Routing", "route[T] fills T from the path. This page is /docs/:slug.", `type DocParams struct{ Slug string }
+
+doc := route[DocParams]("/docs/:slug")`},
+		{"styling", "Styling", "A style block styles only its component; $ink is a token.", `const Ink den.Color = "#0b1020"
+
+style {
+	.note { color: $ink; }
+}`},
+	}
+}
+
+// docPage is the index of the guide page called slug ("" is the first),
+// or -1.
+func docPage(slug string) int {
+	for i, d := range guide() {
+		if d.Slug == slug || slug == "" && i == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// Docs is guide page i, or a not found page when i is -1.
+component Docs(doc *Route[DocParams], i int) {
+	pages := guide()
+	<section class="docs">
+		<nav aria-label="Guide">
+			{for n, g := range pages key n {
+				<a href={"/docs/" + g.Slug} aria-current={pick(n == i, "page", "")}>{g.Title}</a>
+			}}
+		</nav>
+		{if i < 0 {
+			<article>
+				<h1>No such page</h1>
+				<p>The guide has no page “{doc.Params().Slug}”.</p>
+			</article>
+		} else {
+			<article>
+				<h1>{pages[i].Title}</h1>
+				<p>{pages[i].Text}</p>
+				<Code name={pick(i == 0, "terminal", "app.den")} src={pages[i].Code} />
+				<p class="pager">
+					{if i > 0 {
+						<a href={"/docs/" + pages[i-1].Slug}>← {pages[i-1].Title}</a>
+					}}
+					{if i < 3 {
+						<a href={"/docs/" + pages[i+1].Slug}>{pages[i+1].Title} →</a>
+					}}
+				</p>
+			</article>
+		}}
+	</section>
+}
