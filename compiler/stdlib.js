@@ -402,5 +402,13 @@ function $radio(el, x, v) {
   $effect(() => { el.checked = x.get() === f(); });
   return x;
 }
-// $touch marks field x touched when its element loses focus.
-function $touch(el, x) { el.addEventListener("focusout", () => x.tc.set(true)); }
+// $touch marks field x touched when its element loses focus, but only
+// while the block that made the element is there: when den takes the
+// element away it frees that block first, and the focusout that follows
+// (browsers fire one at a focused element that is removed, and $exit
+// blurs focus inside a leaving one) is not the user leaving the field.
+function $touch(el, x) {
+  let on = 1;
+  $cleanup(() => { on = 0; });
+  el.addEventListener("focusout", () => on && x.tc.set(true));
+}

@@ -2026,6 +2026,16 @@ component App() {
     plan := signal("a")
     <input type="radio" bind={plan} />
 }`, `app.den:4:25: a radio with bind needs a value, the one bind sets when it is checked: value="pro" or value={v}`},
+		// Before, Bind={s} said "cannot render *Signal[string]".
+		{"Bind in the wrong case", `
+component App() {
+    s := signal("")
+    <input Bind={s} />
+}`, `app.den:4:12: unknown attribute "Bind" (use lowercase: bind={...})`},
+		{"BIND in the wrong case without braces", `
+component App() {
+    <input BIND="s" />
+}`, `app.den:3:12: unknown attribute "BIND" (use lowercase: bind={...})`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)

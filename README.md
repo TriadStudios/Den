@@ -770,8 +770,9 @@ component Signup() {
 - The element keeps its own handlers: `oninput`, `onchange` and the rest
   run as usual, after bind has set `x`, so they see the new value.
 - bind works in `{if}` branches, `{for}` rows and `{key}` blocks, and `x`
-  may belong to a row's item (`bind={row.Name}`). It is read once, when
-  the element is made, so it cannot depend on a signal. A leaving element
+  may belong to a row's item (`bind={row.Name}`) or come from context
+  (`bind={use[Form]().Email}`). It is read once, when the element is
+  made, so it cannot depend on a signal. A leaving element
   (motion) takes no more input, so its binds stop with its handlers.
 - A `<select>` is bound after its options are made, so options from a
   `{for}` are chosen from the start. Options added or removed later do
@@ -781,7 +782,9 @@ component Signup() {
   `func(T) error` that may be nil. `Get` and `Set` work as on a signal.
   `f.Error()` is the parse error of the element's text if there is one,
   and otherwise `check(f.Get())`. `f.Touched()` is false until an element
-  bound to `f` loses focus, or `f.Touch()` is called. `f.Reset()` sets
+  bound to `f` loses focus, or `f.Touch()` is called. An element that den
+  takes away while it has focus does not touch `f`: that is not the user
+  leaving the field, though browsers send the same event. `f.Reset()` sets
   `f` back to its initial value, untouched and with no parse error; `Set`
   clears a parse error too, as the element then shows the value set.
   `Get`, `Error` and `Touched` are reactive, like `.Get()` on a signal.
@@ -792,7 +795,8 @@ component Signup() {
   than `<input>`, `<textarea>` and `<select>`; on a `<select multiple>`;
   on an `<input>` whose type is `type={...}`, file, button, submit,
   reset, image or a type den does not know; `bind="..."` or `bind`
-  without a value; an `x` that is not a `*Signal` or a `*Field` (a
+  without a value, and `Bind` or `BIND` (it is written in lower case);
+  an `x` that is not a `*Signal` or a `*Field` (a
   `*Computed` cannot be set), or that reads a signal
   (`bind={rows.Get()[0].Name}`); a `T` that the element does not take
   (`app.den:4:18: bind to an int needs type="number" or "range"`), or

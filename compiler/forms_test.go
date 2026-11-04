@@ -358,6 +358,174 @@ finishAll(); log(findAll("input").length);`)
 	expectLines(t, got, `ok false`, `input:`, `ok false`, `0`)
 }
 
+// Chromium fires focusout at a focused element that is removed, and
+// $exit blurs focus inside a leaving element. Neither is the user leaving
+// the field, and both happen while den updates the page: a field whose
+// element den takes away stays untouched. Leaving it while it is shown
+// touches it.
+func TestRunBindFieldRemoved(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    show := signal(true)
+    name := field("", nil)
+    other := field("", nil)
+    <div>
+        {if show.Get() {
+            <label><input class="a" bind={name} /></label>
+        }}
+        {if show.Get() {
+            <input class="b" exit={fade()} bind={other} />
+        }}
+        <p>{name.Touched()} {other.Touched()}</p>
+        <button onclick={show.Set(!show.Get())}>toggle</button>
+    </div>
+}`, `
+focusEvents = true;
+const toggle = () => click(find("button")), p = () => log(find("p").textContent);
+find("input").focus();
+toggle(); await tick(); p();
+toggle(); await tick(); findAll("input").at(-1).focus();
+toggle(); await tick(); p();
+finishAll(); toggle(); await tick();
+find("input").focus(); find("input").blur(); await tick(); p();
+findAll("input")[1].focus(); findAll("input")[1].blur(); await tick(); p();`)
+	expectLines(t, got, `false false`, `false false`, `true false`, `true true`)
+}
+
+// A bound input can have a ref too: onMount focuses it once it is in the
+// document, in a component shown by an {if}. Typing still binds, leaving
+// touches the field, and taking the component away while its input has
+// focus does not.
+func TestRunBindRefOnMount(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    open := signal(false)
+    q := field("go", nil)
+    <div>
+        <button onclick={open.Set(!open.Get())}>open</button>
+        {if open.Get() {
+            <Search q={q} />
+        }}
+        <p>{q.Get()} {q.Touched()}</p>
+    </div>
+}
+
+component Search(q *Field[string]) {
+    box := ref()
+    onMount(func() { box.Focus() })
+    <input ref={box} bind={q} />
+}`, `
+focusEvents = true;
+const p = () => log(find("p").textContent);
+click(find("button")); await settle();
+const a = find("input");
+log(document.activeElement === a, a.focusedInDoc, a.value);
+input(a, "den"); await tick(); p();
+click(find("button")); await settle(); p();
+click(find("button")); await settle();
+log(document.activeElement === find("input"), find("input").value);
+find("input").blur(); await tick(); p();`)
+	expectLines(t, got, `true true go`, `den false`, `den false`, `true den`, `den true`)
+}
+
+// A Field can be provided as context and bound in a component below:
+// bind={use[Form]().Email} reads no signal (use reads the context once,
+// when the element is made), so den allows it.
+func TestRunBindContextField(t *testing.T) {
+	got := runApp(t, `
+import (
+    "errors"
+    "strings"
+)
+
+type Form struct {
+    Email *Field[string]
+}
+
+func checkEmail(s string) error {
+    if !strings.Contains(s, "@") {
+        return errors.New("enter an email address")
+    }
+    return nil
+}
+
+component App() {
+    provide(Form{Email: field("", checkEmail)})
+    f := use[Form]()
+    <div>
+        <EmailInput />
+        {if f.Email.Touched() && f.Email.Error() != nil {
+            <p>{f.Email.Error().Error()}</p>
+        }}
+        <b>{f.Email.Get()}</b>
+        <button onclick={f.Email.Reset()}>reset</button>
+    </div>
+}
+
+component EmailInput() {
+    <label>Email <input type="email" bind={use[Form]().Email} /></label>
+}`, `
+const show = () => log(JSON.stringify(find("input").value), findAll("p").map((p) => p.textContent).join() || "-", "[" + find("b").textContent + "]");
+show();
+input(find("input"), "ada"); leave(find("input")); await tick(); show();
+input(find("input"), "ada@x"); await tick(); show();
+click(find("button")); await tick(); show();`)
+	expectLines(t, got,
+		`"" - []`,
+		`"ada" enter an email address [ada]`,
+		`"ada@x" - [ada@x]`,
+		`"" - []`)
+}
+
+// bind in markup passed as children, which the callee shows in each of its
+// keyed rows, where it reads the context the callee is built in: each
+// row's copy binds the same signals, and a row added later is bound too.
+func TestRunBindSlotRowsContext(t *testing.T) {
+	got := runApp(t, `
+type Theme struct {
+    Name *Signal[string]
+}
+
+type Row struct {
+    ID    int
+    Label *Signal[string]
+}
+
+component App() {
+    provide(Theme{Name: signal("light")})
+    note := signal("n")
+    rows := signal([]Row{{1, signal("a")}, {2, signal("b")}})
+    <div>
+        <List rows={rows}>
+            <input class="note" bind={note} />
+            <input class="theme" bind={use[Theme]().Name} />
+        </List>
+        <p>{note.Get()} {use[Theme]().Name.Get()}</p>
+        <button onclick={rows.Set(append(rows.Get(), Row{3, signal("c")}))}>add</button>
+    </div>
+}
+
+component List(rows *Signal[[]Row], children den.Children) {
+    <ul>
+        {for _, r := range rows.Get() key r.ID {
+            <li><input class="label" bind={r.Label} />{children}</li>
+        }}
+    </ul>
+}`, `
+const vals = () => log(findAll("input").map((i) => i.getAttribute("class")[0] + "=" + i.value).join(" "), find("p").textContent);
+vals();
+input(findAll("input")[1], "N"); await tick(); vals();
+input(findAll("input")[5], "dark"); await tick(); vals();
+click(find("button")); await tick(); vals();
+input(findAll("input")[6], "C"); await tick(); vals();`)
+	expectLines(t, got,
+		`l=a n=n t=light l=b n=n t=light n light`,
+		`l=a n=N t=light l=b n=N t=light N light`,
+		`l=a n=N t=dark l=b n=N t=dark N dark`,
+		`l=a n=N t=dark l=b n=N t=dark l=c n=N t=dark N dark`,
+		`l=a n=N t=dark l=b n=N t=dark l=C n=N t=dark N dark`)
+}
+
 // Programs that do not use bind, field or errors ship none of their code;
 // each part ships alone.
 func TestFormsTreeShaking(t *testing.T) {

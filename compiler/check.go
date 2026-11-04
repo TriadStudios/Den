@@ -1489,7 +1489,7 @@ func (g *gen) node(n Node) {
 				}
 				continue
 			}
-			if a.Name == "bind" {
+			if asciiLower(a.Name) == "bind" { // Bind= too, to say why it is wrong
 				if err := g.bindAttr(n, a); err != nil {
 					*g.errs = append(*g.errs, err)
 				}

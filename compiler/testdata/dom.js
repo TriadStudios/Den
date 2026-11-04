@@ -3,6 +3,9 @@
 // check that keyed lists move rows instead of rebuilding them.
 "use strict";
 let domOps = 0;
+// With focusEvents set, blur() and removing the focused element (or one
+// holding it) fire focusout on it, as Chromium does.
+let focusEvents = false;
 class Node {
   constructor() { this.parentNode = null; this.childNodes = []; }
   get firstChild() { return this.childNodes[0] ?? null; }
@@ -33,10 +36,12 @@ class Node {
   before(...nodes) { this.parentNode.#insert(nodes.filter((n) => n !== this), this); }
   remove() {
     if (!this.parentNode) return;
+    const a = document.activeElement, lost = focusEvents && a && this.contains(a);
     const s = this.parentNode.childNodes;
     s.splice(s.indexOf(this), 1);
     this.parentNode = null;
     domOps++;
+    if (lost) { document.activeElement = null; a.dispatch("focusout"); }
   }
   replaceChildren(...nodes) { for (const c of [...this.childNodes]) c.remove(); this.append(...nodes); }
   replaceWith(...nodes) { const p = this.parentNode; p.#insert(nodes.filter((n) => n !== this), this); this.remove(); }
@@ -89,7 +94,7 @@ class Element extends Node {
   // focus records whether the element was in the document (under the
   // app's root) when it was focused.
   focus() { document.activeElement = this; this.focusedInDoc = root.contains(this); }
-  blur() { if (document.activeElement === this) document.activeElement = null; }
+  blur() { if (document.activeElement === this) { document.activeElement = null; if (focusEvents) this.dispatch("focusout"); } }
   // Only inputs and textareas have select, as in browsers; it and
   // scrollIntoView count their calls.
   get select() { return this.tagName === "input" || this.tagName === "textarea" ? () => { this.selects = (this.selects ?? 0) + 1; } : undefined; }

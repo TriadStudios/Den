@@ -129,6 +129,13 @@ func (g *gen) bindAttr(el *Element, a *Attr) *Error {
 		}
 		return &Error{File: g.file, Pos: at.Pos, Msg: fmt.Sprintf(format, args...)}
 	}
+	if a.Name != "bind" {
+		// Bind={x} would be an attribute that cannot render a *Signal.
+		if a.Kind == AttrExpr {
+			g.call(g.d(a.ValuePos), "denAny", a.ValuePos, a.Value, "this {...}")
+		}
+		return bad(nil, "unknown attribute %q (use lowercase: bind={...})", a.Name)
+	}
 	if a.Kind != AttrExpr {
 		return bad(nil, "bind takes a signal or a field in braces, like bind={name}")
 	}
