@@ -338,6 +338,56 @@ component App() {
 	expectLines(t, got, `36`)
 }
 
+// Bindings in the rows of a list that use only the row's item are hoisted
+// out of the rows, to where the list is. Slot markup inside such a row is
+// a closure the callee runs with its own context, so a binding there that
+// uses the context must stay in the closure: hoisted, it read the caller's
+// incoming context instead (a verifier's finding). Text and attribute
+// bindings, with and without a provide in the callee: the render site wins.
+func TestRunContextHoistedSlot(t *testing.T) {
+	for _, c := range []struct{ box, want string }{
+		{"", `app:a1/app:a1 app:b1/app:b1 | app:a2/app:a2 app:b2/app:b2 app:c2/app:c2`},
+		{`provide(Name{"box"})`, `box:a1/box:a1 box:b1/box:b1 | box:a2/box:a2 box:b2/box:b2 box:c2/box:c2`},
+	} {
+		got := runApp(t, `
+type Name struct{ S string }
+
+component Box(children den.Children) {
+    `+c.box+`
+    <div>{children}</div>
+}
+
+component App() {
+    xs := signal([]string{"a", "b"})
+    n := signal(1)
+    provide(Name{"app"})
+    <main>
+        <ul>{for _, x := range xs.Get() key x { <li><Box><b data-n={use[Name]().S + ":" + x + itoa(n.Get())}>{use[Name]().S + ":" + x + itoa(n.Get())}</b></Box></li> }}</ul>
+        <button onclick={n.Set(2); xs.Set(append(xs.Get(), "c"))}>go</button>
+    </main>
+}`, `
+const show = () => findAll("b").map((b) => b.getAttribute("data-n") + "/" + b.textContent).join(" ");
+const before = show();
+click(find("button")); await tick();
+log(before, "|", show());`)
+		expectLines(t, got, c.want)
+	}
+}
+
+// The verifier's repro: a text binding alone.
+func TestRunContextHoistedSlotText(t *testing.T) {
+	got := runApp(t, `
+type Name struct{ S string }
+component Box(children den.Children) { <div>{children}</div> }
+component App() {
+    xs := signal([]string{"a", "b"})
+    n := signal(1)
+    provide(Name{"app"})
+    <ul>{for _, x := range xs.Get() key x { <li><Box><b>{use[Name]().S + ":" + x + itoa(n.Get())}</b></Box></li> }}</ul>
+}`, `log(findAll("b").map((b) => b.textContent).join(" "));`)
+	expectLines(t, got, `app:a1 app:b1`)
+}
+
 // examples/theme: the theme store reaches the toggle and the swatches, and
 // the Tab and Panel elements App writes inside each Tabs follow that Tabs.
 func TestThemeExample(t *testing.T) {

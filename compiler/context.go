@@ -198,6 +198,28 @@ func (e *emitter) use(call *ast.CallExpr) string {
 	return fmt.Sprintf("(%s?.[%d] ?? %s)", e.ctx, k, zero)
 }
 
+// crossesContext reports whether hoisting the code in nodes out of the
+// current row would move a use out of the context it reads: when the code
+// is in slot markup inside the row, a closure that the callee runs with
+// its own context ($x), while the row's hoisted code goes where the list
+// is, outside that closure, where $x (if it is a name there at all) is
+// another context. Code without a use hoists as before.
+func (e *emitter) crossesContext(nodes ...ast.Node) bool {
+	if e.ctx == "" || e.row.slots == e.slots {
+		return false
+	}
+	found := false
+	for _, n := range nodes {
+		ast.Inspect(n, func(x ast.Node) bool {
+			if call, ok := x.(*ast.CallExpr); ok && contextCall(e.ck.info, e.ck.fset, call) == "use" {
+				found = true
+			}
+			return !found
+		})
+	}
+	return found
+}
+
 // ctxArgs returns args, the arguments of a call that renders den.Children
 // or a component, with the context in effect added when there is one.
 func (e *emitter) ctxArgs(args string, render bool) string {

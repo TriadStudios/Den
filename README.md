@@ -338,10 +338,10 @@ component Toolbar() {
   work: a `Tabs` that provides its state reaches the `Tab` elements its
   caller writes between `<Tabs>` and `</Tabs>`.
 - A `provide` applies from where it is written: the component's later
-  statements and all of its markup see it; earlier statements, and
-  closures written before it, see the context the component was given,
-  whenever they run. A second `provide` of the same type replaces the
-  first for what follows it.
+  statements and all of its markup see it. Code sees the context in
+  effect where it is written, so a closure written before a `provide`
+  does not see it, whenever the closure runs. A second `provide` of the
+  same type replaces the first for what follows it.
 - `use` can be called anywhere in a component (its statements, closures,
   handlers and markup) and reads the context once: values are values. To
   share state that changes, provide a struct of signals, a store, as

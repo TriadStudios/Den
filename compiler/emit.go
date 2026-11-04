@@ -165,6 +165,7 @@ type emitter struct {
 	motions map[string]string     // shared transitions: JS -> the name of the constant holding it
 	motion  bool                  // a block compiled to $ifm or $form, whose leaving elements need $evs
 	ctx     string                // the JS name of the context in effect, or "" in a program that provides nothing (context.go)
+	slots   int                   // the slot closures around the code being emitted, each with a context of its own
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -187,6 +188,7 @@ type rowCtx struct {
 	rootEl   bool     // each row is a single element
 	handlers []string // the table of delegated handlers
 	types    []string // the events they handle
+	slots    int      // e.slots where the list is, and so its hoisted code
 }
 
 // delegate reports whether handler a can go in the row's handler table,
@@ -218,7 +220,7 @@ func (e *emitter) delegate(a *Attr) (int, bool) {
 // hoistable reports whether the code in nodes can be hoisted out of the
 // current row.
 func (e *emitter) hoistable(nodes ...ast.Node) bool {
-	if e.row == nil {
+	if e.row == nil || e.crossesContext(nodes...) {
 		return false
 	}
 	ok := true
@@ -697,8 +699,10 @@ func (e *emitter) componentCall(el *Element) string {
 			if e.ctx != "" {
 				e.ctx = "$x"
 			}
+			e.slots++
 			body := e.capture(e.ind+"  ", func() { e.line("return %s;", e.instantiate(pt.slots[i], nsDyn)) })
 			e.ctx = outer
+			e.slots--
 			param := ""
 			switch {
 			case outer != "" && usesCtx.MatchString(body):
@@ -831,9 +835,9 @@ func (e *emitter) forNode(t *tnode, n *For) {
 	outer := e.row
 	e.row = nil
 	if isInt && keyObj != nil {
-		e.row = &rowCtx{obj: keyObj, name: k}
+		e.row = &rowCtx{obj: keyObj, name: k, slots: e.slots}
 	} else if !isInt && valObj != nil {
-		e.row = &rowCtx{obj: valObj, name: v}
+		e.row = &rowCtx{obj: valObj, name: v, slots: e.slots}
 	}
 	if e.row != nil && len(n.Body) == 1 {
 		el, ok := n.Body[0].(*Element)
