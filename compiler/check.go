@@ -562,6 +562,13 @@ next:
 		}
 		errAt(te.Pos, msg)
 	}
+	// The prelude's import of package time, denTime, is in the same file
+	// as the program, but not the program's: Go would not know the name.
+	for id, obj := range info.Uses {
+		if pn, ok := obj.(*types.PkgName); ok && pn.Name() == "denTime" && fset.Position(pn.Pos()).Filename == preludeFile && fset.Position(id.Pos()).Filename != preludeFile {
+			errAt(id.Pos(), "undefined: denTime")
+		}
+	}
 	// gen took a prop for den.Children by reading its type; go/types must
 	// agree, or the markup passed to it would be handled the wrong way.
 	for _, d := range file.Decls {

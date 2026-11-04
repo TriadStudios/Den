@@ -297,22 +297,27 @@ function $spring(f) {
 // $onCleanup(c, f).
 function $life() {
   const c = { s: new Set(), x: 0 };
-  $cleanup(() => { c.x = 1; [...c.s].reverse().forEach($lifeTry); });
+  $cleanup(() => { c.x = 1; [...c.s].reverse().forEach((f) => $lifeTry(c, f)); });
   return c;
 }
-// $lifeTry runs f as den runs an event handler: untracked, in no scope,
-// and reporting a panic rather than passing it on.
-function $lifeTry(f) { try { $scope(f); } catch (e) { reportError(e); } }
+// $lifeTry runs f, a callback of component c, as den runs an event
+// handler: untracked, and reporting a panic rather than passing it on.
+// It runs in a scope of its own that goes with c, so what f makes (a
+// computed, a spring) stops with the component; a callback that makes
+// nothing adds nothing to the record.
+function $lifeTry(c, f) {
+  try { const h = $scope(f)[1]; h && $onCleanup(c, () => $free(h)); } catch (e) { reportError(e); }
+}
 // $onCleanup runs f when the component goes, or at once if it has gone.
 // It returns a function that takes f back, for work that ends first.
 function $onCleanup(c, f) {
   const g = () => f();
-  c.x ? $lifeTry(g) : c.s.add(g);
+  c.x ? $lifeTry(c, g) : c.s.add(g);
   return () => c.s.delete(g);
 }
 // $onMount runs f once the build that made the component, which puts it
 // in the document, is over, unless the component has gone by then.
-function $onMount(c, f) { queueMicrotask(() => c.x || $lifeTry(f)); }
+function $onMount(c, f) { queueMicrotask(() => c.x || $lifeTry(c, f)); }
 // $after runs f once after d ns, or with every set, every d ns, until the
 // stop it returns is called or the component goes. A timer that has fired
 // once and for all takes itself off the record. On a component that has
@@ -320,7 +325,7 @@ function $onMount(c, f) { queueMicrotask(() => c.x || $lifeTry(f)); }
 function $after(c, d, f, every) {
   if (every && !(d > 0)) $panic("non-positive interval for every");
   if (d > 2147483647e6) $panic("duration too long");
-  const t = (every ? setInterval : setTimeout)(() => { every || stop(); $lifeTry(f); }, d / 1e6),
+  const t = (every ? setInterval : setTimeout)(() => { every || stop(); $lifeTry(c, f); }, d / 1e6),
     off = $onCleanup(c, () => clearTimeout(t)), stop = () => { clearTimeout(t); off(); };
   return stop;
 }

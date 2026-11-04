@@ -138,7 +138,7 @@ component App() {
 import "fmt"
 component App() {
     <p>x</p>
-}`, `app.den:2:8: package "fmt" is not available in den; you can import strconv, strings`},
+}`, `app.den:2:8: package "fmt" is not available in den; you can import strconv, strings, time`},
 		{"unused import", `
 import (
     "strings"
@@ -1696,6 +1696,27 @@ type Ref int
 component App() {
     <input ref={1} />
 }`, `app.den:4:12: ref is not available because this program declares its own Ref; rename it`},
+		// The prelude's own import of package time is not the program's.
+		{"the prelude's time in statements", `
+component App() {
+    d := denTime.Second
+    <p>{d}</p>
+}`, `app.den:3:10: undefined: denTime`},
+		{"the prelude's time in markup", `
+component App() {
+    <p>{denTime.Now().Hour()}</p>
+}`, `app.den:3:9: undefined: denTime`},
+		// A func literal that is a whole prop may call after; one called
+		// as a prop is evaluated may not.
+		{"after in a func literal called in a prop", `
+import "time"
+func id(n int) int { return n }
+component App() {
+    <Kid n={id(func() int { after(time.Second, func() {}); return 1 }())} />
+}
+component Kid(n int) {
+    <p>{n}</p>
+}`, `app.den:5:29: after cannot be called in a prop: den evaluates props each time it builds the component`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)

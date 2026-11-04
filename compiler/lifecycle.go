@@ -175,6 +175,14 @@ func (lc *lifeChecker) markup(stmts []ast.Stmt, key *lifeCtx) {
 							continue
 						}
 					}
+					// A func literal that is the whole prop is only made
+					// when the prop is evaluated: its body runs when the
+					// component given it calls it, as a func among the
+					// statements passed as a prop would.
+					if fl, ok := ast.Unparen(a).(*ast.FuncLit); ok {
+						lc.walk(fl.Body, nil)
+						continue
+					}
 					lc.walk(a, &lifeCtx{"a prop", "den evaluates props each time it builds the component"})
 				}
 			}

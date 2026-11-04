@@ -3117,8 +3117,19 @@ show.set(false); await settle();
 s.set(1); await settle();
 log("block ran", runs, "times");
 
+// What a callback makes belongs to the component: an effect made in a
+// timer's callback (one entry on the record), and one made in a cleanup
+// as the component goes (freed at once).
+let seen = [];
+$after(c, 1e6, () => $effect(() => seen.push("timer:" + s.get())));
+await advance(1);
+log("entries:", c.s.size, seen.join(" "));
+$onCleanup(c, () => $effect(() => seen.push("cleanup:" + s.get())));
+
 $free(scope);
 log("gone:", c.x, fired.join(" "), "timers:", pending());
+s.set(2); await settle();
+log("effects:", seen.join(" "));
 const late = $after(c, 1e6, () => fired.push("late"));
 $onCleanup(c, () => fired.push("at once"));
 $onMount(c, () => fired.push("mounted"));
@@ -3130,8 +3141,54 @@ log("late:", fired.join(" "), "timers:", pending());`)
 		`fired: mounted 0 1 2 entries: 3`,
 		`entries: 1 timers: 0`,
 		`block ran 2 times`,
+		`entries: 2 timer:1`,
 		`gone: 1 mounted 0 1 2 cleanup timers: 0`,
+		`effects: timer:1 cleanup:1`,
 		`late: mounted 0 1 2 cleanup at once timers: 0`)
+}
+
+// A spring made in onMount, and a computed made in a timer's callback,
+// stop with their component: before, they had no owner, and the spring
+// kept asking for animation frames after its component went.
+func TestRunCallbackNodes(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    x := signal(0.0)
+    show := signal(true)
+    out := signal("")
+    <div>
+        <p>{out.Get()}</p>
+        {if show.Get() { <Kid x={x} out={out} /> }}
+        <button onclick={x.Set(x.Get() + 100)}>move</button>
+        <button onclick={show.Set(false)}>hide</button>
+    </div>
+}
+
+component Kid(x *Signal[float64], out *Signal[string]) {
+    onMount(func() {
+        s := spring(x.Get())
+        out.Set("spring " + itoa(int(s.Get())))
+    })
+    after(time.Second, func() {
+        doubled := computed(x.Get() * 2)
+        out.Set(out.Get() + ", doubled " + itoa(int(doubled.Get())))
+    })
+    <i>kid</i>
+}`, `fakeTimers();`, `
+await settle();
+click(find("button", "move")); await settle();
+log("frames asked for:", frames() > 0);
+await advance(1000);
+log(find("p").textContent);
+click(find("button", "hide")); await settle();
+click(find("button", "move")); await settle();
+log("after it went:", frames());`)
+	expectLines(t, got,
+		`frames asked for: true`,
+		`spring 0, doubled 200`,
+		`after it went: 0`)
 }
 
 // time.Now reads the wall clock and the monotonic clock: Hour, Minute,
@@ -3272,4 +3329,41 @@ component App() {
     <p>{after(1, 2)} {every([]int{1, 2})} {onMount(Ref{Name: "mine"})} {n.Get()}</p>
 }`, `log(html());`)
 	expectLines(t, got, `<p>3 2 mine 0</p>`)
+}
+
+// A func literal that is a whole prop may call after: it belongs to the
+// component that wrote it, as a func among its statements would, so its
+// timers stop with that component, not with the one it was given to.
+func TestRunFuncPropTimers(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    n := signal(0)
+    show := signal(true)
+    <div>
+        <p>{n.Get()}</p>
+        {if show.Get() { <Holder n={n} /> }}
+        <button onclick={show.Set(false)}>hide</button>
+    </div>
+}
+
+component Holder(n *Signal[int]) {
+    <section><Kid start={func() { after(time.Second, func() { n.Set(n.Get() + 1) }) }} /></section>
+}
+
+component Kid(start func()) {
+    <button onclick={start()}>start</button>
+}`, `fakeTimers();`, `
+click(find("button", "start"));
+await advance(1000);
+log(find("p").textContent, "timers:", pending());
+click(find("button", "start"));
+log("timers:", pending());
+click(find("button", "hide")); await settle();
+log("timers:", pending());`)
+	expectLines(t, got,
+		`1 timers: 0`,
+		`timers: 1`,
+		`timers: 0`)
 }

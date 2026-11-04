@@ -43,7 +43,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.4 KB |
 | `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.2 KB |
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
-| `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.7 KB |
+| `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -578,9 +578,10 @@ component Search() {
 ```
 
 - These belong to the component whose Go calls them: its statements,
-  the func literals there, its handlers (in its list rows too) and the
-  markup it passes to another component as children or a slot. Each
-  use of a component is one instance, with its own.
+  the func literals there (also one passed whole as a prop, which runs
+  when the component given it calls it), its handlers (in its list rows
+  too) and the markup it passes to another component as children or a
+  slot. Each use of a component is one instance, with its own.
 - `onMount(f)` runs `f` once, after the build that made the component,
   when its nodes are in the document and its refs are set: in a
   microtask after the page, or the `{if}` branch, `{for}` row or `{key}`
@@ -593,7 +594,9 @@ component Search() {
   components never go). Cleanups run newest first and after everything
   the component made has stopped, as deferred calls do, so a child's run
   before its parent's. Called after the component has gone, `onCleanup`
-  runs `f` at once.
+  runs `f` at once. By then the component's own `computed` values have
+  stopped following their signals and may hold old values, so a cleanup
+  should read the signals themselves.
 - `after(d, f)` runs `f` once, `d` from now; `every(d, f)` runs it every
   `d`. Each returns a `stop` func, and each stops when the component
   goes, so a timer never outlives the component that set it. Calling
@@ -603,12 +606,15 @@ component Search() {
   `every` panics with `d <= 0` (as Go's `time.NewTicker` does), and both
   panic when `d` is longer than a browser timer can wait (2^31-1 ms,
   about 24.8 days). Called after the component has gone, they set no
-  timer.
+  timer. Each call starts a timer: a func among the statements that
+  calls `after` or `every`, called from markup that den evaluates again
+  (a `{...}` that reads a signal, say), starts one each time.
 - What `onMount`, `onCleanup`, `after` and `every` run, runs as an event
   handler does: reading signals subscribes to nothing, and the signals
-  it sets update the page once, in a microtask. A panic in one is
-  reported with `reportError` and the rest still run; `every` keeps
-  ticking.
+  it sets update the page once, in a microtask. What it makes, such as
+  a `computed` or a `spring`, belongs to the component and stops with
+  it. A panic in one is reported with `reportError` and the rest still
+  run; `every` keeps ticking.
 - `ref()` makes a `*Ref`. `ref={r}` on an HTML or SVG element puts the
   element in `r` when den makes it, and takes it out when the block that
   made it goes, unless another element has taken `r` by then.
@@ -616,15 +622,21 @@ component Search() {
   such as inputs) and `r.ScrollIntoView()` call the element. While `r`
   holds no element they do nothing, and on a nil `*Ref` they panic, as a
   nil pointer would in Go. A `*Ref` is a value like any other: pass it
-  to a component as a prop and it can focus an input inside it.
+  to a component as a prop and it can focus an input inside it. Den
+  rejects `ref=` in a `{for}` row of the markup that holds it, but not
+  a `*Ref` given as a prop to components used in rows, nor `ref=` in
+  markup passed as children or a slot that the component given it shows
+  in its own rows, or more than once: there, the element made last holds
+  the ref.
 - These are compile errors: `onMount`, `onCleanup`, `after` and `every`
   in a top-level function, which belongs to no component
   (`app.den:3:5: onMount can only be called in a component: in its
   statements, handlers or func literals`); any of them, or `ref`, in Go
   that den evaluates again or once per row or element: the argument of
   `computed` or `spring`, a `{...}` or attribute value in markup, an
-  `{if}`, `{for}` or `{key}` header, a list key, a prop, or the value of
-  `enter=`, `exit=`, `animate=` or `ref=` (`app.den:4:32: after cannot
+  `{if}`, `{for}` or `{key}` header, a list key, a prop (other than a
+  func literal that is the whole prop), or the value of `enter=`,
+  `exit=`, `animate=` or `ref=` (`app.den:4:32: after cannot
   be called in computed(...): it would run again each time the value is
   recomputed`); `ref=` on a component, given no value, a string or
   anything but a `*Ref`, reading a signal, or inside a `{for}` row, where
