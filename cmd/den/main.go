@@ -11,6 +11,7 @@ import (
 	"compress/gzip"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -207,27 +208,33 @@ var distNames = []string{"app.js", "index.html", "den.css", "style.css", "__den"
 
 // publicFiles returns the files in dir/public, such as JSON an app
 // fetches or images, by their paths in it, which are their paths in dist
-// too. There are none when the app has no public directory. Names are
-// compared ignoring case, as on the file systems of Windows and macOS: a
-// file that would replace one den writes is an error. A dist inside
-// public is skipped.
+// too. There are none when the app has no public directory. Everything
+// is decided here, before writeDist writes anything, so a failed build
+// leaves no dist half written. Names are compared ignoring case, as on the
+// file systems of Windows and macOS: a file that would replace one den
+// writes is an error. So is anything in public but plain files and
+// directories, symbolic links and Windows junctions included, which could
+// lead out of it, and an output directory inside public, which den would
+// copy into itself (and den dev, which watches public, rebuild forever).
 func publicFiles(dir, out string) ([]string, error) {
 	root := filepath.Join(dir, "public")
-	if st, err := os.Stat(root); os.IsNotExist(err) {
+	if st, err := os.Lstat(root); os.IsNotExist(err) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
 	} else if !st.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory: den copies the files in an app's public directory into dist", root)
+		return nil, fmt.Errorf("%s is not a directory (den follows no links): den copies the files in an app's public directory into dist", root)
 	}
-	skip, _ := filepath.Abs(out)
+	if within(out, root) {
+		return nil, fmt.Errorf("the output directory %s is inside %s, which den copies into it; write it elsewhere", out, root)
+	}
 	var files []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if abs, _ := filepath.Abs(path); d.IsDir() && abs == skip {
-			return filepath.SkipDir
+		if d.Type()&^fs.ModeDir != 0 {
+			return fmt.Errorf("%s is not a file or a directory (a symbolic link or a junction, say): den copies only those from public", path)
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil || rel == "." {
@@ -248,6 +255,28 @@ func publicFiles(dir, out string) ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+// within reports whether path p is directory dir or inside it, by the
+// file system's own idea of which file is which (os.SameFile), so that
+// neither case (PUBLIC for public on Windows) nor links fool it. p need
+// not exist yet.
+func within(p, dir string) bool {
+	d, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	p, _ = filepath.Abs(p)
+	for {
+		if st, err := os.Stat(p); err == nil && os.SameFile(st, d) {
+			return true
+		}
+		up := filepath.Dir(p)
+		if up == p {
+			return false
+		}
+		p = up
+	}
 }
 
 func gzipSize(b []byte) int {

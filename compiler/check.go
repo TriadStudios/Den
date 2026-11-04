@@ -657,6 +657,7 @@ next:
 		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && resourceBy[name] != "" {
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[resourceBy[name]])
 		}
+		msg = preludeInfer(msg)
 		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing denOpaqueRef cannot be compared", "a Ref cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing time.opaque cannot be compared", "den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0", 1)

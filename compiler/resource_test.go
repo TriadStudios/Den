@@ -142,6 +142,17 @@ var jsonCases = []struct {
 		`{"S":"a\u0000b\ud800\u00e9\ud83d\ude00\"\\\/\b\f\n\r\t"}`, " \t\n{ \"S\" : \"x\" } \r\n",
 		`{"Z":1,"S":"y","nested":{"a":[1,2,{"b":null}],"I":"not this one"}}`,
 		`{"s":"lower","i":3,"f32":2.5}`,
+		// float32s that round once from the text, not through a float64
+		// that lands halfway: the largest, and just past it; one above
+		// and below 1's upper midpoint; and around the smallest one.
+		`{"F32":3.4028235677973366e38}`, `{"F32":-3.4028235677973366e38}`, `{"F32":3.40282356779733661637539395458142568448e38}`,
+		`{"F32":1.00000005960464477539062500001}`, `{"F32":1.00000005960464477539062499999}`, `{"F32":1.000000059604644775390625}`,
+		`{"F32":7.0064923216240862e-46}`, `{"F32":7.0064923216240853e-46}`, `{"F32":1.4e-45}`, `{"F32":-7.0064923216240862e-46}`,
+		`{"F32":7.00649232162408535461864791644958065640130970938257885878534141944895541342930300743319094181060791015625e-46}`,
+		// Go reads JSON nested 10,000 levels deep, here under an unknown
+		// key, and no deeper.
+		`{"junk":` + strings.Repeat("[", 9999) + strings.Repeat("]", 9999) + `,"I":1}`,
+		`{"junk":` + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + `,"I":1}`,
 	}},
 	{"Tagged", []string{
 		`{"id":1,"name":"n","Skip":5,"-":6,"odd key!":7,"Empty":10,"Zero":11,"hidden":12,"Other":"o","other":"p"}`,
@@ -575,7 +586,7 @@ log(p());`)
 }
 
 // A panic while the arguments are evaluated is reported, and the resource
-// keeps its state, the request in flight included.
+// keeps its state, the request in flight included, Reload or not.
 func TestRunResourceArgsPanic(t *testing.T) {
 	got := runApp(t, `
 component App() {
@@ -586,12 +597,15 @@ component App() {
 		<p>{r.Loading()} {r.Data()}</p>
 		<button onclick={i.Set(5)}>bad</button>
 		<button onclick={i.Set(0)}>good</button>
+		<button onclick={r.Reload()}>reload</button>
 	</div>
 }`, `
 const p = () => find("p").textContent;
 log(p(), inFlight().join(" "));
 click(find("button", "bad")); await tick();
 log(p(), inFlight().join(" "));
+click(find("button", "reload")); await tick();
+log(p(), inFlight().join(" "), fetches[0].signal.aborted);
 reply(fetches[0], 200, "7"); await tick();
 log(p());
 click(find("button", "good")); await tick();
@@ -601,8 +615,85 @@ log(p(), fetches.length);`)
 		`true 0 http://localhost/a.json`,
 		`reportError: den: index out of range`,
 		`true 0 http://localhost/a.json`,
+		`reportError: den: index out of range`,
+		`true 0 http://localhost/a.json false`,
 		`false 7`,
 		`false 8 2`)
+}
+
+// fetchJSON decodes JSON nested as deep as Go's encoding/json reads it,
+// 10,000 levels, into a recursive type without running out of stack, and
+// deeper JSON is Go's error. (Go's results for these: no error at 9,999
+// levels, "exceeded max depth" at 10,001.)
+func TestRunResourceDeep(t *testing.T) {
+	got := runApp(t, `
+type Node struct {
+	Name string
+	Kids []Node
+}
+
+func depth(n Node) int {
+	d := 1
+	for len(n.Kids) > 0 {
+		n = n.Kids[0]
+		d++
+	}
+	return d
+}
+
+component App() {
+	r := resource(fetchJSON[Node]("/tree.json"))
+	<p>{depth(r.Data())} {r.Err() != nil}</p>
+}`, `
+const nest = (n) => '{"Name":"x","Kids":['.repeat(n) + '{"Name":"leaf"}' + "]}".repeat(n);
+reply(fetches[0], 200, nest(4999)); await tick();
+log(find("p").textContent);
+reply(fetches[0], 200, ""); // a no-op: it is answered
+await tick();`)
+	expectLines(t, got, `5000 false`)
+	got = runApp(t, `
+type Node struct {
+	Kids []Node
+}
+
+func show(r *Resource[Node]) string {
+	if r.Err() == nil {
+		return "ok"
+	}
+	return r.Err().Error()
+}
+
+component App() {
+	r := resource(fetchJSON[Node]("/tree.json"))
+	<p>{show(r)}</p>
+}`, `
+reply(fetches[0], 200, '{"Kids":['.repeat(5000) + "{}" + "]}".repeat(5000)); await tick();
+log(find("p").textContent);`)
+	expectLines(t, got, `fetchJSON: GET /tree.json: invalid JSON: exceeded max depth`)
+}
+
+// The names of the browser's that resource and fetchJSON use are renamed
+// in a program that declares its own, so they keep working.
+func TestRunResourceGlobals(t *testing.T) {
+	got := runApp(t, `
+type Blob struct {
+	Data []byte
+	F    float32
+}
+
+func fetch() string      { return "mine" }
+func atob() string       { return "mine too" }
+func isFinite(n int) int { return n }
+
+component App() {
+	URL := "/b.json"
+	location := 1
+	r := resource(fetchJSON[Blob](URL))
+	<p>{fetch()} {atob()} {isFinite(location)} {len(r.Data().Data)} {r.Data().F}</p>
+}`, `
+reply(fetches[0], 200, '{"Data":"aGk=","F":1.5}'); await tick();
+log(find("p").textContent, fetches[0].url);`)
+	expectLines(t, got, `mine mine too 1 2 1.5 http://localhost/b.json`)
 }
 
 // resource, Resource and fetchJSON are ordinary names: a program that has

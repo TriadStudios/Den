@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -38,6 +39,24 @@ func resourceNames(own map[string]string) map[string]string {
 		by["fetchJSON"] = "fetchJSON"
 	}
 	return by
+}
+
+// cannotInfer is go/types' error for a call of one of den's generic
+// functions whose type argument it cannot infer, which points into the
+// prelude.
+var cannotInfer = regexp.MustCompile(`^in call to (\w+), cannot infer (\w+) \(declared at ` + regexp.QuoteMeta(preludeFile) + `:\d+:\d+\)$`)
+
+// preludeInfer rewords cannotInfer's error so that it says what to write
+// rather than where in den's prelude the type parameter is.
+func preludeInfer(msg string) string {
+	m := cannotInfer.FindStringSubmatch(msg)
+	switch {
+	case m == nil:
+		return msg
+	case m[1] == "fetchJSON":
+		return "fetchJSON needs the type to decode the JSON into: fetchJSON[T](url)"
+	}
+	return fmt.Sprintf("in call to %s, cannot infer %s: write it, as in %s[%s](...)", m[1], m[2], m[1], m[2])
 }
 
 // checkResources checks the uses of den's resource and fetchJSON once Go
@@ -424,10 +443,11 @@ func foldRune(r rune) rune {
 }
 
 // Runes that $jfold folds by itself: the only ones outside ASCII whose
-// orbits hold ASCII letters (ſ with s and S, the Kelvin sign with k and K).
+// orbits hold ASCII letters (U+017F long s with s and S, U+212A Kelvin
+// sign with k and K).
 const (
-	longS  = 'ſ'
-	kelvin = 'K'
+	longS  rune = 0x017f
+	kelvin rune = 0x212a
 )
 
 // foldTable adds to F, for each rune of name outside ASCII, the runes of

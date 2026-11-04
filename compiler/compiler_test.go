@@ -652,6 +652,16 @@ component App() {
     n, _ := load()
     <p>{n}</p>
 }`, `app.den:2:35: fetchJSON can only be used as resource's argument: resource(fetchJSON[T](url))`},
+		{"fetchJSON without its type", `
+component App() {
+    r := resource(fetchJSON("/n.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:3:19: fetchJSON needs the type to decode the JSON into: fetchJSON[T](url)`},
+		{"route without its type", `
+component App() {
+    r := route("/")
+    <p>{r.Matches()}</p>
+}`, `app.den:3:10: in call to route, cannot infer T: write it, as in route[T](...)`},
 		{"fetchJSON used as a value", `
 component App() {
     f := fetchJSON[int]

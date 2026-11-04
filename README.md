@@ -46,7 +46,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
 | `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.2 KB |
-| `examples/fetch` (a pager over JSON pages, loading and error states, Reload) | 5.2 KB |
+| `examples/fetch` (a pager over JSON pages, loading and error states, Reload) | 5.8 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -476,8 +476,10 @@ component Users() {
   `*Resource[T]`. Today the call is `fetchJSON[T](url)`.
 - The arguments are read like `computed`'s: when a signal they read
   changes, the request in flight is aborted and a new one starts. The
-  first starts when the component is made. `r.Reload()` aborts the
-  request in flight, if any, and starts again with the current arguments.
+  first starts when the component is made. `r.Reload()` starts again
+  with the current arguments, as a change to them does: the arguments are
+  read again, in the update after the handler, and once they are, the
+  request in flight is aborted and a new one starts.
 - `r.Loading()` is true while a request is in flight. `r.Data()` is the
   value of the latest request that succeeded (the zero `T` before one),
   kept while the next one loads and when it fails. `r.Err()` is the error
@@ -487,7 +489,8 @@ component Users() {
 - When the component that made the resource goes away (with its `{if}`
   branch or `{for}` row, say), the request in flight is aborted, and
   nothing lands afterwards. A panic while the arguments are evaluated is
-  reported as a binding's is, and the resource keeps its state.
+  reported as a binding's is, and the resource keeps its state, the
+  request in flight included.
 - `fetchJSON[T](url)` is a GET of `url`, resolved against the page. It
   must be on the page's origin, or `Err()` says so and no request is made
   (`fetchJSON: https://x.example/a.json is not on this origin`); the
@@ -506,7 +509,12 @@ component Users() {
   `null` leaves a value as it is, except that a slice becomes nil and a
   map empty. A number goes into an integer only if it is written as one
   and is in the type's range (`1.0`, `1e2` and, for unsigned types, `-0`
-  do not fit). An array takes up to its length, the rest zero; a map
+  do not fit), and into a `float32` rounded once from what is written, as
+  Go rounds it. JSON may be nested 10,000 levels deep, as in Go, and
+  deeper is an error (`exceeded max depth`). Strings with escaped lone
+  surrogates (`"\ud800"`) get U+FFFD in their place, as in Go, in
+  browsers that have `String.prototype.toWellFormed` (all current ones).
+  An array takes up to its length, the rest zero; a map
   takes string keys, or integer keys parsed from the object's keys; a
   `[]byte` takes base64 text. A key given twice is decoded twice, in
   order: a second object merges into the first, as in Go. A value that
@@ -518,12 +526,12 @@ component Users() {
   fields only ignoring case goes to the first found breadth-first, so
   `"NAME"` fills an outer `Name` rather than one promoted from an
   embedded struct. Where den differs from Go: `int64` and `uint64` values
-  beyond 2^53 lose precision, as den's integers do; a `float32` is
-  rounded from the nearest `float64`, which can differ from Go in the
-  last bit in rare halfway cases; and browsers drop a UTF-8 byte order
-  mark at the start of a response, which Go rejects.
+  beyond 2^53 lose precision, as den's integers do; and browsers drop a
+  UTF-8 byte order mark at the start of a response, which Go rejects.
 - These are compile errors: `fetchJSON` anywhere but as `resource`'s
-  whole argument; `resource` outside a component's statements (in a
+  whole argument, or without its type (`fetchJSON needs the type to
+  decode the JSON into: fetchJSON[T](url)`); `resource` outside a
+  component's statements (in a
   function, a func literal, a handler, markup, a prop, or the argument of
   `computed`, `spring` or another `resource`); `resource` of anything but
   a call of `fetchJSON` (typed server functions are planned); a `T` den
@@ -544,8 +552,11 @@ component Users() {
   when a file in it changes. A file there that would replace `app.js`,
   `index.html`, `den.css` or `style.css`, or anything under `__den/`,
   where `den dev` serves live reload, is an error (names compared
-  ignoring case). Files removed from `public/` stay in `dist` until it is
-  removed. `examples/fetch` pages through three such files.
+  ignoring case), and so is anything in `public/` but files and
+  directories (a symbolic link or a Windows junction could lead out of
+  it), and an output directory inside `public/`. These are found before
+  anything is written. Files removed from `public/` stay in `dist` until
+  it is removed. `examples/fetch` pages through three such files.
 - `resource`, `Resource` and `fetchJSON` are ordinary names: a program
   that has its own at the top level keeps it. `resource` and `Resource`
   go together, and `fetchJSON` goes with them; using one then says why.

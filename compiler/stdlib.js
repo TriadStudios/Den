@@ -419,19 +419,20 @@ function $touch(el, x) {
 //
 // $resource is resource(f(args)): a returns the values of f's arguments,
 // read in an effect, so a change to a signal they read starts a new
-// request, as r (Reload) does; q, f's requester, makes the request for
-// them with an AbortSignal and returns a promise of the result; z is the
-// zero value. A new request aborts the one in flight (stop). Only the
-// latest request's outcome lands, written by its promise's callbacks: d
-// the data, kept until a request succeeds; e the error of the latest
-// request to finish, null after a success; l whether a request is in
-// flight. When the scope that made the resource is disposed, the request
-// in flight is aborted, and nothing lands after that.
+// request, and so does r (Reload), which changes n; q, f's requester,
+// makes the request for them with an AbortSignal and returns a promise of
+// the result; z is the zero value. A new request aborts the one in flight
+// (stop), once the arguments are read: if reading them panics, the one in
+// flight goes on. Only the latest request's outcome lands, written by its
+// promise's callbacks: d the data, kept until a request succeeds; e the
+// error of the latest request to finish, null after a success; l whether
+// a request is in flight. When the scope that made the resource is
+// disposed, the request in flight is aborted, and nothing lands after.
 function $resource(a, q, z) {
   const r = { d: $signal(z), e: $signal(null), l: $signal(false), n: $signal(0) };
   let c = null;
   const stop = () => { c?.abort(); c = null; };
-  r.r = () => { stop(); r.n.set(r.n.v + 1); };
+  r.r = () => r.n.set(r.n.v + 1);
   $effect(() => {
     r.n.get();
     const v = a(), k = new AbortController();
@@ -470,66 +471,97 @@ function $fetchJSON(J, i) {
 // becomes {o: [[key, value], ...]}, repeated keys included, which Go
 // decodes one after another, and a number {n: text}, whose text says
 // whether it fits an int (1.0 does not). Lone surrogates in strings become
-// U+FFFD, as in Go.
+// U+FFFD, as in Go, where the browser has toWellFormed. The containers
+// being read are kept on a stack, not in recursive calls, so JSON nested
+// as deep as Go reads it (10,000 levels) never runs out of stack, and
+// deeper is Go's error.
 function $jparse(s) {
   JSON.parse(s);
-  const t = s.match(/"(?:[^"\\]|\\.)*"|[^\s,:[\]{}"]+|[[\]{}]/g), str = (x) => (x = JSON.parse(x)).toWellFormed?.() ?? x;
-  let i = 0;
-  const v = () => {
-    const x = t[i++];
-    if (x === "[") { const a = []; while (t[i] !== "]") a.push(v()); i++; return a; }
-    if (x === "{") { const o = []; while (t[i] !== "}") o.push([str(t[i++]), v()]); i++; return { o }; }
-    return x[0] === '"' ? str(x) : x === "null" ? null : x === "true" ? true : x === "false" ? false : { n: x };
-  };
-  return v();
+  const t = s.match(/"(?:[^"\\]|\\.)*"|[^\s,:[\]{}"]+|[[\]{}]/g), str = (x) => (x = JSON.parse(x)).toWellFormed?.() ?? x, st = [];
+  let out;
+  for (const x of t) {
+    if (x === "]" || x === "}") { st.pop(); continue; }
+    const v = x === "[" ? [] : x === "{" ? { o: [] } : x[0] === '"' ? str(x) : x === "null" ? null : x === "true" ? true : x === "false" ? false : { n: x }, p = st.at(-1);
+    // In an object, a key waits in p.k for its value.
+    if (!p) out = v;
+    else if (!p.o) p.push(v);
+    else if (p.k === undefined) p.k = v;
+    else { p.o.push([p.k, v]); p.k = undefined; }
+    if ((x === "[" || x === "{") && st.push(v) > 1e4) throw Error("exceeded max depth");
+  }
+  return out;
 }
 // $jdec decodes j, JSON as $jparse reads it, into the type J[i]
 // describes, starting from v: like encoding/json, it decodes into the
 // value that is there, the zero value or what a repeated key decoded
 // before, so a repeated object merges into it. It throws Go's error for
-// the first value that does not fit, where c is [struct, path of keys],
-// which Go names once inside a struct.
+// the first value that does not fit. $jone decodes one value, and for an
+// object or array pushes a frame onto a stack, st, which hands out its
+// elements (next) and takes their values (put) until it is done (end):
+// a stack, not recursion, so the deepest JSON Go reads decodes.
 function $jdec(J, i, j, v, c) {
+  const st = [];
+  let r = $jone(st, J, i, j, v, c);
+  while (st.length) {
+    const f = st.at(-1);
+    if (r !== st) f.put(r); // r is the value of f's last element; st, a new frame
+    const n = f.next();
+    if (n) r = $jone(st, J, ...n);
+    else { st.pop(); r = f.end(); }
+  }
+  return r;
+}
+// $jone decodes j into J[i] as $jdec does, or for an object or array,
+// pushes its frame onto st and returns st. c, for errors, is [struct,
+// path of keys], which Go names once inside a struct.
+function $jone(st, J, i, j, v, c) {
   const d = J[i], k = d.k;
   if (j === null) return k === "l" ? null : k === "m" ? new Map() : v;
   const w = typeof j === "string" ? "string" : typeof j === "boolean" ? "bool" : Array.isArray(j) ? "array" : j.o ? "object" : "number";
   const bad = (x = w, t = d.t) => { throw Error("json: cannot unmarshal " + x + " into Go " + (c ? "struct field " + c[0] + "." + c[1] : "value") + " of type " + t); };
   if (k === "s" || k === "b") return w === (k === "s" ? "string" : "bool") ? j : bad();
-  if (k === "o") {
-    if (w !== "object") bad();
-    const o = { ...v };
-    for (let [n, x] of j.o) {
-      const f = d.f.find((f) => f[0] === n) ?? ((n = $jfold(n, d.F)), d.f.find((f) => f[1] === n));
-      if (!f) continue;
-      const [p, ...r] = f[2], g = (y) => $jdec(J, f[3], x, y, [d.s, (c ? c[1] + "." : "") + (f[4] ?? f[0])]);
-      o[p] = r.length ? $jin(o[p], r, g) : g(o[p]);
-    }
-    return o;
-  }
-  if (k === "m") {
-    if (w !== "object") bad();
-    const m = new Map(v), K = J[d.K];
-    for (const [n, x] of j.o) {
-      const y = $jdec(J, d.e, x, $jzero(J, d.e), c), key = K.k === "s" ? n : $jnum(K, n);
-      if (key === undefined) bad("number " + n, K.t);
-      m.set(key, y);
-    }
-    return m;
-  }
   if (k === "l" && w === "string" && J[d.e].k === "u" && J[d.e].b === 8) return $jbytes(j);
-  if (k === "a" || k === "l") {
-    if (w !== "array") bad();
+  if (k !== "o" && k !== "m" && k !== "a" && k !== "l") {
+    if (w !== "number") bad();
+    const n = $jnum(d, j.n);
+    return n === undefined ? bad("number " + j.n) : n;
+  }
+  if (w !== (k === "o" || k === "m" ? "object" : "array")) bad();
+  let x = 0, f, n;
+  if (k === "o") {
+    const o = { ...v };
+    st.push({
+      next() {
+        while (x < j.o.length) {
+          let [n, y] = j.o[x++];
+          f = d.f.find((f) => f[0] === n) ?? ((n = $jfold(n, d.F)), d.f.find((f) => f[1] === n));
+          if (f) return [f[3], y, f[2].reduce((o, p) => o[p], o), [d.s, (c ? c[1] + "." : "") + (f[4] ?? f[0])]];
+        }
+      },
+      put(r) { const [p, ...q] = f[2]; o[p] = q.length ? $jin(o[p], q, () => r) : r; },
+      end: () => o,
+    });
+  } else if (k === "m") {
+    // Go decodes each value from zero, and then the key.
+    const m = new Map(v), K = J[d.K];
+    st.push({
+      next() { if (x < j.o.length) { let y; [n, y] = j.o[x++]; return [d.e, y, $jzero(J, d.e), c]; } },
+      put(r) { const key = K.k === "s" ? n : $jnum(K, n); if (key === undefined) bad("number " + n, K.t); m.set(key, r); },
+      end: () => m,
+    });
+  } else {
     // Elements decode into what is there: an array's own, or a slice's
     // backing array's as far as its capacity (Go reuses it, so elements
     // past its length that a repeated key left count), then zero values.
+    // An array takes as many as it holds.
     const a = k === "a" ? [...v] : v ? v.a.slice(v.o, v.o + v.c) : [];
-    j.forEach((x, n) => { if (k === "l" || n < d.n) a[n] = $jdec(J, d.e, x, n < a.length ? a[n] : $jzero(J, d.e), c); });
-    if (k === "a") return a.fill($jzero(J, d.e), j.length);
-    return j.length ? new $Slice(a, 0, j.length, a.length) : $sl([]);
+    st.push({
+      next() { if (x < j.length && (k === "l" || x < d.n)) { n = x++; return [d.e, j[n], n < a.length ? a[n] : $jzero(J, d.e), c]; } },
+      put(r) { a[n] = r; },
+      end: () => (k === "a" ? a.fill($jzero(J, d.e), j.length) : j.length ? new $Slice(a, 0, j.length, a.length) : $sl([])),
+    });
   }
-  if (w !== "number") bad();
-  const n = $jnum(d, j.n);
-  return n === undefined ? bad("number " + j.n) : n;
+  return st;
 }
 // $jnum is number text s as a value of the number type d, or undefined
 // when it does not fit: Go reads an integer kind with strconv.ParseInt or
@@ -538,10 +570,36 @@ function $jdec(J, i, j, v, c) {
 // which does not take what rounds to an infinity. Integers beyond 2^53
 // lose precision, as all of den's do.
 function $jnum(d, s) {
-  if (d.k === "f") { const f = d.b < 64 ? Math.fround(s) : +s; return isFinite(f) ? f : undefined; }
+  if (d.k === "f") { const f = d.b < 64 ? $jf32(s) : +s; return isFinite(f) ? f : undefined; }
   if (!(d.k === "i" ? /^[+-]?\d+$/ : /^\d+$/).test(s)) return;
   const n = BigInt(s), m = 2n ** BigInt(d.k === "i" ? d.b - 1 : d.b);
   return n < m && (d.k === "u" || n >= -m) ? Number(n) : undefined;
+}
+// $jf32 is number text s rounded once to the nearest float32, as Go's
+// strconv.ParseFloat(s, 32) does. Number(s) rounds to a float64 first;
+// only where that lands exactly halfway between two float32s (o and g,
+// infinities standing for 2^128) can rounding again go the wrong way, and
+// there an exact comparison of s with it says which way s lies.
+function $jf32(s) {
+  const f = +s, g = Math.fround(f), b = new DataView(new ArrayBuffer(4)), big = (x) => (isFinite(x) ? x : Math.sign(x) * 2 ** 128);
+  if (g === f || !isFinite(f)) return g;
+  b.setFloat32(0, g);
+  b.setUint32(0, b.getUint32(0) + (Math.abs(f) > Math.abs(g) ? 1 : -1));
+  const o = b.getFloat32(0);
+  if (f - big(o) !== big(g) - f) return g;
+  const c = $jcmp(s, f), far = Math.abs(big(o)) > Math.abs(big(g));
+  return c > 0 ? (far ? o : g) : c < 0 ? (far ? g : o) : g;
+}
+// $jcmp compares the magnitude of number text s with that of float64 f,
+// exactly, in BigInts: -1, 0 or 1.
+function $jcmp(s, f) {
+  const [, n, m = "", e = 0] = /^-?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(s), b = new DataView(new ArrayBuffer(8));
+  b.setFloat64(0, f);
+  const w = b.getBigUint64(0), x = Number((w >> 52n) & 2047n), y = (x ? x : 1) - 1075, z = e - m.length;
+  let p = BigInt(n + m), q = (w & (2n ** 52n - 1n)) | (x ? 2n ** 52n : 0n);
+  if (z > 0) p *= 10n ** BigInt(z); else q *= 10n ** BigInt(-z);
+  if (y > 0) q <<= BigInt(y); else p <<= BigInt(-y);
+  return p > q ? 1 : p < q ? -1 : 0;
 }
 // $jbytes decodes the base64 text s that encoding/json takes for a
 // []byte: the standard encoding, with padding; line breaks are ignored.
@@ -559,11 +617,11 @@ function $jzero(J, i) {
 // set to g(its value).
 function $jin(o, p, g) { const [n, ...r] = p; return { ...o, [n]: r.length ? $jin(o[n], r, g) : g(o[n]) }; }
 // $jfold folds key k as encoding/json folds names to match them ignoring
-// case: ASCII letters, and the long s and the Kelvin sign, as Go's simple
-// folding does (to S and K), and other letters by F, the compiler's table
-// for the letters of the struct's field names. A letter outside every
-// orbit F covers matches no field however it folds, so it stays.
+// case: ASCII letters, and U+017F (long s) and U+212A (Kelvin sign), as
+// Go's simple folding does (to S and K), and other letters by F, the
+// compiler's table for the letters of the struct's field names. A letter
+// outside every orbit F covers matches no field however it folds, so it
+// stays as it is.
 function $jfold(k, F) {
-  k = k.replace(/[a-zſK]/g, (c) => (c === "ſ" ? "S" : c === "K" ? "K" : c.toUpperCase()));
-  return F ? [...k].map((c) => F[c] ?? c).join("") : k;
+  return [...k].map((c) => { const r = c.codePointAt(0); return r < 128 ? c.toUpperCase() : r === 383 ? "S" : r === 8490 ? "K" : F?.[c] ?? c; }).join("");
 }
