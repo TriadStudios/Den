@@ -46,7 +46,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
 | `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.2 KB |
-| `examples/fetch` (a pager over JSON pages, loading and error states, Reload) | 5.8 KB |
+| `examples/fetch` (a pager over JSON pages, loading and error states, Reload) | 5.9 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -488,7 +488,10 @@ component Users() {
   request's outcome lands: an aborted request's never does.
 - When the component that made the resource goes away (with its `{if}`
   branch or `{for}` row, say), the request in flight is aborted, and
-  nothing lands afterwards. A panic while the arguments are evaluated is
+  nothing lands afterwards. The abort is one of the component's
+  cleanups, run with its `onCleanup` functions, newest first: after one
+  registered later than the `resource` call, before one registered
+  earlier. A panic while the arguments are evaluated is
   reported as a binding's is, and the resource keeps its state, the
   request in flight included.
 - `fetchJSON[T](url)` is a GET of `url`, resolved against the page. It

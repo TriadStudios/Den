@@ -172,6 +172,7 @@ func provide[T any](v T) {}
 func use[T any]() (v T) { return }
 `
 )
+
 // preludeResource declares resource and Resource, unless the program
 // declares its own resource or Resource: resource returns a *Resource[T],
 // so the two come and go together.

@@ -293,9 +293,9 @@ func (e *emitter) component(cc *checkedComponent) {
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
 	if e.ck.usesLife(cc.decl) {
 		// The component's lifecycle record, which every onMount, onCleanup,
-		// after and every in its Go uses: its statements, func literals
-		// and handlers, hoisted row handlers and slot markup included, all
-		// of which are written inside this function.
+		// after, every and resource in its Go uses: its statements, func
+		// literals and handlers, hoisted row handlers and slot markup
+		// included, all of which are written inside this function.
 		e.line("const $c = $life();")
 	}
 	e.stmts(cc.stmts)

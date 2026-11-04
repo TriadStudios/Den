@@ -471,16 +471,19 @@ func foldTable(name string, F map[rune]rune) {
 	}
 }
 
-// resourceCall emits resource(f(args)) as $resource(args, req, zero): the
-// call split in two. args is a function returning the values of f's
+// resourceCall emits resource(f(args)) as $resource($c, args, req, zero):
+// the call split in two. args is a function returning the values of f's
 // arguments, which $resource evaluates in an effect, as computed does, so
 // that a change to a signal they read starts a new request; req is f's
 // requester (see requester). zero is T's zero value, Data's until a
-// request succeeds.
+// request succeeds. $c is the component's lifecycle record (usesLife
+// counts resource), with which $resource aborts the request in flight
+// when the component goes; checkResources allows resource only in a
+// component's statements, where $c is.
 func (e *emitter) resourceCall(x *ast.CallExpr) string {
 	f := ast.Unparen(x.Args[0]).(*ast.CallExpr) // checkResources made sure
 	t := e.ck.info.TypeOf(x).(*types.Pointer).Elem().(*types.Named).TypeArgs().At(0)
-	return "$resource(() => [" + e.callArgs(f) + "], " + e.requester(f, t) + ", " + zeroValue(t) + ")"
+	return "$resource($c, () => [" + e.callArgs(f) + "], " + e.requester(f, t) + ", " + zeroValue(t) + ")"
 }
 
 // requester returns the JS of the function that makes the requests of a

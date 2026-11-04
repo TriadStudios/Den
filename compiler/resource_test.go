@@ -785,3 +785,117 @@ log(fetches.map((f) => f.url.slice("http://localhost".length)).join(" "));`)
 		`Each page is JSON, fetched and decoded into Go types. / That is every planet. Next asks for a page that is not there. | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
 		`/pages/1.json /pages/2.json /pages/3.json /pages/4.json /pages/4.json /pages/3.json`)
 }
+
+// A resource's URL can read a provided context value, and an input bound
+// to a signal can drive it: typing aborts the request in flight and
+// starts one for the new text.
+func TestRunResourceContextBind(t *testing.T) {
+	got := runApp(t, `
+type API struct{ Base string }
+
+component Search() {
+	q := signal("go")
+	r := resource(fetchJSON[[]string](use[API]().Base + "/search?q=" + q.Get()))
+	<div>
+		<input bind={q} />
+		<p>{len(r.Data())} {r.Loading()}</p>
+	</div>
+}
+
+component App() {
+	provide(API{Base: "/v2"})
+	<main><Search /></main>
+}`, `
+log(inFlight().join(" "));
+reply(fetches[0], 200, '["a"]'); await tick();
+log(find("p").textContent);
+input(find("input"), "den"); await tick();
+input(find("input"), "dens"); await tick();
+log(inFlight().join(" "), fetches[1].signal.aborted);
+reply(fetches[2], 200, '["a", "b"]'); await tick();
+log(find("p").textContent, fetches.length);`)
+	expectLines(t, got,
+		`http://localhost/v2/search?q=go`,
+		`1 false`,
+		`http://localhost/v2/search?q=dens true`,
+		`2 false 3`)
+}
+
+// A resource in a component in a {for} row is aborted when its row goes,
+// even when its answer has just arrived, and nothing of it lands.
+func TestRunResourceInRow(t *testing.T) {
+	got := runApp(t, `
+component Row(id int) {
+	r := resource(fetchJSON[string]("/rows/" + itoa(id) + ".json"))
+	<li>{id}:{r.Data()}</li>
+}
+
+component App() {
+	ids := signal([]int{1, 2, 3})
+	<div>
+		<ul>
+			{for _, id := range ids.Get() key id {
+				<Row id={id} />
+			}}
+		</ul>
+		<button onclick={ids.Set([]int{2, 3})}>one</button>
+		<button onclick={ids.Set([]int{3})}>two</button>
+	</div>
+}`, `
+const ul = () => html(find("ul"));
+log(inFlight().join(" "));
+click(find("button", "one")); await tick();
+log(ul(), fetches.map((f) => f.signal.aborted).join(" "));
+// Row 2's answer arrives just as its row goes.
+reply(fetches[1], 200, '"two"');
+click(find("button", "two")); await tick(); await tick();
+reply(fetches[2], 200, '"three"'); await tick();
+log(ul(), fetches.map((f) => f.signal.aborted).join(" "), fetches.length);`)
+	expectLines(t, got,
+		`http://localhost/rows/1.json http://localhost/rows/2.json http://localhost/rows/3.json`,
+		`<ul><li>2:</li><li>3:</li></ul> true false false`,
+		`<ul><li>3:three</li></ul> true true false 3`)
+}
+
+// A resource's abort is one of the component's cleanups, run with the
+// others newest first: after onCleanup's own when onCleanup comes after
+// the resource, and before it when onCleanup comes first.
+func TestRunResourceCleanupOrder(t *testing.T) {
+	got := runAppWith(t, `
+component Before() {
+	xs := []int{}
+	onCleanup(func() { _ = xs[1] })
+	r := resource(fetchJSON[int]("/before.json"))
+	<p>{r.Loading()}</p>
+}
+
+component After() {
+	xs := []int{}
+	r := resource(fetchJSON[int]("/after.json"))
+	onCleanup(func() { _ = xs[1:5] })
+	<p>{r.Loading()}</p>
+}
+
+component App() {
+	show := signal(true)
+	<div>
+		{if show.Get() {
+			<Before />
+			<After />
+		}}
+		<button onclick={show.Set(false)}>hide</button>
+	</div>
+}`, `
+const realFetch = fetch;
+globalThis.fetch = (u, o) => { o.signal.addEventListener("abort", () => log("aborted", u.replace("http://localhost", ""))); return realFetch(u, o); };`, `
+log(inFlight().join(" "));
+click(find("button", "hide")); await tick();
+log(inFlight().length, html(find("div")));`)
+	expectLines(t, got,
+		`http://localhost/before.json http://localhost/after.json`,
+		`reportError: den: slice bounds out of range`,
+		`aborted /after.json`,
+		`aborted /before.json`,
+		`reportError: den: index out of range`,
+		`0 <div><button>hide</button></div>`)
+}

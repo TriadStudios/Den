@@ -209,7 +209,8 @@ func (lc *lifeChecker) markup(stmts []ast.Stmt, key *lifeCtx) {
 
 // usesLife reports whether the Go of component fd (its statements and its
 // markup's, handlers and slot markup included) calls onMount, onCleanup,
-// after or every, so its JS function needs its lifecycle record.
+// after or every, or resource, whose request in flight is aborted when the
+// component goes, so its JS function needs its lifecycle record.
 func (ck *checked) usesLife(fd *ast.FuncDecl) bool {
 	found := false
 	if fd == nil {
@@ -217,7 +218,7 @@ func (ck *checked) usesLife(fd *ast.FuncDecl) bool {
 	}
 	ast.Inspect(fd, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok && !found {
-			if id, ok := ast.Unparen(call.Fun).(*ast.Ident); ok && ck.preludeFunc(ck.info.Uses[id], lifeNames...) {
+			if id, ok := callee(ck.info, ast.Unparen(call.Fun)).(*ast.Ident); ok && ck.preludeFunc(ck.info.Uses[id], append(lifeNames[:len(lifeNames):len(lifeNames)], "resource")...) {
 				found = true
 			}
 		}

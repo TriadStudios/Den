@@ -426,25 +426,27 @@ function $touch(el, x) {
 // flight goes on. Only the latest request's outcome lands, written by its
 // promise's callbacks: d the data, kept until a request succeeds; e the
 // error of the latest request to finish, null after a success; l whether
-// a request is in flight. When the scope that made the resource is
-// disposed, the request in flight is aborted, and nothing lands after.
-function $resource(a, q, z) {
+// a request is in flight. k is the AbortController of the request in
+// flight. When the component that made the resource goes (c is its
+// lifecycle record), the request in flight is aborted, and nothing lands
+// after.
+function $resource(c, a, q, z) {
   const r = { d: $signal(z), e: $signal(null), l: $signal(false), n: $signal(0) };
-  let c = null;
-  const stop = () => { c?.abort(); c = null; };
+  let k = null;
+  const stop = () => { k?.abort(); k = null; };
   r.r = () => r.n.set(r.n.v + 1);
   $effect(() => {
     r.n.get();
-    const v = a(), k = new AbortController();
+    const v = a(), m = new AbortController();
     stop();
-    c = k;
+    k = m;
     r.l.set(true);
-    q(v, k.signal).then(
-      (x) => { if (c === k) { r.d.set(x); r.e.set(null); r.l.set(false); } },
-      (x) => { if (c === k) { r.e.set(x); r.l.set(false); } },
+    q(v, m.signal).then(
+      (x) => { if (k === m) { r.d.set(x); r.e.set(null); r.l.set(false); } },
+      (x) => { if (k === m) { r.e.set(x); r.l.set(false); } },
     );
   });
-  $cleanup(stop);
+  $onCleanup(c, stop);
   return r;
 }
 // $fetchJSON(J, i) is the requester of fetchJSON[T], where J[i] describes
