@@ -43,6 +43,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.4 KB |
 | `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.2 KB |
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
+| `examples/site` (den's own site: five pages, page transitions, a stored theme, live demos) | 9.9 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -604,8 +605,8 @@ programs against Go, and hold the runtime to 3 KB and every example to
 10 KB gzipped. They also fail when a `.den` file in the repository is not
 formatted, and hold `den fmt` to compiling every program in the
 repository and its tests to the same JavaScript and CSS once formatted.
-`examples/todomvc/e2e.js` and `bench/run.js` drive Chromium with
-Playwright; they are optional development tools.
+`examples/todomvc/e2e.js`, `examples/site/e2e.js` and `bench/run.js`
+drive Chromium with Playwright; they are optional development tools.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
 [SECURITY.md](SECURITY.md) to report a vulnerability.
