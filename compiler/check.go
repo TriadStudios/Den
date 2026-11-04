@@ -157,6 +157,22 @@ func denRef(r *Ref) {}
 // them: they exist only in components, never in top-level functions.
 var lifeNames = []string{"onMount", "onCleanup", "after", "every"}
 
+// Context: preludeProvide and preludeUse declare provide and use, each
+// unless the program has a name of its own for it. They are checked in
+// context.go once Go accepts the program.
+const (
+	preludeProvide = `
+// provide makes v what use[T] finds, for T the type of v, in the rest of
+// the component and in everything its markup builds.
+func provide[T any](v T) {}
+`
+	preludeUse = `
+// use returns the value of the nearest provide of a T among the
+// components that build this one, or the zero T if there is none.
+func use[T any]() (v T) { return }
+`
+)
+
 // preludeDen ends the prelude of a program that imports the built-in
 // package den, which is every program that does not declare its own den.
 const preludeDen = `
@@ -295,6 +311,7 @@ type checked struct {
 	nilTypes    map[*ast.Ident]types.Type
 	routes      map[*ast.CallExpr]string  // route[T](...) calls: the pattern to match
 	durations   map[*ast.CallExpr]float64 // Transition.For(d) calls: d in milliseconds
+	ctx         contextInfo               // provide and use (context.go)
 }
 
 type checkedComponent struct {
@@ -448,6 +465,13 @@ func check(files []*File) (*checked, error) {
 	if refBy == "" {
 		src.WriteString(preludeRef)
 	}
+	// Context.
+	if own["provide"] == "" {
+		src.WriteString(preludeProvide)
+	}
+	if own["use"] == "" {
+		src.WriteString(preludeUse)
+	}
 	if denTaken {
 		src.WriteString(preludePlain)
 	} else {
@@ -584,6 +608,10 @@ next:
 		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing denOpaqueRef cannot be compared", "a Ref cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing time.opaque cannot be compared", "den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0", 1)
+		// Go's message would point into den's prelude.
+		if own["use"] == "" && strings.HasPrefix(msg, "in call to use, cannot infer T") {
+			msg = "use needs the type of the value it finds, as in use[Theme]()"
+		}
 		// The value of enter= is checked as an argument to denEnter, and
 		// that of ref= as one to denRef.
 		for _, a := range append(motionAttrs[:len(motionAttrs):len(motionAttrs)], "ref") {
@@ -620,11 +648,13 @@ next:
 	// checked once Go accepts the program.
 	var routes map[*ast.CallExpr]string
 	var durations map[*ast.CallExpr]float64
+	var ctx contextInfo
 	if len(typeErrs) == 0 {
 		routes = checkRoutes(file, info, pkg, fset, errAt)
 		durations = checkMotion(file, info, fset, errAt)
 		checkLifecycle(file, info, fset, byName, errAt)
 		preludeValues(file, info, fset, byName, errAt)
+		ctx = checkContext(file, info, pkg, fset, byName, errAt)
 	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
@@ -642,7 +672,7 @@ next:
 		return nil, errs.sorted()
 	}
 
-	out := &checked{fset: fset, info: info, pkg: pkg, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes, durations: durations}
+	out := &checked{fset: fset, info: info, pkg: pkg, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes, durations: durations, ctx: ctx}
 	decls := map[string]*ast.FuncDecl{}
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)

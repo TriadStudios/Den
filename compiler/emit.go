@@ -164,6 +164,7 @@ type emitter struct {
 	scopes  map[*Component]string // the scope attribute of each component with a style block
 	motions map[string]string     // shared transitions: JS -> the name of the constant holding it
 	motion  bool                  // a block compiled to $ifm or $form, whose leaving elements need $evs
+	ctx     string                // the JS name of the context in effect, or "" in a program that provides nothing (context.go)
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -276,10 +277,14 @@ func (e *emitter) name(prefix string) string {
 }
 
 func (e *emitter) component(cc *checkedComponent) {
-	e.cc, e.n, e.ind, e.results = cc, 0, "  ", nil
+	e.cc, e.n, e.ind, e.results, e.ctx = cc, 0, "  ", nil, ""
 	var params []string
 	for _, p := range cc.c.Params {
 		params = append(params, jsIdent(p.Name))
+	}
+	if e.ck.ctx.on {
+		e.ctx = "$x" // the caller's context, after the props
+		params = append(params, e.ctx)
 	}
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
 	if e.ck.usesLife(cc.decl) {
@@ -295,7 +300,7 @@ func (e *emitter) component(cc *checkedComponent) {
 }
 
 func (e *emitter) funcDecl(fd *ast.FuncDecl) {
-	e.n, e.ind = 0, "  "
+	e.n, e.ind, e.ctx = 0, "  ", ""
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(fd.Name.Name), e.params(fd.Type.Params))
 	e.funcBody(fd.Type, fd.Body)
 	e.w.WriteString("}\n")
@@ -533,7 +538,7 @@ func (e *emitter) instantiate(nodes []Node, svg ns) string {
 			}
 		case *Interp:
 			if x := e.cc.parts[n].expr; isChildren(e.ck.info.TypeOf(x)) {
-				return e.expr(x) + "(" + svg.arg() + ")"
+				return e.expr(x) + "(" + e.ctxArgs(svg.arg(), true) + ")"
 			}
 		}
 	}
@@ -582,7 +587,7 @@ func (e *emitter) bind(ts []*tnode) {
 			if isChildren(e.ck.info.TypeOf(pt.expr)) {
 				// The markup is built here, in this place's namespace, so the
 				// nodes it makes belong to the scope rendering it.
-				e.line("%s.replaceWith(%s(%s));", t.v, e.expr(pt.expr), t.svg.arg())
+				e.line("%s.replaceWith(%s(%s));", t.v, e.expr(pt.expr), e.ctxArgs(t.svg.arg(), true))
 				continue
 			}
 			if e.ck.reactive(pt.expr) {
@@ -686,18 +691,31 @@ func (e *emitter) componentCall(el *Element) string {
 		case len(pt.slots[i]) == 0:
 			args = append(args, "$cm")
 		default:
+			// The markup sees the context of the component rendering it,
+			// which passes it as $x.
+			outer := e.ctx
+			if e.ctx != "" {
+				e.ctx = "$x"
+			}
 			body := e.capture(e.ind+"  ", func() { e.line("return %s;", e.instantiate(pt.slots[i], nsDyn)) })
+			e.ctx = outer
 			param := ""
-			if usesSVG.MatchString(body) {
+			switch {
+			case outer != "" && usesCtx.MatchString(body):
+				param = "$svg, $x"
+			case usesSVG.MatchString(body):
 				param = "$svg"
 			}
 			args = append(args, "("+param+") => {\n"+body+e.ind+"}")
 		}
 	}
-	return jsIdent(el.Tag) + "(" + strings.Join(args, ", ") + ")"
+	return jsIdent(el.Tag) + "(" + e.ctxArgs(strings.Join(args, ", "), false) + ")"
 }
 
-var usesSVG = regexp.MustCompile(`\$svg\b`)
+var (
+	usesSVG = regexp.MustCompile(`\$svg\b`)
+	usesCtx = regexp.MustCompile(`\$x\b`)
+)
 
 // block emits a function that builds nodes and returns them.
 func (e *emitter) block(params string, nodes []Node, svg ns) string {
@@ -927,6 +945,10 @@ func (e *emitter) stmts(list []ast.Stmt) {
 func (e *emitter) stmt(s ast.Stmt) {
 	switch s := s.(type) {
 	case *ast.ExprStmt:
+		if call, ok := e.isProvide(s); ok {
+			e.provide(call)
+			return
+		}
 		e.line("%s;", e.expr(s.X))
 	case *ast.AssignStmt:
 		e.assign(s)
@@ -1655,6 +1677,8 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "$" + o.Name() + "($c, " + args() + ")"
 				case "ref":
 					return "({ e: null })"
+				case "use":
+					return e.use(x)
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"

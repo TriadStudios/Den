@@ -44,6 +44,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.2 KB |
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
+| `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -304,6 +305,64 @@ component App() {
   without it. A panic outside bindings while a branch or row is built (in
   a component's statements or a prop) leaves that `{if}` branch out, or
   keeps the `{for}`'s old rows, until its condition or list changes again.
+
+**Context**
+
+```go
+type Theme struct {
+    Dark *Signal[bool]
+}
+
+component App() {
+    provide(Theme{Dark: signal(false)})
+    <main><Toolbar /><Page /></main>
+}
+
+component Toolbar() {
+    theme := use[Theme]()
+    <button onclick={theme.Dark.Set(!theme.Dark.Get())}>Dark mode</button>
+}
+```
+
+- `provide(v)` makes `v` reach everything the component builds, without
+  props in between. `use[T]()` returns the value of the nearest `provide`
+  of a `T` among the components that build it, or the zero `T` when there
+  is none, as a map lookup does.
+- Values are found by their type, so each kind of context gets a type of
+  its own: `T` must be a named type that the program declares. An alias
+  of one is that type, and each instance of a generic type (`Box[int]`,
+  `Box[string]`) is a type of its own.
+- The components that build a component are those of the render tree:
+  markup passed as children or a slot sees the context of the component
+  that renders it, not of the one that wrote it. So compound components
+  work: a `Tabs` that provides its state reaches the `Tab` elements its
+  caller writes between `<Tabs>` and `</Tabs>`.
+- A `provide` applies from where it is written: the component's later
+  statements and all of its markup see it; earlier statements, and
+  closures written before it, see the context the component was given,
+  whenever they run. A second `provide` of the same type replaces the
+  first for what follows it.
+- `use` can be called anywhere in a component (its statements, closures,
+  handlers and markup) and reads the context once: values are values. To
+  share state that changes, provide a struct of signals, a store, as
+  above; components that read its signals follow them.
+- It costs little: in an app that provides something, each component
+  takes one more argument, and each `provide` makes one object whose
+  prototype is the context above it, so a lookup finds the nearest
+  provider. An app that provides nothing compiles as if context did not
+  exist, and there each `use` is the zero value.
+- These are compile errors: a `provide` or `use` of a type that is not a
+  named type, as in `provide(3)`, `use[string]()`, `use[*Signal[int]]()`
+  and `use[[]Item]()` (`app.den:3:14: context values are found by their
+  type, so use needs a named type: declare one, as in type Theme
+  struct{...}`), or of a named type that is not the program's own, such
+  as `error`, `Signal[int]` or `den.Children`; a `provide` that is not a
+  statement of its own at the top level of a component's statements (in
+  an `if`, a closure, a handler or a function); a `use` outside a
+  component, as in a function; `use()` without its type; and `provide`
+  or `use` used as values (`f := use[Theme]`).
+- `provide` and `use` are ordinary names: a program that has its own at
+  the top level keeps it.
 
 **Routing**
 

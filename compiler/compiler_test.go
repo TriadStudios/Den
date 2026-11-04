@@ -1652,6 +1652,111 @@ component App() {
     f := after
     <button onclick={f(0, func() {})}>x</button>
 }`, `app.den:3:10: after can only be called, not used as a value`},
+		// Context: provide(v) and use[T]().
+		{"provide of an untyped constant", `
+component App() {
+    provide(3)
+    <p>x</p>
+}`, `app.den:3:13: context values are found by their type, so provide needs a named type: declare one, as in type Theme struct{...}`},
+		{"provide with a basic type argument", `
+component App() {
+    provide[int](3)
+    <p>x</p>
+}`, `app.den:3:13: context values are found by their type, so provide needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of a basic type", `
+component App() {
+    s := use[string]()
+    <p>{s}</p>
+}`, `app.den:3:14: context values are found by their type, so use needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of a signal pointer", `
+component App() {
+    s := use[*Signal[int]]()
+    <p>{s.Get()}</p>
+}`, `app.den:3:14: context values are found by their type, so use needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of a slice", `
+type Item struct{ N int }
+component App() {
+    xs := use[[]Item]()
+    <p>{len(xs)}</p>
+}`, `app.den:4:15: context values are found by their type, so use needs a named type: declare one, as in type Theme struct{...}`},
+		{"provide of an alias of a slice", `
+type Item struct{ N int }
+type Items = []Item
+component App() {
+    provide(Items{})
+    <p>x</p>
+}`, `app.den:5:13: context values are found by their type, so provide needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of den's own type", `
+component App() {
+    s := use[Signal[int]]()
+    <p>{s.Get()}</p>
+}`, `app.den:3:14: context values are found by their type, so use needs a type this program declares, not Signal[int]: declare one, as in type Theme struct{...}`},
+		{"use of error", `
+component App() {
+    err := use[error]()
+    <p>{err.Error()}</p>
+}`, `app.den:3:16: context values are found by their type, so use needs a type this program declares, not error: declare one, as in type Theme struct{...}`},
+		{"use of den.Children", `
+component App() {
+    c := use[den.Children]()
+    <div>{c}</div>
+}`, `app.den:3:14: context values are found by their type, so use needs a type this program declares, not den.Children: declare one, as in type Theme struct{...}`},
+		{"provide in an if statement", `
+type T struct{ N int }
+component App() {
+    if true {
+        provide(T{1})
+    }
+    <p>x</p>
+}`, `app.den:5:9: provide must be a statement of its own at the top level of a component`},
+		{"provide in a closure", `
+type T struct{ N int }
+component App() {
+    f := func() { provide(T{1}) }
+    f()
+    <p>x</p>
+}`, `app.den:4:19: provide must be a statement of its own at the top level of a component`},
+		{"provide in a handler", `
+type T struct{ N int }
+component App() {
+    <button onclick={provide(T{1})}>x</button>
+}`, `app.den:4:22: provide must be a statement of its own at the top level of a component`},
+		{"provide in a function", `
+type T struct{ N int }
+func f() { provide(T{1}) }
+component App() {
+    f()
+    <p>x</p>
+}`, `app.den:3:12: provide must be a statement of its own at the top level of a component`},
+		{"provide used as a value", `
+type T struct{ N int }
+component App() {
+    x := provide(T{1})
+    <p>{x}</p>
+}`, `app.den:4:10: provide(T{…}) (no value) used as value`},
+		{"use in a function", `
+type T struct{ N int }
+func f() T { return use[T]() }
+component App() {
+    <p>{f().N}</p>
+}`, `app.den:3:21: use can only be called in a component`},
+		{"provide as a value", `
+component App() {
+    f := provide[int]
+    f(1)
+    <p>x</p>
+}`, `app.den:3:10: provide can only be called, not used as a value`},
+		{"use as a value", `
+type T struct{ N int }
+component App() {
+    f := use[T]
+    <p>{f().N}</p>
+}`, `app.den:4:10: use can only be called, not used as a value`},
+		{"use without a type", `
+component App() {
+    x := use()
+    <p>{x}</p>
+}`, `app.den:3:10: use needs the type of the value it finds, as in use[Theme]()`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
