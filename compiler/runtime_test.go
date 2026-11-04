@@ -114,6 +114,33 @@ for (let i = 0; i < 3; i++) { click(find("button")); await tick(); log(html()); 
 		`<div><button>next</button>many: 3<span>end</span></div>`)
 }
 
+// Brackets in {if} and {for} headers nest as in Go: a literal of a named
+// type in parentheses, a function literal, nested literals, and braces in
+// comments. Before, a { inside parentheses was not counted but its } was,
+// so (T{x}).v was "unterminated {if".
+func TestRunHeaderBrackets(t *testing.T) {
+	got := runApp(t, `
+type T struct{ v int }
+
+component App() {
+    x := signal(1)
+    <div>
+        <button onclick={x.Set(x.Get() - 1)}>dec</button>
+        {if (T{x.Get()}).v > 0 { <p>pos</p> }}
+        {if x.Get() + (T{1}).v > 1 /* { */ { <i>big</i> }}
+        {if (func() bool { return x.Get() == 0 })() /* } */ { <b>zero</b> }}
+        <ul>{for _, r := range [][]int{{1, 2}, {3, x.Get()}} key r[0] { <li>{len(r)}:{r[len(r)-1]}</li> }}</ul>
+    </div>
+}`, `
+log(html());
+click(find("button"));
+await tick();
+log(html());`)
+	expectLines(t, got,
+		`<div><button>dec</button><p>pos</p><i>big</i><ul><li>2:2</li><li>2:1</li></ul></div>`,
+		`<div><button>dec</button><b>zero</b><ul><li>2:2</li><li>2:0</li></ul></div>`)
+}
+
 func TestRunStaticIfAndFor(t *testing.T) {
 	got := runApp(t, `
 component App() {

@@ -469,6 +469,9 @@ func (p *parser_) parseComponent() *Component {
 	}
 	c.ParamsSrc = p.src[start : p.off-1]
 	c.ParamsPos = p.posAt(start)
+	// The parentheses are counted without regard to strings and comments,
+	// so the list could still hold a ) that would end it in Go.
+	p.checkFragment(c.ParamsSrc, start, fragParams)
 	c.Params = p.parseParams(c)
 	p.skipSpace()
 	p.expect("{")
@@ -491,6 +494,8 @@ func (p *parser_) parseComponent() *Component {
 	}
 	c.StmtsSrc = string(stmts)
 	c.StmtsPos = p.posAt(bodyStart)
+	// A } here would end the function gen writes for the component.
+	p.checkFragment(c.StmtsSrc, bodyStart, fragStmts)
 	p.off = markup
 	c.Root = p.parseElement(false)
 	p.skipSpaceAndComments()
@@ -812,9 +817,20 @@ func (p *parser_) parseAttr(el *Element) *Attr {
 		p.off += end + 1
 	case '{':
 		a.Kind = AttrExpr
+		start := p.off + 1
 		a.Value, a.ValuePos = p.readBraced()
 		if strings.TrimSpace(a.Value) == "" {
 			p.failAt(a.Pos, "attribute %q has an empty {}", a.Name)
+		}
+		// As gen writes it: every attribute of a component is an argument
+		// of its call, and a handler is the body of a function.
+		switch {
+		case el.IsComponent():
+			p.checkFragment(a.Value, start, fragProp)
+		case isEventAttr(a.Name):
+			p.checkFragment(a.Value, start, fragStmts)
+		default:
+			p.checkFragment(a.Value, start, fragExpr)
 		}
 	default:
 		p.fail("attribute values must be \"text\" or {expr}")
@@ -879,6 +895,9 @@ func (p *parser_) parseNodes(el *Element, open Pos) []Node {
 			if commentOnly(src) {
 				continue
 			}
+			// Go that ends denText(...) early is reported as that, even
+			// when it looks like a {key} block that has no body.
+			p.checkFragment(src, start, fragExpr)
 			if keyWithoutBody(src) {
 				kw := start + len(src) - len(strings.TrimLeft(src, " \t\r\n"))
 				p.failAt(p.posAt(kw), "{key} needs a body after its value: {key x { ... }}")
@@ -978,7 +997,8 @@ func (p *parser_) keyBlockAt() (ok bool) {
 		}
 	}()
 	p.off = i
-	return p.headerEnd()
+	ok, _, _ = p.headerEnd()
+	return ok
 }
 
 // keyOperand reports whether src[i:], just after the word key, is
@@ -1071,6 +1091,12 @@ func (p *parser_) parseFor() *For {
 	if key == "" {
 		p.failAt(n.Pos_, "for in markup needs a key so rows can move instead of being rebuilt: {for _, x := range xs key x.ID { ... }}")
 	}
+	// gen writes the range clause and then " {", which a // comment at its
+	// end would hide.
+	if c := lineCommentAtEnd(head); c >= 0 {
+		p.failAt(p.posAt(off+c), "a // comment cannot come right before key; use /* */")
+	}
+	p.checkFragment(key, off+keyOff, fragHeader)
 	n.Header, n.HeaderPos = head, p.posAt(off)
 	n.Key, n.KeyPos = key, p.posAt(off+keyOff)
 	n.Body = p.parseNodes(nil, n.Pos_)
@@ -1081,22 +1107,34 @@ func (p *parser_) parseKey() *Key {
 	n := &Key{Pos_: p.posAt(p.off)}
 	p.off += len("key")
 	key, off := p.readHeader("key", n.Pos_)
+	// gen writes denKey(x) around the value, which it must not end.
+	p.checkFragment(key, off, fragHeader)
 	n.Key, n.KeyPos = key, p.posAt(off)
 	n.Body = p.parseNodes(nil, n.Pos_)
 	return n
 }
 
 // readHeader reads the Go source of an if, for or key header up to the
-// '{' that opens its body, consumes the '{' and returns the source and its
-// offset.
+// '{' that opens its body (see headerEnd), consumes the '{' and returns
+// the source and its offset.
 func (p *parser_) readHeader(kw string, kwPos Pos) (string, int) {
 	p.skipSpace()
 	start := p.off
-	if !p.headerEnd() {
+	ok, stray, lineComment := p.headerEnd()
+	if stray >= 0 {
+		c := p.src[stray]
+		p.failAt(p.posAt(stray), "unexpected %c: there is no %c for it to close", c, map[byte]byte{')': '(', ']': '['}[c])
+	}
+	if !ok {
 		if p.eof() {
 			p.failAt(kwPos, "unterminated {%s", kw)
 		}
 		p.fail("expected { to start the %s body", kw)
+	}
+	// den writes the header and then " {", which a // comment would hide;
+	// and in Go, a // comment never ends a header.
+	if lineComment >= 0 {
+		p.failAt(p.posAt(lineComment), "a // comment cannot come right before the { of the %s body; use /* */ or put it inside the body", kw)
 	}
 	src := strings.TrimRight(p.src[start:p.off], " \t\r\n")
 	if src == "" {
@@ -1108,30 +1146,206 @@ func (p *parser_) readHeader(kw string, kwPos Pos) (string, int) {
 
 // headerEnd moves p.off from the start of a header to the '{' that opens
 // its body and reports true, or to a '}' that comes first, or to the end
-// of the source, and reports false. As in Go, a '{' after a slice, array
-// or map type starts a composite literal, and a literal of a named type
-// must be wrapped in parentheses.
-func (p *parser_) headerEnd() bool {
+// of the source, and reports false. Strings, runes and comments are
+// skipped, and brackets nest: inside (), [] or {} every '{' opens a
+// literal or a function body. At the top level, as in Go, a '{' after a
+// slice, array or map type starts a composite literal, and a literal of a
+// named type must be wrapped in parentheses: {if (T{x}).ok {.
+//
+// It also returns the offsets of the first ) or ] that closes nothing and
+// of a // comment with only space after it before the body's '{' (each -1
+// if there is none), for readHeader to report. Neither ends the header, so
+// neither decides whether {key x ...} is a block.
+func (p *parser_) headerEnd() (ok bool, stray, lineComment int) {
 	start := p.off
-	depth := 0
+	var open []byte // the brackets open at p.off
+	stray, lineComment = -1, -1
 	for !p.eof() {
+		c := p.src[p.off]
 		if p.atLiteral() {
+			lineComment = -1
+			if strings.HasPrefix(p.src[p.off:], "//") {
+				lineComment = p.off
+			}
 			p.skipLiteral()
 			continue
 		}
-		switch c := p.src[p.off]; {
-		case c == '(' || c == '[' || (c == '{' && afterTypeLit(p.src[start:p.off])):
-			depth++
-		case c == ')' || c == ']' || (c == '}' && depth > 0):
-			depth--
-		case c == '{' && depth == 0:
-			return true
-		case c == '}' && depth == 0:
-			return false
+		switch {
+		case c == '(' || c == '[' || (c == '{' && (len(open) > 0 || afterTypeLit(p.src[start:p.off]))):
+			open = append(open, c)
+		case c == '{':
+			return true, stray, lineComment
+		case c == '}' && len(open) == 0:
+			return false, stray, lineComment
+		case c == ')' || c == ']' || c == '}':
+			if len(open) == 0 {
+				if stray < 0 {
+					stray = p.off
+				}
+			} else {
+				open = open[:len(open)-1] // one of the wrong kind is left to Go
+			}
+		}
+		if !isSpace(c) {
+			lineComment = -1
 		}
 		p.off++
 	}
-	return false
+	return false, stray, lineComment
+}
+
+// fragKind says how den writes a Go fragment of a component into the Go
+// file it type-checks: inside a bracket of its own, which the fragment
+// must not close.
+type fragKind int
+
+const (
+	fragExpr   fragKind = iota // {expr}, attribute and motion values: the argument of a call, denText(x)
+	fragHeader                 // a list key or {key} value: the argument of denKey(x), which ends at the { of a body
+	fragProp                   // a component prop: one argument of the call of the component, Card(a, b)
+	fragStmts                  // a handler or the statements of a component: the body of a function
+	fragParams                 // the parameters of a component: func Card(a int)
+)
+
+// fragmentEscape reports what in src, Go source of kind k, would end the
+// code den writes around it early, or run on into the code after it, and
+// its offset in src; the rest of src, or of the code after it, would then
+// be Go of its own, statements that no markup is paired with. That is a )
+// (a } in statements) that would close den's own bracket; a comment or a
+// string, raw string or rune literal still open at the end of src, which
+// would go on through den's code and could end in a later fragment (den
+// cuts a fragment at a } that Go may read as inside a comment or string,
+// and a quote in a comment is the other way round); and in an expression
+// a // comment at the end, which would hide the ) den writes next. In a
+// prop, a , at the top level followed by more code would pass another
+// argument. It returns -1 when src cannot escape. Everything else wrong
+// with src is left to Go, which reports it as in any Go file: a bracket
+// closed by the wrong kind, a ; or a newline inside an expression, and
+// scanner errors in tokens that end inside src (a string ended by a
+// newline, an unknown escape, a bad number), which are errors in den's
+// file too, so nothing there is type-checked. Such an error does not end
+// the search: the scanner goes on after it, and so does Go's.
+//
+// src is scanned as den's file has it, right after a /*line*/ comment on
+// the same line, so that a //line comment at its start is a comment and
+// not a line directive (which would be an error of its own here only).
+// This is only for the message: check makes sure that Go reads what den
+// wrote around every fragment as den wrote it (checkShapes).
+func fragmentEscape(src string, k fragKind) (int, string) {
+	const before = "/**/" // as den's /*line*/ comment
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(before)+len(src))
+	var s scanner.Scanner
+	var errs []string // what the scanner reported while it read the last token
+	s.Init(file, []byte(before+src), func(_ token.Position, msg string) {
+		errs = append(errs, msg)
+	}, scanner.ScanComments)
+	// open holds the brackets open in src, above den's own.
+	open := []token.Token{token.LPAREN}
+	end := "the } that ends this {...}"
+	switch k {
+	case fragStmts:
+		open[0] = token.LBRACE
+	case fragParams:
+		end = "the ) that ends the parameter list"
+	case fragHeader:
+		end = "the { that starts the body"
+	}
+	comma := -1 // a top-level , in a prop, until more code follows it
+	for {
+		errs = errs[:0]
+		pos, tok, lit := s.Scan()
+		off := file.Offset(pos) - len(before)
+		if off < 0 {
+			continue // den's comment
+		}
+		for _, msg := range errs {
+			if what := openAtEnd(src[off:], tok, lit, msg); what != "" {
+				return off, what + " not terminated before " + end
+			}
+		}
+		if comma >= 0 && tok != token.COMMENT && tok != token.EOF && !(tok == token.SEMICOLON && lit == "\n") {
+			return comma, "a prop takes one value; this , would pass another argument"
+		}
+		switch tok {
+		case token.EOF:
+			return -1, ""
+		case token.LPAREN, token.LBRACK, token.LBRACE:
+			open = append(open, tok)
+		case token.RPAREN, token.RBRACK, token.RBRACE:
+			if open[len(open)-1] != openerOf[tok] {
+				return -1, "" // Go reports the mismatch
+			}
+			if len(open) == 1 {
+				return off, fmt.Sprintf("unexpected %s: there is no %s for it to close", tok, openerOf[tok])
+			}
+			open = open[:len(open)-1]
+		case token.COMMA:
+			if k == fragProp && len(open) == 1 {
+				comma = off
+			}
+		case token.COMMENT:
+			if (k == fragExpr || k == fragProp) && strings.HasPrefix(lit, "//") && !strings.Contains(src[off:], "\n") {
+				return off, "a // comment cannot end an expression in markup: it runs past the }; use /* */"
+			}
+		}
+	}
+}
+
+// openAtEnd names the comment or literal tok, whose text lit is the start
+// of rest and whose scanning reported the error msg, if the error is that
+// rest ends inside it: an unterminated comment or raw string, or a string
+// or rune with no newline after its start (a newline ends either, in src
+// as in den's file). Otherwise it returns "".
+func openAtEnd(rest string, tok token.Token, lit, msg string) string {
+	switch {
+	case msg == "comment not terminated":
+		return "comment"
+	case msg == "raw string literal not terminated":
+		return "raw string literal"
+	case msg != "string literal not terminated" && msg != "rune literal not terminated" && msg != "escape sequence not terminated",
+		strings.Contains(rest, "\n"):
+		return ""
+	case tok == token.STRING && strings.HasPrefix(lit, `"`):
+		return "string literal"
+	case tok == token.CHAR:
+		return "rune literal"
+	}
+	return ""
+}
+
+// lineCommentAtEnd returns the offset of the // comment that Go source src
+// ends with, or -1 if it ends otherwise.
+func lineCommentAtEnd(src string) int {
+	fset := token.NewFileSet()
+	file := fset.AddFile("", -1, len(src))
+	var s scanner.Scanner
+	s.Init(file, []byte(src), func(token.Position, string) {}, scanner.ScanComments)
+	last, lastOff := "", -1
+	for {
+		pos, tok, lit := s.Scan()
+		if tok == token.EOF {
+			if strings.HasPrefix(last, "//") {
+				return lastOff
+			}
+			return -1
+		}
+		if tok == token.SEMICOLON && lit == "\n" {
+			continue
+		}
+		last, lastOff = lit, file.Offset(pos)
+	}
+}
+
+// openerOf maps each closing bracket token to its opening one.
+var openerOf = map[token.Token]token.Token{token.RPAREN: token.LPAREN, token.RBRACK: token.LBRACK, token.RBRACE: token.LBRACE}
+
+// checkFragment fails at the place in src, a fragment of kind k at offset
+// start, that would escape the code den writes around it.
+func (p *parser_) checkFragment(src string, start int, k fragKind) {
+	if off, msg := fragmentEscape(src, k); off >= 0 {
+		p.failAt(p.posAt(start+off), "%s", msg)
+	}
 }
 
 // afterTypeLit reports whether src ends in a slice, array or map type such
