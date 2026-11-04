@@ -606,6 +606,9 @@ func (e *emitter) bind(ts []*tnode) {
 				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n))
 				continue
 			}
+			// A <select> is bound once its options are there.
+			var selects []*part
+			radio := e.boundRadio(n)
 			for _, a := range n.Attrs {
 				if a.Name == "autofocus" && a.Kind != AttrExpr {
 					// Browsers only autofocus on page load; den also focuses
@@ -623,6 +626,16 @@ func (e *emitter) bind(ts []*tnode) {
 				if pt.kind == partRef {
 					e.line("$setRef(%s, %s);", t.v, e.expr(pt.expr))
 					continue
+				}
+				switch {
+				case pt.kind == partBind && pt.bind.kind == bindSelect:
+					selects = append(selects, pt)
+					continue
+				case pt.kind == partBind:
+					e.bindJS(t.v, pt)
+					continue
+				case radio && asciiLower(a.Name) == "value":
+					continue // bindJS writes it
 				}
 				if pt.kind == partHandler {
 					body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
@@ -649,6 +662,9 @@ func (e *emitter) bind(ts []*tnode) {
 				}
 			}
 			e.bind(t.children)
+			for _, pt := range selects {
+				e.bindJS(t.v, pt)
+			}
 		case *If:
 			e.ifNode(t, n)
 		case *For:
@@ -1570,6 +1586,24 @@ func (e *emitter) call(x *ast.CallExpr) string {
 		}
 		recv := e.ck.recvName(fun)
 		obj := e.expr(fun.X)
+		if e.ck.isFieldMethod(fun) {
+			// A field is a signal, with its parse error pe, whether it
+			// was touched tc, its error er and its reset rs (stdlib.js).
+			switch fun.Sel.Name {
+			case "Get":
+				return obj + ".get()"
+			case "Set":
+				return obj + ".set(" + args() + ")"
+			case "Error":
+				return obj + ".er.get()"
+			case "Touched":
+				return obj + ".tc.get()"
+			case "Touch":
+				return obj + ".tc.set(true)"
+			case "Reset":
+				return obj + ".rs()"
+			}
+		}
 		switch recv + "." + fun.Sel.Name {
 		case "Signal.Get", "Computed.Get":
 			return obj + ".get()"
@@ -1683,6 +1717,8 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "({ e: null })"
 				case "use":
 					return e.use(x)
+				case "field":
+					return "$field(" + args() + ")"
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -1737,6 +1773,8 @@ var stdCalls = map[string]func(a []string) string{
 	"strconv.Atoi":       func(a []string) string { return "$atoi(" + a[0] + ")" },
 	"time.Now":           func(a []string) string { return "$tnow()" },
 	"time.Since":         func(a []string) string { return "$tsince(" + a[0] + ")" },
+	// A new JS Error each time: two are never ==, as in Go.
+	"errors.New": func(a []string) string { return "new Error(" + a[0] + ")" },
 }
 
 // decoder returns JS that turns the parsed JSON in x back into a den value

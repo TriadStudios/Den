@@ -227,6 +227,11 @@ func handlerTypes(ck *checked) string {
 			if pt.kind == partHandler {
 				seen[a.Name[2:]] = true
 			}
+			if pt.kind == partBind {
+				for _, t := range bindEvents(pt.bind) {
+					seen[t] = true
+				}
+			}
 		}
 	}
 	var types []string

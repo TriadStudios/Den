@@ -81,7 +81,7 @@ class Element extends Node {
   }
   get nodeType() { return 1; }
   get localName() { return this.tagName; }
-  shallow() { const e = new Element(this.tagName, this.namespaceURI); e.attributes = new Map(this.attributes); return e; }
+  shallow() { const e = make(this.tagName, this.namespaceURI); e.attributes = new Map(this.attributes); return e; }
   setAttribute(k, v) { this.attributes.set(k, String(v)); }
   getAttribute(k) { return this.attributes.get(k) ?? null; }
   removeAttribute(k) { this.attributes.delete(k); }
@@ -121,6 +121,25 @@ class Element extends Node {
     return ev;
   }
 }
+// <option> and <select>, for bind: an option's value is the one set, else
+// its value attribute, else its text. A select's value is its selected
+// option's: the first option until one is chosen. Setting it selects the
+// first option with that value, or none (value "") if no option has it.
+class Option extends Element {
+  constructor(t, ns) { super(t, ns); this.v = undefined; this.selected = false; }
+  get value() { return this.v ?? this.getAttribute("value") ?? this.textContent; }
+  set value(v) { this.v = String(v); }
+}
+class Select extends Element {
+  constructor(t, ns) { super(t, ns); this.none = false; }
+  get value() { const o = findAll("option", this); return (o.find((x) => x.selected) ?? (this.none ? null : o[0]))?.value ?? ""; }
+  set value(v) {
+    let hit = false;
+    for (const o of findAll("option", this)) o.selected = !hit && (hit = o.value === String(v));
+    this.none = !hit;
+  }
+}
+function make(t, ns) { return t === "option" ? new Option(t, ns) : t === "select" ? new Select(t, ns) : new Element(t, ns); }
 // An Animation as element.animate returns it: el, its keyframes k and
 // options o. finish() runs onfinish; a cancelled one never finishes.
 let anims = [];
@@ -133,8 +152,8 @@ const root = new Element("div", "html");
 const docListeners = {};
 globalThis.document = {
   addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
-  createElement: (t) => new Element(t, "html"),
-  createElementNS: (ns, t) => new Element(t, ns),
+  createElement: (t) => make(t, "html"),
+  createElementNS: (ns, t) => make(t, ns),
   createTextNode: (s) => new Text(s),
   createComment: (s) => new Comment(s),
   createDocumentFragment: () => new DocumentFragment(),
@@ -270,6 +289,10 @@ function visit(u) { history.pushState(null, "", u); traverse(0); }
 function key(el, k) { el.dispatch("keydown", { key: k }); }
 function check(el, on) { el.checked = on; el.dispatch("change"); }
 function input(el, value) { el.value = value; el.dispatch("input"); }
+// choose picks the option with value in a select; leave moves focus out of
+// el, which fires focusout.
+function choose(el, value) { el.value = value; el.dispatch("change"); }
+function leave(el) { el.blur(); el.dispatch("focusout"); }
 function tick() { return new Promise((r) => realTimeout(r, 0)); }
 // settle waits until the microtasks queued so far, and those they queue,
 // have run: den's flushes and onMount callbacks.

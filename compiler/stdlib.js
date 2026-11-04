@@ -353,3 +353,54 @@ function $tclock(t, f) { return t ? new Date(t.w)[f]() : 0; }
 // $tsecs is Duration.Seconds as Go computes it: whole seconds plus the
 // rest over 1e9, which can differ in the last bit from d / 1e9.
 function $tsecs(d) { const n = d % 1e9; return (d - n) / 1e9 + n / 1e9; }
+// Forms: field(initial, check) and bind={x}. A field is a signal with pe,
+// a signal of the parse error of its element's text (null when it parses);
+// tc, a signal of whether it was touched; er, a computed of its error (pe,
+// else check(value), check being null or a func); and rs, which resets it.
+// Its set clears pe, as the element then shows the value set.
+function $field(v, check) {
+  const s = $signal(v), set = s.set, pe = (s.pe = $signal(null)), tc = (s.tc = $signal(false));
+  s.set = (x) => { pe.set(null); set.call(s, x); };
+  s.er = $computed(() => pe.get() ?? (check ? check(s.get()) : null));
+  s.rs = () => { s.set(v); tc.set(false); };
+  return s;
+}
+// $bind binds the value of element el to x, a signal or a field: event t
+// sets x to the text read by p ($str, $atoi, $int(lo, hi) or $float, each
+// returning [value, error]). Text that does not read leaves x as it is,
+// and is a field's parse error until it reads. An effect writes x to the
+// element when x changes, or a field's parse error goes, unless the text
+// there already reads as x, as "1." and "01" do while they are typed. Each
+// bind helper returns x.
+function $bind(el, x, t, p) {
+  el.addEventListener(t, () => { const [v, err] = p(el.value); err ? x.pe?.set(err) : x.set(v); });
+  $effect(() => { const v = x.get(), [w, err] = p(el.value); if (!x.pe?.get() && (err || w !== v)) el.value = String(v); });
+  return x;
+}
+function $str(s) { return [s]; }
+// $int(lo, hi) reads an int as $atoi does, between lo and hi. (Not
+// "return (s) =>": the minifier would make that "returns=>".)
+function $int(lo, hi) {
+  return function (s) { const r = $atoi(s); return r[1] || (r[0] >= lo && r[0] <= hi) ? r : [0, new Error("strconv.Atoi: parsing " + JSON.stringify(s) + ": value out of range")]; };
+}
+// $float reads a decimal number, as strconv.ParseFloat does.
+function $float(s) {
+  const n = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(s) ? +s : NaN;
+  return isFinite(n) ? [n] : [0, new Error("strconv.ParseFloat: parsing " + JSON.stringify(s) + (n ? ": value out of range" : ": invalid syntax"))];
+}
+// $check binds a checkbox to a bool.
+function $check(el, x) {
+  el.addEventListener("change", () => x.set(el.checked));
+  $effect(() => { el.checked = x.get(); });
+  return x;
+}
+// $radio binds a radio to x == v, its value: a value, or a computed one
+// when it reads signals. Checking it sets x to v.
+function $radio(el, x, v) {
+  const f = () => (v?.get ? v.get() : v);
+  el.addEventListener("change", () => el.checked && x.set(f()));
+  $effect(() => { el.checked = x.get() === f(); });
+  return x;
+}
+// $touch marks field x touched when its element loses focus.
+function $touch(el, x) { el.addEventListener("focusout", () => x.tc.set(true)); }

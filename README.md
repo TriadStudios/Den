@@ -45,6 +45,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
+| `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.2 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -107,17 +108,18 @@ app.den:5:36: cannot use "hi" (untyped string constant) as int value in argument
 app.den:6:13: cannot render struct{A int}: only strings, numbers and bools can be shown in markup
 app.den:7:15: <Card> has no prop "titel"
 app.den:4:10: for in markup needs a key so rows can move instead of being rebuilt: {for _, x := range xs key x.ID { ... }}
-app.den:2:8: package "fmt" is not available in den; you can import strconv, strings, time
+app.den:2:8: package "fmt" is not available in den; you can import errors, strconv, strings, time
 ```
 
 Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list and `{key}` keys that are
 not strings, numbers or bools, calling a component as a function,
 children or slots a component does not take, route patterns that do
-not fit their params, transitions where they could never play, timers
-and cleanups outside a component, and design tokens that do not exist,
-hold a bad value or are used in the wrong kind of property
-(`app.den:9:30: $surface is a den.Color, but padding takes a length`).
+not fit their params, `bind` on an input that cannot hold its type,
+transitions where they could never play, timers and cleanups outside a
+component, and design tokens that do not exist, hold a bad value or are
+used in the wrong kind of property (`app.den:9:30: $surface is a
+den.Color, but padding takes a length`).
 
 ## Security by default
 
@@ -709,6 +711,99 @@ component Search() {
   names: a program that has its own at the top level keeps it. `ref` and
   `Ref` give way together.
 
+**Forms**
+
+```go
+import (
+    "errors"
+    "strings"
+)
+
+func checkEmail(s string) error {
+    if !strings.Contains(s, "@") {
+        return errors.New("enter an email address")
+    }
+    return nil
+}
+
+component Signup() {
+    name := signal("")
+    age := signal(18)
+    plan := signal("free")
+    email := field("", checkEmail)
+    <form onsubmit={e.PreventDefault(); email.Touch()}>
+        <input bind={name} />
+        <input type="number" bind={age} />
+        <label><input type="radio" value="free" bind={plan} /> Free</label>
+        <label><input type="radio" value="pro" bind={plan} /> Pro</label>
+        <input type="email" bind={email} />
+        {if email.Touched() && email.Error() != nil {
+            <p>{email.Error().Error()}</p>
+        }}
+    </form>
+}
+```
+
+- `bind={x}` keeps an `<input>`, `<textarea>` or `<select>` and `x`, a
+  `*Signal[T]` or a `*Field[T]`, in step both ways: what the user enters
+  sets `x`, and when `x` changes the element shows it. The element and
+  its `type` decide what is bound, and which `T` it takes:
+
+  | Element | `T` | Binds |
+  | --- | --- | --- |
+  | `<input>` with no type, or of type text, search, email, url, tel, password, hidden, color, date, time, datetime-local, month or week; `<textarea>` | a string | `value`, on `input` |
+  | `<input type="number">` or `"range"` | an int or a float | `value`, parsed, on `input` |
+  | `<input type="checkbox">` | a bool | `checked`, on `change` |
+  | `<input type="radio">` with `value={v}` of type `T`, or `value="..."` when `T` is a string | a string, a number or a bool | checked while `x == v`; checking it sets `x` to `v` |
+  | `<select>`, not `multiple` | a string, an int or a float | the chosen option's value, parsed, on `change` |
+
+  (`T` may be any type with one of these underlying types.)
+- Text becomes an int as `strconv.Atoi` reads it, and must fit the int's
+  kind (an `int8` takes -128 to 127, a `uint` no negative number); it
+  becomes a float as `strconv.ParseFloat` reads a decimal number (`1.5`,
+  `.5`, `1e3`). Text that does not parse, an empty number input included,
+  leaves a signal as it is. A field keeps it as its error
+  (`strconv.Atoi: parsing "abc": invalid syntax`) until the text parses.
+- When `x` changes, den writes it to the element, unless the element's
+  text already means `x`: typing `1.` or `01` into a number input is
+  never rewritten under the cursor.
+- The element keeps its own handlers: `oninput`, `onchange` and the rest
+  run as usual, after bind has set `x`, so they see the new value.
+- bind works in `{if}` branches, `{for}` rows and `{key}` blocks, and `x`
+  may belong to a row's item (`bind={row.Name}`). It is read once, when
+  the element is made, so it cannot depend on a signal. A leaving element
+  (motion) takes no more input, so its binds stop with its handlers.
+- A `<select>` is bound after its options are made, so options from a
+  `{for}` are chosen from the start. Options added or removed later do
+  not change `x`, and choosing one whose value does not parse as `T`
+  leaves `x` as it is.
+- `field(initial, check)` is a `*Field[T]`: a value with a check, a
+  `func(T) error` that may be nil. `Get` and `Set` work as on a signal.
+  `f.Error()` is the parse error of the element's text if there is one,
+  and otherwise `check(f.Get())`. `f.Touched()` is false until an element
+  bound to `f` loses focus, or `f.Touch()` is called. `f.Reset()` sets
+  `f` back to its initial value, untouched and with no parse error; `Set`
+  clears a parse error too, as the element then shows the value set.
+  `Get`, `Error` and `Touched` are reactive, like `.Get()` on a signal.
+- A form is plain composition: `ok := computed(name.Error() == nil &&
+  email.Error() == nil)`, shown with `{if}`, and `<form onsubmit={...}>`
+  with `e.PreventDefault()` to submit it.
+- These are compile errors: bind on a component, or on an element other
+  than `<input>`, `<textarea>` and `<select>`; on a `<select multiple>`;
+  on an `<input>` whose type is `type={...}`, file, button, submit,
+  reset, image or a type den does not know; `bind="..."` or `bind`
+  without a value; an `x` that is not a `*Signal` or a `*Field` (a
+  `*Computed` cannot be set), or that reads a signal
+  (`bind={rows.Get()[0].Name}`); a `T` that the element does not take
+  (`app.den:4:18: bind to an int needs type="number" or "range"`), or
+  that is not a string, a number or a bool; a radio without a value, or
+  with a value that is not a `T` by Go's rules (`value={1}` fits an
+  `int8`, `value={300}` does not); `value=` together with bind
+  (`checked=` on a checkbox or radio), since the two would fight; and a
+  `<textarea>` with bind and content of its own.
+- `field` and `Field` are ordinary names: a program that has either at
+  the top level has neither of den's, and using the other says so.
+
 **Go**
 - `type`, `const` and `func` declarations, including generic and variadic
   functions, named results and multiple return values.
@@ -723,7 +818,9 @@ component Search() {
 - `import "strings"`: `Contains`, `HasPrefix`, `HasSuffix`, `TrimSpace`,
   `TrimPrefix`, `TrimSuffix`, `ToLower`, `ToUpper`, `Split`, `Join`,
   `Repeat`, `ReplaceAll`, `Fields`. `import "strconv"`: `Itoa`, `Atoi`,
-  `FormatBool`. Errors support `err != nil` and `err.Error()`.
+  `FormatBool`. `import "errors"`: `New`. Errors support `err != nil`
+  and `err.Error()`, and as in Go an error is equal only to itself: two
+  `errors.New("x")` are never `==`.
 - `import "time"`: `Duration`, its constants `Nanosecond` to `Hour`,
   `d.Milliseconds()` and `d.Seconds()`; `Time`, `Now`, `Since`,
   `t.Sub(u)`, `t.UnixMilli()`, and `t.Hour()`, `t.Minute()` and

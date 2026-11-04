@@ -287,16 +287,18 @@ const (
 	partMotion // enter=, exit= and animate=
 	partKey    // {key x { ... }}
 	partRef    // ref={r}
+	partBind   // bind={x}
 )
 
 // part links a markup node to the Go AST that the type checker produced for it.
 type part struct {
 	kind  partKind
-	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor and partKey (key)
+	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor and partKey (key), partBind
 	stmts []ast.Stmt     // partHandler
 	args  []ast.Expr     // partComponent, in param order
 	slots [][]Node       // partComponent: markup for each den.Children param
 	rng   *ast.RangeStmt // partFor
+	bind  *bindInfo      // partBind
 }
 
 // checked is the result of type checking a whole program.
@@ -418,6 +420,8 @@ func check(files []*File) (*checked, error) {
 	for own[timeName] != "" {
 		timeName += "_"
 	}
+	// field returns a *Field[T], so the two come and go together.
+	fieldTaken := own["field"] != "" || own["Field"] != ""
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -472,6 +476,11 @@ func check(files []*File) (*checked, error) {
 	if own["use"] == "" {
 		src.WriteString(preludeUse)
 	}
+	// Forms: field and Field, and bind={x}.
+	if !fieldTaken {
+		src.WriteString(preludeField)
+	}
+	src.WriteString(preludeBind)
 	if denTaken {
 		src.WriteString(preludePlain)
 	} else {
@@ -605,6 +614,15 @@ next:
 		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && refBy != "" && (name == "ref" || name == "Ref") {
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[refBy])
 		}
+		// Forms: likewise for field and Field, and the value of bind=.
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && fieldTaken && (name == "field" || name == "Field") {
+			by := "field"
+			if own[by] == "" {
+				by = "Field"
+			}
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[by])
+		}
+		msg = strings.Replace(msg, " in call to denBind", " in bind=", 1)
 		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing denOpaqueRef cannot be compared", "a Ref cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing time.opaque cannot be compared", "den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0", 1)
@@ -1471,6 +1489,12 @@ func (g *gen) node(n Node) {
 				}
 				continue
 			}
+			if a.Name == "bind" {
+				if err := g.bindAttr(n, a); err != nil {
+					*g.errs = append(*g.errs, err)
+				}
+				continue
+			}
 			if a.Kind != AttrExpr {
 				continue
 			}
@@ -1829,6 +1853,8 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 				fn = "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
 			case a.Name == "ref":
 				fn = "denRef"
+			case a.Name == "bind":
+				fn = "denBind"
 			}
 			arg, rest, ok := pr.arg(a.Pos, stmts, fn)
 			if !ok {
@@ -1851,8 +1877,17 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 				if pr.ck.reactive(arg) {
 					pr.errAt(arg, "ref= cannot depend on a signal: den reads it once, when it makes the element")
 				}
+			case a.Name == "bind":
+				pr.cc.attrs[a] = &part{kind: partBind, expr: arg}
 			default:
 				pr.cc.attrs[a] = &part{kind: partAttr, expr: arg}
+			}
+		}
+		// bind is checked once the element's other attributes are paired:
+		// a radio's value too.
+		for _, a := range n.Attrs {
+			if pt := pr.cc.attrs[a]; pt != nil && pt.kind == partBind {
+				pt.bind = pr.bind(n, pt.expr)
 			}
 		}
 		return pr.inside(n.Children, stmts)
@@ -1949,6 +1984,11 @@ func (ck *checked) reactive(n ast.Node) bool {
 				found = recv == "Signal" || recv == "Computed"
 			case "Matches", "Params":
 				found = recv == "Route"
+			}
+			// A field's Get, Error and Touched read its signals.
+			switch fun.Sel.Name {
+			case "Get", "Error", "Touched":
+				found = found || ck.isFieldMethod(fun)
 			}
 		case *ast.Ident:
 			switch o := ck.info.Uses[fun].(type) {
@@ -2077,6 +2117,8 @@ func (g *gen) component(el *Element) *Error {
 			return bad(a.Pos, "%s works on HTML and SVG elements, not on components: <%s> has no prop %q", a.Name, el.Tag, a.Name)
 		case !ok && a.Name == "ref":
 			return bad(a.Pos, "ref works on HTML and SVG elements, not on components: <%s> has no prop %q; pass the *Ref as a prop and put ref= on an element inside", el.Tag, a.Name)
+		case !ok && a.Name == "bind":
+			return bad(a.Pos, "bind works on <input>, <textarea> and <select>, not on components: <%s> has no prop \"bind\"", el.Tag)
 		case !ok:
 			return bad(a.Pos, "<%s> has no prop %q", el.Tag, a.Name)
 		case p.Children && p.Name == "children":

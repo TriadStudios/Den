@@ -119,6 +119,180 @@ component App() {
 component App() {
     <ul>{for i, x := range []int{} key x { <li>{x}</li> }}</ul>
 }`, `app.den:3:14: declared and not used: i`},
+		// Forms: bind={x} and field.
+		{"bind on a component", `
+component Card(title string) {
+    <p>{title}</p>
+}
+component App() {
+    name := signal("")
+    <Card title="a" bind={name} />
+}`, `app.den:7:21: bind works on <input>, <textarea> and <select>, not on components: <Card> has no prop "bind"`},
+		{"bind on a div", `
+component App() {
+    name := signal("")
+    <div bind={name}></div>
+}`, `app.den:4:10: bind works on <input>, <textarea> and <select>, not on <div>`},
+		{"bind on a select multiple", `
+component App() {
+    plan := signal("a")
+    <select multiple bind={plan}><option>a</option></select>
+}`, `app.den:4:13: bind does not work on <select multiple>: it binds one value, and such a select has several`},
+		{"bind with a dynamic type", `
+component App() {
+    t := "text"
+    name := signal("")
+    <input type={t} bind={name} />
+}`, `app.den:5:12: bind needs the type of its <input> written out, as in type="number": with type={...} den cannot tell what bind should set`},
+		{"bind on a file input", `
+component App() {
+    name := signal("")
+    <input type="file" bind={name} />
+}`, `app.den:4:24: bind does not work on <input type="file">, which has no value to bind`},
+		{"bind on a submit input", `
+component App() {
+    name := signal("")
+    <input type="Submit" bind={name} />
+}`, `app.den:4:26: bind does not work on <input type="submit">, which has no value to bind`},
+		{"bind on an input of unknown type", `
+component App() {
+    name := signal("")
+    <input type="foo" bind={name} />
+}`, `app.den:4:23: bind does not know <input type="foo">; it works with text types, "number", "range", "checkbox" and "radio"`},
+		{"bind without braces", `
+component App() {
+    <input bind="name" />
+}`, `app.den:3:12: bind takes a signal or a field in braces, like bind={name}`},
+		{"bind with no value", `
+component App() {
+    <input bind />
+}`, `app.den:3:12: bind takes a signal or a field in braces, like bind={name}`},
+		{"bind an int to a text input", `
+component App() {
+    count := signal(0)
+    <input bind={count} />
+}`, `app.den:4:18: bind to an int needs type="number" or "range"`},
+		{"bind a bool to a text input", `
+component App() {
+    on := signal(false)
+    <input type="search" bind={on} />
+}`, `app.den:4:32: bind to a bool needs type="checkbox"`},
+		{"bind a string to a number input", `
+component App() {
+    name := signal("")
+    <input type="number" bind={name} />
+}`, `app.den:4:32: bind to a string needs a text <input> or a <textarea>, not type="number"`},
+		{"bind an int to a checkbox", `
+component App() {
+    count := signal(0)
+    <input type="checkbox" bind={count} />
+}`, `app.den:4:34: bind to an int needs type="number" or "range", not type="checkbox"`},
+		{"bind a float to a textarea", `
+component App() {
+    x := signal(1.5)
+    <textarea bind={x} />
+}`, `app.den:4:21: bind to a float64 needs type="number" or "range", not a <textarea>`},
+		{"bind a bool to a select", `
+component App() {
+    on := signal(false)
+    <select bind={on}><option>a</option></select>
+}`, `app.den:4:19: bind to a bool needs type="checkbox", not a <select>`},
+		{"bind a struct", `
+type P struct{ A int }
+component App() {
+    p := signal(P{1})
+    <input bind={p} />
+}`, `app.den:5:18: bind works with strings, numbers and bools, not P`},
+		{"bind a radio without a value", `
+component App() {
+    plan := signal("a")
+    <input type="radio" bind={plan} />
+}`, `app.den:4:25: a radio with bind needs a value, the one bind sets when it is checked: value="pro" or value={v}`},
+		{"bind a radio with a string value to an int", `
+component App() {
+    n := signal(1)
+    <input type="radio" value="1" bind={n} />
+}`, `app.den:4:41: a radio bound to an int needs value={...} of type int: value="1" is a string`},
+		{"bind a radio with a value of another type", `
+component App() {
+    n := signal(1)
+    <input type="radio" value={"one"} bind={n} />
+}`, `app.den:4:32: cannot use "one" (untyped string constant) as int value in value=, the value of a radio bound to an int`},
+		{"bind a radio with a value that does not fit", `
+component App() {
+    n := signal(int8(1))
+    <input type="radio" value={300} bind={n} />
+}`, `app.den:4:32: cannot use 300 (untyped int constant) as int8 value in value= (overflows), the value of a radio bound to an int8`},
+		{"bind a radio with a typed value of another type", `
+type Plan string
+const Pro Plan = "pro"
+component App() {
+    plan := signal("free")
+    <input type="radio" value={Pro} bind={plan} />
+}`, `app.den:6:32: cannot use Pro (constant "pro" of string type Plan) as string value in value=, the value of a radio bound to a string`},
+		{"bind with value", `
+component App() {
+    name := signal("")
+    <input value={name.Get()} bind={name} />
+}`, `app.den:4:12: value and bind would both set value: bind sets it, so leave value out`},
+		{"bind with checked", `
+component App() {
+    on := signal(false)
+    <input type="checkbox" checked bind={on} />
+}`, `app.den:4:28: checked and bind would both set checked: bind sets it, so leave checked out`},
+		{"bind a radio with checked", `
+component App() {
+    plan := signal("a")
+    <input type="radio" value="a" checked={true} bind={plan} />
+}`, `app.den:4:35: checked and bind would both set checked: bind sets it, so leave checked out`},
+		{"bind a textarea with content", `
+component App() {
+    name := signal("")
+    <textarea bind={name}>hi</textarea>
+}`, `app.den:4:15: a <textarea> with bind shows the value of bind, so it cannot have content of its own`},
+		{"bind a computed", `
+component App() {
+    n := signal(1)
+    c := computed(n.Get() * 2)
+    <input type="number" bind={c} />
+}`, `app.den:5:32: bind cannot set a *Computed[int]: it takes a *Signal or a *Field`},
+		{"bind a value", `
+component App() {
+    name := signal("")
+    <input bind={name.Get()} />
+}`, `app.den:4:18: bind takes a *Signal or a *Field, like bind={name}, not string`},
+		{"bind nil", `
+component App() {
+    <input bind={nil} />
+}`, `app.den:3:18: bind takes a *Signal or a *Field, like bind={name}, not untyped nil`},
+		{"bind that reads a signal", `
+type Row struct{ Name *Signal[string] }
+component App() {
+    rows := signal([]Row{{signal("a")}})
+    <input bind={rows.Get()[0].Name} />
+}`, `app.den:5:18: bind cannot depend on a signal: den reads it once, when it makes the element, and binds that`},
+		{"bind two values", `
+func two() (*Signal[int], int) { return nil, 0 }
+component App() {
+    <input type="number" bind={two()} />
+}`, `app.den:4:32: too many arguments in bind=`},
+		{"field when the program has its own Field", `
+type Field struct{ A int }
+component App() {
+    f := field("", nil)
+    <p>{f.A}</p>
+}`, `app.den:4:10: field is not available because this program declares its own Field; rename it`},
+		{"Field when the program has its own field", `
+func field() int { return 1 }
+component App(f *Field[int]) {
+    <p>{field()}</p>
+}`, `app.den:3:18: Field is not available because this program declares its own field; rename it`},
+		{"errors.Is", `
+import "errors"
+func same(a, b error) bool { return errors.Is(a, b) }
+component App() {
+    <p>{same(nil, nil)}</p>
+}`, `app.den:3:44: undefined: errors.Is`},
 		{"if needs bool", `
 component App() {
     <p>{if 1 { yes }}</p>
@@ -138,7 +312,7 @@ component App() {
 import "fmt"
 component App() {
     <p>x</p>
-}`, `app.den:2:8: package "fmt" is not available in den; you can import strconv, strings, time`},
+}`, `app.den:2:8: package "fmt" is not available in den; you can import errors, strconv, strings, time`},
 		{"unused import", `
 import (
     "strings"
@@ -1841,6 +2015,17 @@ component App() {
 component Kid(n int) {
     <p>{n}</p>
 }`, `app.den:5:29: after cannot be called in a prop: den evaluates props each time it builds the component`},
+		// So is a bind that gen rejects.
+		{"bind on a div using a variable", `
+component App() {
+    name := signal("")
+    <div bind={name}></div>
+}`, `app.den:4:10: bind works on <input>, <textarea> and <select>, not on <div>`},
+		{"bind on a radio with no value using a variable", `
+component App() {
+    plan := signal("a")
+    <input type="radio" bind={plan} />
+}`, `app.den:4:25: a radio with bind needs a value, the one bind sets when it is checked: value="pro" or value={v}`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)

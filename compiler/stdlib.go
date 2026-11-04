@@ -69,6 +69,10 @@ func (t Time) Hour() int           { return 0 }
 func (t Time) Minute() int         { return 0 }
 func (t Time) Second() int         { return 0 }
 `,
+	"errors": `package errors
+
+func New(text string) error { return nil }
+`,
 }
 
 // isTime reports whether t is the Time of den's package time.
