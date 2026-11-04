@@ -1,0 +1,192 @@
+// den's own site, written in den: pages by URL path, a typed route param,
+// page transitions, a theme kept in localStorage and live demos, in under
+// 10 KB of JavaScript. Serve it from the site root, with index.html for
+// unknown paths (den dev does both).
+
+type DocParams struct {
+	Slug string
+}
+
+// pick is a conditional expression.
+func pick(on bool, yes string, no string) string {
+	if on {
+		return yes
+	}
+	return no
+}
+
+// nextTheme cycles system, light and dark.
+func nextTheme(t string) string {
+	if t == "system" {
+		return "light"
+	} else if t == "light" {
+		return "dark"
+	}
+	return "system"
+}
+
+// themeIcon is the icon for theme t: a sun, a moon, or a screen for
+// "system".
+func themeIcon(t string) string {
+	if t == "light" {
+		return "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"
+	} else if t == "dark" {
+		return "M20 14A8 8 0 1 1 10 4a6 6 0 0 0 10 10z"
+	}
+	return "M3 4h18v12H3zm5 17h8m-4-5v5"
+}
+
+// page is the index of the first route that matches, or len(ms): not
+// found.
+func page(ms ...bool) int {
+	for i, m := range ms {
+		if m {
+			return i
+		}
+	}
+	return len(ms)
+}
+
+component App() {
+	at := path()
+	home := route[struct{}]("/")
+	feat := route[struct{}]("/features")
+	perf := route[struct{}]("/performance")
+	docs := route[struct{}]("/docs")
+	doc := route[DocParams]("/docs/:slug")
+	why := route[struct{}]("/why")
+	p := computed(page(home.Matches(), feat.Matches(), perf.Matches(), docs.Matches() || doc.Matches(), why.Matches()))
+	d := computed(docPage(doc.Params().Slug))
+	// flip changes with every path, so the {if} below swaps in a new page,
+	// which enters while the old one leaves. ({key at.Get() {...}} does the
+	// same, but ships the keyed list code for its list of one.)
+	last, on := "", false
+	flip := computed(func() bool {
+		if at.Get() != last {
+			last, on = at.Get(), !on
+		}
+		return on
+	}())
+	theme := stored("den-theme", "system")
+	// The menu is open while menu holds the path it was opened at, so
+	// any navigation, back and forward too, closes it.
+	menu := signal("")
+	open := computed(menu.Get() == at.Get())
+	<div class={"site " + theme.Get()}>
+		<header>
+			<div class="wrap">
+				<a class="brand" href="/"><Logo />den</a>
+				<nav class={pick(open.Get(), "open", "")} onclick={menu.Set("")}>
+					<a href="/features" aria-current={pick(p.Get() == 1, "page", "")}>Features</a>
+					<a href="/performance" aria-current={pick(p.Get() == 2, "page", "")}>
+						Performance
+					</a>
+					<a href="/docs/install" aria-current={pick(p.Get() == 3, "page", "")}>Docs</a>
+					<a href="/why" aria-current={pick(p.Get() == 4, "page", "")}>Why den</a>
+					<a href="https://github.com/TriadStudios/Den">GitHub</a>
+				</nav>
+				<button
+					class="icon"
+					onclick={theme.Set(nextTheme(theme.Get()))}
+					aria-label={"Theme: " + theme.Get()}>
+					<svg viewBox="0 0 24 24"><path d={themeIcon(theme.Get())} /></svg>
+				</button>
+				<button
+					class="icon menu"
+					aria-expanded={open.Get()}
+					aria-label="Menu"
+					onclick={menu.Set(pick(open.Get(), "", at.Get()))}>
+					<svg viewBox="0 0 24 24">
+						<path
+							d={pick(open.Get(), "M6 6l12 12M18 6 6 18", "M4 7h16M4 12h16M4 17h16")} />
+					</svg>
+				</button>
+			</div>
+		</header>
+		<main>
+			{if flip.Get() {
+				<div class="page" enter={fade().For(Slow)} exit={fade().For(Fast)}>
+					<Page p={p.Get()} d={d.Get()} doc={doc} />
+				</div>
+			} else {
+				<div class="page" enter={fade().For(Slow)} exit={fade().For(Fast)}>
+					<Page p={p.Get()} d={d.Get()} doc={doc} />
+				</div>
+			}}
+		</main>
+		<footer class="wrap">
+			<a class="brand" href="/"><Logo />den</a>
+			<p>This site is written in den · Apache License 2.0</p>
+			<a href="https://github.com/TriadStudios/Den">GitHub</a>
+		</footer>
+	</div>
+}
+
+// Page is page p (d: the guide page), built once for its path.
+component Page(p int, d int, doc *Route[DocParams]) {
+	// Only the not found page is made here, so only it gets these rules.
+	style {
+		section {
+			padding: 12vh 0;
+			text-align: center;
+		}
+		h1 {
+			color: $ink;
+		}
+		h1::before {
+			content: "404";
+			display: block;
+			margin-bottom: 8px;
+			color: $accent;
+			font: 600 14px $mono;
+			letter-spacing: 0.2em;
+		}
+		p {
+			margin-inline: auto;
+			color: $muted;
+		}
+		a {
+			color: $accent;
+			text-decoration-color: $line;
+		}
+	}
+	<div>
+		{if p == 0 {
+			<Home />
+		} else if p == 1 {
+			<Features />
+		} else if p == 2 {
+			<Perf />
+		} else if p == 3 {
+			<Docs doc={doc} i={d} />
+		} else if p == 4 {
+			<Why />
+		} else {
+			<section>
+				<h1>Nothing lives here</h1>
+				<p class="lede">No page at {path().Get()}. <a href="/">Go home.</a></p>
+			</section>
+		}}
+	</div>
+}
+
+component Logo() {
+	style {
+		svg {
+			width: 28px;
+			height: 28px;
+			border-radius: 8px;
+			background: linear-gradient(135deg, #06b6d4, #7c3aed);
+			flex: none;
+		}
+		path {
+			fill: none;
+			stroke: $surface;
+			stroke-width: 3.5;
+			stroke-linecap: round;
+		}
+	}
+	<svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+		<path d="M10 25V16a6 6 0 0 1 12 0v9" />
+	</svg>
+}

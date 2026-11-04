@@ -1,0 +1,54 @@
+// The features page: a section per feature, two of them with live demos.
+
+type Topic struct {
+	Name string
+	Text string
+	Code string
+}
+
+func topics() []Topic {
+	return []Topic{
+		{"Signals", "Only what reads a signal updates. stored keeps one in localStorage.", `n := signal(0)
+double := computed(n.Get() * 2)`},
+		{"Keyed lists", "Rows move instead of being rebuilt, and can glide.", `{for _, t := range todos.Get() key t.ID {
+	<li animate={layout()}>{t.Title}</li>
+}}`},
+		{"Components", "Props are Go parameters, checked at every use.", `component Card(title string, children den.Children) {
+	<section><h2>{title}</h2>{children}</section>
+}`},
+		{"Routing", "route[T] fills a struct from the URL path, checked at build time.", `doc := route[DocParams]("/docs/:slug")
+<h1>{doc.Params().Slug}</h1>`},
+		{"Scoped styles", "Scoped at build time, with typed design tokens.", `style {
+	.badge { color: $accent; }
+}`},
+		{"Motion", "Transitions and springs on the Web Animations API.", `<p enter={slide("up")} exit={scale()}>Hi</p>
+x := spring(target.Get())`},
+		{"Security", "Strict CSP and Trusted Types. Raw HTML fails the build.", `<div innerHTML={s}></div> // not allowed
+<a href="javascript:x">x</a> // unsafe URL`},
+		{"den fmt", "One layout for .den files, like gofmt.", `den fmt -w .  # rewrite in place
+den fmt -d .  # show a diff`},
+	}
+}
+
+component Features() {
+	<section>
+		<header>
+			<h1>Features</h1>
+			<p class="lede">All of it compiles to plain DOM code, checked by Go.</p>
+		</header>
+		{for i, t := range topics() key i {
+			<div class="topic">
+				<div>
+					<h2>{t.Name}</h2>
+					<p>{t.Text}</p>
+					{if i == 0 {
+						<Greeter />
+					} else if i == 5 {
+						<Toggle />
+					}}
+				</div>
+				<Code name={pick(i == 7, "terminal", "app.den")} src={t.Code} />
+			</div>
+		}}
+	</section>
+}

@@ -1,0 +1,26 @@
+// Design tokens: typed constants that the style blocks use as $ink,
+// $radius-lg and so on. den checks each value when it builds and writes
+// the ones the style blocks use to den.css as custom properties
+// (--ink). style.css, loaded after it, uses them for the whole page and
+// gives the colors other values for the dark theme.
+
+const (
+	Ink     den.Color = "#0b1020"
+	Muted   den.Color = "#5a6276"
+	Line    den.Color = "#e3e6ee"
+	Surface den.Color = "#ffffff"
+	Accent  den.Color = "#0e7490"
+
+	CodeBg    den.Color = "#0d111b"
+	CodeLine  den.Color = "#232a3a"
+	CodeInk   den.Color = "#dbe2f0"
+	CodeMuted den.Color = "#7d879c"
+
+	RadiusLg den.Length = "16px"
+
+	Fast den.Duration = "150ms"
+	Slow den.Duration = "300ms"
+
+	Shadow den.Token = "0 1px 2px rgb(15 23 42 / 6%), 0 12px 32px -12px rgb(15 23 42 / 22%)"
+	Mono   den.Font  = "ui-monospace, \"Cascadia Code\", \"SF Mono\", Menlo, Consolas, monospace"
+)
