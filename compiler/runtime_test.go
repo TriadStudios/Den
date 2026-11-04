@@ -2187,6 +2187,100 @@ log(html());`)
 		`<div><button>shrink</button><p>a</p></div>`)
 }
 
+// A key that reads no signal is evaluated as Go evaluates it, though den
+// never needs its value: a {key} value once, before its content, even
+// with no content, and a {for} key once per row, before the row. So what
+// it does happens once and in Go's order. Before, such keys were dropped.
+func TestRunStaticKeyEffects(t *testing.T) {
+	got := runApp(t, `
+func id(n int) int { return n }
+
+func bump(xs []int) int {
+    xs[0]++
+    return xs[0]
+}
+
+component App() {
+    n := 0
+    xs := []int{0}
+    <div>
+        {key id(func() int { n++; return n }()) {}}
+        {key id(func() int { n++; return n }()) { <p>{n}</p> }}
+        {key bump(xs) { <i>{xs[0]}</i> }}
+        <ul>{for i := range 3 key id(func() int { n += 10; return i }()) { <li>{n}</li> }}</ul>
+        <b>{n} {xs[0]}</b>
+    </div>
+}`, `log(html());`)
+	expectLines(t, got, `<div><p>2</p><i>1</i><ul><li>12</li><li>22</li><li>32</li></ul><b>32 1</b></div>`)
+}
+
+// A key that reads no signal and panics in Go throws in den: the branch
+// around it is not shown.
+func TestRunStaticKeyPanics(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    show := signal(false)
+    xs := []string{"a"}
+    i := 1
+    <div>
+        <button onclick={show.Set(true)}>show</button>
+        {if show.Get() {
+            {key xs[i] { <p>{xs[0]}</p> }}
+        }}
+        {if show.Get() {
+            <ul>{for j := range 2 key xs[j] { <li>{j}</li> }}</ul>
+        }}
+    </div>
+}`, `
+log(html());
+click(find("button")); await tick();
+log(html());`)
+	const oob = `reportError: den: index out of range`
+	expectLines(t, got,
+		`<div><button>show</button></div>`,
+		oob, oob,
+		`<div><button>show</button></div>`)
+}
+
+// Key values with brackets in them: index expressions, calls with
+// composite literals, and parentheses, in {key} blocks that read no signal
+// and in ones that do, and in {for} keys over lists that read no signal.
+// A reactive key block is rebuilt only when its value changes.
+func TestRunKeyBlockBrackets(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    m := map[string]int{"a": 1, "b": 2}
+    k := "a"
+    ks := []string{"a", "a", "b"}
+    xs := []string{"x", "y"}
+    s := signal(0)
+    <div>
+        <button onclick={s.Set(s.Get() + 1)}>s</button>
+        {key m[k] { <p>{m[k]}</p> }}
+        {key len([]int{1, 2}) { <p>{len(xs)}</p> }}
+        {key xs[len(m)-1] + "!" { <p>{xs[1]}</p> }}
+        {key m[ks[s.Get()]] { <i>{s.Get()}</i> }}
+        {key len([]int{1, s.Get()}) > s.Get() { <u>{s.Get()}</u> }}
+        <ul>
+            {for i := range 2 key xs[i] { <li>{xs[i]}</li> }}
+            {for i := range 2 key (xs[i]) { <li>{i}</li> }}
+            {for _, x := range []string{"p", "q"} key m[map[string]string{"p": "a", "q": "b"}[x]] { <li>{x}</li> }}
+        </ul>
+    </div>
+}`, `
+const show = () => log(html().replace("<button>s</button>", ""), find("i").mark ?? "new", find("u").mark ?? "new");
+show();
+for (let i = 0; i < 2; i++) {
+    find("i").mark = "kept"; find("u").mark = "kept";
+    click(find("button")); await tick(); show();
+}`)
+	const list = `<ul><li>x</li><li>y</li><li>0</li><li>1</li><li>p</li><li>q</li></ul>`
+	expectLines(t, got,
+		`<div><p>1</p><p>2</p><p>y</p><i>0</i><u>0</u>`+list+`</div> new new`,
+		`<div><p>1</p><p>2</p><p>y</p><i>1</i><u>1</u>`+list+`</div> kept kept`,
+		`<div><p>1</p><p>2</p><p>y</p><i>2</i><u>2</u>`+list+`</div> new new`)
+}
+
 // With enter and exit transitions, a key block's old content leaves while
 // the new content enters, as a row does when its key goes and another
 // comes; nothing plays when the page is built. A key that comes back while

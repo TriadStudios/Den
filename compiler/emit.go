@@ -729,7 +729,9 @@ func (e *emitter) ifNode(t *tnode, n *If) {
 }
 
 // forNode emits {for}. A list that reads no signal compiles to a plain JS
-// loop; otherwise $for keeps the rows between its anchors in sync by key.
+// loop, whose rows are never matched by key: each row evaluates its key
+// once, before the row is built, as Go does (see staticKey), and drops the
+// value. Otherwise $for keeps the rows between its anchors in sync by key.
 func (e *emitter) forNode(t *tnode, n *For) {
 	pt := e.cc.parts[n]
 	rs := pt.rng
@@ -772,7 +774,10 @@ func (e *emitter) forNode(t *tnode, n *For) {
 		default:
 			e.line("for (const %s of %s) {", or(v, e.name("$v")), l)
 		}
-		e.indented(func() { e.line("%s.before(%s);", t.v, e.instantiate(n.Body, t.svg)) })
+		e.indented(func() {
+			e.staticKey(pt.expr)
+			e.line("%s.before(%s);", t.v, e.instantiate(n.Body, t.svg))
+		})
 		e.line("}")
 		return
 	}
@@ -827,13 +832,15 @@ func (e *emitter) forNode(t *tnode, n *For) {
 
 // keyNode emits {key}. A key that reads no signal never changes, so the
 // content is built once, in place of its placeholder, as a {for} over a
-// list that reads no signal is (its keys are not evaluated either).
-// Otherwise the content is the one row of a keyed list whose item and key
-// are the key's value: $for keeps the row while the value stays the same
-// and builds a new one, freeing the old, when it changes. With transitions,
+// list that reads no signal is: the key is evaluated once, before the
+// content, as Go does, and its value dropped (see staticKey). Otherwise
+// the content is the one row of a keyed list whose item and key are the
+// key's value: $for keeps the row while the value stays the same and
+// builds a new one, freeing the old, when it changes. With transitions,
 // $form plays them as for any row that leaves and one that comes.
 func (e *emitter) keyNode(t *tnode, n *Key) {
 	if t.end == nil {
+		e.staticKey(e.cc.parts[n].expr)
 		if len(n.Body) > 0 {
 			e.line("%s.replaceWith(%s);", t.v, e.instantiate(n.Body, t.svg))
 		}
@@ -844,6 +851,44 @@ func (e *emitter) keyNode(t *tnode, n *Key) {
 		fn, e.motion = "$form", true
 	}
 	e.line("%s(%s, %s, () => [%s], (k) => k, %s, false);", fn, t.v, t.end.v, e.expr(e.cc.parts[n].expr), e.block("", n.Body, t.svg))
+}
+
+// staticKey emits a {key} value, or a row's key in a {for} over a list
+// that reads no signal, where den never needs its value. It is checked
+// like any other Go in markup, and unless it is pureKey it is evaluated as
+// a statement, as Go evaluates it, for what it does: it may change
+// variables, or panic. The statement has the form of a Go expression
+// statement's, which is safe for anything expr returns: object literals
+// and closures come in parentheses, and Go names that JS reads as
+// keywords are renamed.
+func (e *emitter) staticKey(x ast.Expr) {
+	js := e.expr(x)
+	if !e.pureKey(x) {
+		e.line("%s;", js)
+	}
+}
+
+// pureKey reports whether evaluating the key x can do nothing at all, so
+// that leaving it out changes nothing: a name, a constant, or a field of
+// such a key that is reached without going through a pointer, in any
+// parentheses. Anything else may do something or panic in Go, even where
+// it calls nothing: an index out of range, a nil pointer, an integer
+// division by zero. For a pure key, expr makes up no names and uses no
+// runtime helper, so checking it with expr changes no output.
+func (e *emitter) pureKey(x ast.Expr) bool {
+	if tv, ok := e.ck.info.Types[x]; ok && tv.Value != nil {
+		return true
+	}
+	switch x := x.(type) {
+	case *ast.Ident, *ast.BasicLit:
+		return true
+	case *ast.ParenExpr:
+		return e.pureKey(x.X)
+	case *ast.SelectorExpr:
+		sel := e.ck.info.Selections[x]
+		return sel != nil && sel.Kind() == types.FieldVal && !sel.Indirect() && e.pureKey(x.X)
+	}
+	return false
 }
 
 // loopVar returns the JS name of a range variable, or "" if there is none.
