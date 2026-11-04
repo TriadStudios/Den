@@ -324,6 +324,79 @@ log(show());`)
 		`app:a app:b app:c box:a box:b box:c | box:c`)
 }
 
+// Context and lifecycle together. A component's lifecycle record ($c) is
+// its own and lexical, while slot markup sees the context of the component
+// rendering it: here App's handler in markup that Rows renders in each of
+// its rows calls after() on App's record and use reads Rows' context. Rows
+// provides and calls onMount, whose callback reads what Rows provided, and
+// each Child reads the provided store inside its onMount callback.
+func TestRunContextLifecycle(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+type Store struct {
+    Log *Signal[string]
+}
+
+type Name struct{ S string }
+
+component Rows(n int, children den.Children) {
+    provide(Name{"rows"})
+    s := use[Store]()
+    onMount(func() { s.Log.Set(s.Log.Get() + "rows:" + use[Name]().S + " ") })
+    <ul>{for i := range n key i { <li>{children}</li> }}</ul>
+}
+
+component Child() {
+    onMount(func() {
+        s := use[Store]()
+        s.Log.Set(s.Log.Get() + "child:" + use[Name]().S + " ")
+    })
+    <i>c</i>
+}
+
+component App() {
+    store := Store{Log: signal("")}
+    provide(store)
+    provide(Name{"app"})
+    show := signal(true)
+    onMount(func() {
+        after(10*time.Millisecond, func() { store.Log.Set(store.Log.Get() + "later:" + use[Name]().S + " ") })
+    })
+    <main>
+        <p>{store.Log.Get()}</p>
+        <Child />
+        {if show.Get() {
+            <Rows n={2}>
+                <button onclick={after(5*time.Millisecond, func() { store.Log.Set(store.Log.Get() + "click:" + use[Name]().S + " ") })}>{use[Name]().S}</button>
+                <Child />
+            </Rows>
+        }}
+        <s onclick={show.Set(!show.Get())}>toggle</s>
+    </main>
+}`, `fakeTimers();`, `
+const p = () => find("p").textContent;
+log("built:", JSON.stringify(p()), findAll("button").map((b) => b.textContent).join(" "));
+await settle();
+log("mounted:", p());
+await advance(10);
+log("at 10ms:", p());
+click(findAll("button")[1]); await settle();
+log("clicked:", p(), pending());
+await advance(5);
+log("at 15ms:", p(), pending());
+click(find("s")); await settle();
+click(find("s")); await settle();
+log("rows again:", p());`)
+	expectLines(t, got,
+		`built: "" rows rows`,
+		`mounted: child:app rows:rows child:rows child:rows `,
+		`at 10ms: child:app rows:rows child:rows child:rows later:app `,
+		`clicked: child:app rows:rows child:rows child:rows later:app  1`,
+		`at 15ms: child:app rows:rows child:rows child:rows later:app click:rows  0`,
+		`rows again: child:app rows:rows child:rows child:rows later:app click:rows rows:rows child:rows child:rows`)
+}
+
 // With no declarations before them, components are written to the
 // prelude's file by gen; context still finds them. A type declared in a
 // component is a type of its own, and a {key} whose value reads no signal
