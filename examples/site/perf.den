@@ -36,12 +36,15 @@ component Perf() {
 		<header>
 			<h1>As fast as hand-written JavaScript</h1>
 			<p class="lede">
-				On the js-framework-benchmark operations den runs at 1.00× the time of vanilla JS.
+				1.00× the time of vanilla JS on the benchmark's operations, at 1.15× its memory.
 			</p>
 		</header>
 		{for _, c := range charts() key c.Title {
 			<div class="chart">
 				<h2>{c.Title}</h2>
+				{if c.Mark > 0 {
+					<small>vanilla JS, 1.00</small>
+				}}
 				{for _, b := range c.Rows key b.Label {
 					<p>
 						{b.Label}
@@ -59,7 +62,7 @@ component Perf() {
 			</div>
 		}}
 		<p class="note">
-			Medians of 15 runs in Chromium against hand-optimized vanilla JS. Memory after 1,000 rows: 2.24 MB against 1.94 MB.
+			js-framework-benchmark's keyed operations, reimplemented locally in bench/ (not the official harness): medians of 15 runs in Chromium. Memory after 1,000 rows: 2.24 MB against 1.94 MB.
 		</p>
 		<a href="https://github.com/TriadStudios/Den/tree/main/bench">How it is measured →</a>
 	</section>

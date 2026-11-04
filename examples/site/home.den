@@ -19,10 +19,10 @@ const counterSrc = `component Counter() {
 
 func cards() []Card {
 	return []Card{
-		{"Checked by Go", "go/types checks every expression in the markup."},
+		{"Checked by Go", "go/types checks every expression."},
 		{"No virtual DOM", "Only what reads a signal updates."},
 		{"Secure by default", "Strict CSP, Trusted Types, no innerHTML."},
-		{"Typed routes", "URL params fill a struct, checked at build time."},
+		{"Typed routes", "URL params fill a typed struct."},
 		{"Scoped styles", "Scoped at build time, with typed tokens."},
 		{"Motion built in", "Enter, exit, layout and springs."},
 	}

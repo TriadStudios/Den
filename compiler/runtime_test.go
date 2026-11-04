@@ -1293,8 +1293,11 @@ const button = (label) => findAll("button").find((b) => b.getAttribute("aria-lab
 // and how many pages main holds.
 const state = () => "[" + findAll("a", header()).filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.textContent).join("") +
   "] " + findAll("h1", pages().at(-1)).map((h) => h.textContent).join("") + " | " + location.pathname + " | " + pages().length;
-// settle ends the transitions and returns the state before and after.
-const settle = async () => { await tick(); const s = state() + " " + pages().map((p) => p.inert).join(","); finishAll(); return s + " -> " + state(); };
+// settle ends the transitions and returns the state before and after;
+// before, each page shows whether it is inert and the duration of the
+// transition it is playing (exit 150ms, enter 300ms) or "-".
+const playing = (p) => anims.find((a) => a.el === p && a.playState === "running")?.o.duration ?? "-";
+const settle = async () => { await tick(); const s = state() + " " + pages().map((p) => p.inert + ":" + playing(p)).join(","); finishAll(); return s + " -> " + state(); };
 const go = (text) => { find("a", text).dispatch("click"); return settle(); };
 const visitAndSettle = (u) => { visit(u); return settle(); };
 const chips = () => findAll("p").filter((p) => p.getAttribute("class") === "chip").map((p) => p.textContent + (p.inert ? " (leaving)" : "")).join(", ");
@@ -1333,22 +1336,22 @@ back(); log(await settle(), "|", menu());`)
 	expectLines(t, got,
 		`[] Go-syntax UI, compiled to tiny JavaScript | / | 1`,
 		`−1+Doubled: 2`,
-		`[Features] Features | /features | 2 true,false -> [Features] Features | /features | 1`,
+		`[Features] Features | /features | 2 true:150,false:300 -> [Features] Features | /features | 1`,
 		`Hello, Ada! Reload: it stays. "Ada"`,
 		`Scaled in, slides out`,
 		`Scaled in, slides out (leaving), Slid in, scales out`,
 		`Slid in, scales out`,
-		`[Performance] As fast as hand-written JavaScript | /performance | 2 true,false -> [Performance] As fast as hand-written JavaScript | /performance | 1`,
+		`[Performance] As fast as hand-written JavaScript | /performance | 2 true:150,false:300 -> [Performance] As fast as hand-written JavaScript | /performance | 1`,
 		`54% 77% 96% 79% 73% 83% 78% 74% 68% 75% 84% 77%`,
-		`[Docs] Install | /docs/install | 2 true,false -> [Docs] Install | /docs/install | 1`,
-		`[Docs] First component | /docs/first-component | 2 true,false -> [Docs] First component | /docs/first-component | 1`,
+		`[Docs] Install | /docs/install | 2 true:150,false:300 -> [Docs] Install | /docs/install | 1`,
+		`[Docs] First component | /docs/first-component | 2 true:150,false:300 -> [Docs] First component | /docs/first-component | 1`,
 		`First component | ← Install /docs/install, Routing → /docs/routing`,
-		`[Docs] No such page | /docs/nope | 2 true,false -> [Docs] No such page | /docs/nope | 1 | The guide has no page “nope”.`,
-		`[Docs] No such page | /docs/other | 2 true,false -> [Docs] No such page | /docs/other | 1 | The guide has no page “other”.`,
-		`[Docs] Install | /docs | 2 true,false -> [Docs] Install | /docs | 1`,
-		`[Why den] For Go developers who ship to the browser | /why | 2 true,false -> [Why den] For Go developers who ship to the browser | /why | 1 | 7 You writeGoJSXSvelte filesJSX`,
-		`[] Nothing lives here | /nowhere | 2 true,false -> [] Nothing lives here | /nowhere | 1 | No page at /nowhere. Go home.`,
-		`[Why den] For Go developers who ship to the browser | /why | 2 true,false -> [Why den] For Go developers who ship to the browser | /why | 1`,
+		`[Docs] No such page | /docs/nope | 2 true:150,false:300 -> [Docs] No such page | /docs/nope | 1 | The guide has no page “nope”.`,
+		`[Docs] No such page | /docs/other | 2 true:150,false:300 -> [Docs] No such page | /docs/other | 1 | The guide has no page “other”.`,
+		`[Docs] Install | /docs | 2 true:150,false:300 -> [Docs] Install | /docs | 1`,
+		`[Why den] For Go developers who ship to the browser | /why | 2 true:150,false:300 -> [Why den] For Go developers who ship to the browser | /why | 1 | 7 You writeGoJSXSvelte filesJSX`,
+		`[] Nothing lives here | /nowhere | 2 true:150,false:300 -> [] Nothing lives here | /nowhere | 1 | No page at /nowhere. Go home.`,
+		`[Why den] For Go developers who ship to the browser | /why | 2 true:150,false:300 -> [Why den] For Go developers who ship to the browser | /why | 1`,
 		`site system "system" Theme: system`,
 		`site light "light" Theme: light`,
 		`site dark "dark" Theme: dark`,
@@ -1357,9 +1360,9 @@ back(); log(await settle(), "|", menu());`)
 		`open true`,
 		` false`,
 		`open true`,
-		`[Features] Features | /features | 2 true,false -> [Features] Features | /features | 1 |  false`,
+		`[Features] Features | /features | 2 true:150,false:300 -> [Features] Features | /features | 1 |  false`,
 		`open true`,
-		`[Why den] For Go developers who ship to the browser | /why | 2 true,false -> [Why den] For Go developers who ship to the browser | /why | 1 |  false`)
+		`[Why den] For Go developers who ship to the browser | /why | 2 true:150,false:300 -> [Why den] For Go developers who ship to the browser | /why | 1 |  false`)
 
 	// The home page shows Counter's source beside the running Counter, so
 	// the sample must be that source.

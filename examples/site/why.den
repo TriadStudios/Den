@@ -18,9 +18,7 @@ component Why() {
 	<section>
 		<header>
 			<h1>For Go developers who ship to the browser</h1>
-			<p class="lede">
-				The language and type checker you know, with no JavaScript toolchain at all.
-			</p>
+			<p class="lede">Your language and type checker, and no JavaScript toolchain.</p>
 		</header>
 		<div class="scroll">
 			<table>
@@ -39,7 +37,7 @@ component Why() {
 		</div>
 		<h2>When to pick something else</h2>
 		<p>
-			Den is experimental and will change before 1.0. It has no server rendering yet, its Go has no methods or interfaces, and its ecosystem is one repository.
+			Den is experimental: no server rendering yet, no methods or interfaces in its Go, and an ecosystem of one repository.
 		</p>
 	</section>
 }

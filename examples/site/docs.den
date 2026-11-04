@@ -13,14 +13,14 @@ func guide() []Doc {
 		{"install", "Install", "Den is one Go binary. It needs Go 1.24 or later.", `go install github.com/TriadStudios/Den/cmd/den@latest
 den dev myapp    # serve, reload on save
 den build myapp  # write myapp/dist/`},
-		{"first-component", "First component", "An app is a directory of .den files with a component named App.", `component App() {
+		{"first-component", "First component", "An app is a directory of .den files with an App component.", `component App() {
 	name := signal("world")
 	<input value={name.Get()} oninput={name.Set(e.Value())} />
 }`},
 		{"routing", "Routing", "route[T] fills T from the path. This page is /docs/:slug.", `type DocParams struct{ Slug string }
 
 doc := route[DocParams]("/docs/:slug")`},
-		{"styling", "Styling", "A style block styles only its component. $ink is a typed token.", `const Ink den.Color = "#0b1020"
+		{"styling", "Styling", "A style block styles only its component; $ink is a token.", `const Ink den.Color = "#0b1020"
 
 style {
 	.note { color: $ink; }

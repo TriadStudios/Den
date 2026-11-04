@@ -8,7 +8,7 @@ type Topic struct {
 
 func topics() []Topic {
 	return []Topic{
-		{"Signals", "Only what reads a signal updates. stored keeps one in localStorage.", `n := signal(0)
+		{"Signals", "Only what reads a signal updates, and stored() keeps one in localStorage.", `n := signal(0)
 double := computed(n.Get() * 2)`},
 		{"Keyed lists", "Rows move instead of being rebuilt, and can glide.", `{for _, t := range todos.Get() key t.ID {
 	<li animate={layout()}>{t.Title}</li>
@@ -16,7 +16,7 @@ double := computed(n.Get() * 2)`},
 		{"Components", "Props are Go parameters, checked at every use.", `component Card(title string, children den.Children) {
 	<section><h2>{title}</h2>{children}</section>
 }`},
-		{"Routing", "route[T] fills a struct from the URL path, checked at build time.", `doc := route[DocParams]("/docs/:slug")
+		{"Routing", "route[T] fills a struct from the URL path, checked when it builds.", `doc := route[DocParams]("/docs/:slug")
 <h1>{doc.Params().Slug}</h1>`},
 		{"Scoped styles", "Scoped at build time, with typed design tokens.", `style {
 	.badge { color: $accent; }

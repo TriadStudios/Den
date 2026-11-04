@@ -11,7 +11,7 @@ body { margin: 0; }
 .site {
   --bg: #fbfbfd;
   --soft: #f1f3f8;
-  --grad: linear-gradient(110deg, #0891b2, #6d28d9);
+  --grad: linear-gradient(110deg, #0e7490, #6d28d9);
   --glow1: rgb(6 182 212 / 16%);
   --glow2: rgb(124 58 237 / 13%);
   display: flex;
@@ -194,6 +194,9 @@ main header { padding: 64px 0 24px; max-width: 720px; }
 /* Performance */
 .chart { margin-bottom: 20px; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
 .chart h2 { font-size: 1.15rem; margin-bottom: 18px; }
+/* The legend of the dashed line, drawn as a dashed swatch. */
+.chart small { display: flex; align-items: center; gap: 8px; margin: -8px 0 14px; color: var(--muted); font-size: 0.82rem; }
+.chart small::before { content: ""; height: 16px; border-left: 2px dashed var(--ink); }
 .chart p { display: grid; grid-template-columns: 190px 1fr 108px; align-items: center; gap: 16px; margin: 0; padding: 7px 0; font-size: 0.92rem; color: var(--muted); }
 .chart svg { width: 100%; height: 10px; overflow: visible; }
 .chart rect { fill: var(--soft); }
@@ -263,6 +266,7 @@ tr:first-child > :nth-child(2) { color: var(--accent); }
   .chart p { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; }
   .chart svg { grid-column: 1 / -1; grid-row: 2; }
   main header { padding-top: 40px; }
+  .hero code { white-space: normal; overflow-wrap: anywhere; font-size: 0.75rem; }
   .site > footer a:not(.brand) { order: 1; margin-left: auto; }
   .site > footer p { order: 2; width: 100%; margin: 0; }
 }
