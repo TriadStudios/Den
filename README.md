@@ -46,6 +46,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
 | `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.2 KB |
+| `examples/fetch` (a pager over JSON pages, loading and error states, Reload) | 5.2 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -63,7 +64,9 @@ den fmt -w examples/todomvc    # format the .den files in place
 
 Den needs Go 1.24 or later and has no dependencies beyond the Go standard
 library. An app is a directory of `.den` files with a component named `App`,
-plus an optional `style.css` for page-wide styles.
+plus an optional `style.css` for page-wide styles and an optional `public/`
+directory of static files, such as JSON the app fetches, which `den build`
+and `den dev` copy into `dist` as they are (see [Async data](#async-data)).
 
 ## How it works
 
@@ -117,9 +120,10 @@ not strings, numbers or bools, calling a component as a function,
 children or slots a component does not take, route patterns that do
 not fit their params, `bind` on an input that cannot hold its type,
 transitions where they could never play, timers and cleanups outside a
-component, and design tokens that do not exist, hold a bad value or are
-used in the wrong kind of property (`app.den:9:30: $surface is a
-den.Color, but padding takes a length`).
+component, types that fetched JSON cannot be decoded into, and design
+tokens that do not exist, hold a bad value or are used in the wrong kind
+of property (`app.den:9:30: $surface is a den.Color, but padding takes
+a length`).
 
 ## Security by default
 
@@ -166,6 +170,9 @@ den.Color, but padding takes a length`).
   backslashes, comments, `javascript:` or `expression(`, so a token can
   never carry a URL or end its string, declaration or rule. Nor can it
   hold `!important`, which would stop `style.css` from theming it.
+- **Same-origin data.** `fetchJSON` requests only URLs on the page's
+  origin, refuses redirects elsewhere, and reads JSON with `JSON.parse`
+  into checked Go types; nothing it fetches is ever run.
 - **No npm.** The toolchain is one Go binary, so there are no install scripts
   or transitive JS packages.
 
@@ -442,6 +449,106 @@ component User(user *Route[UserParams]) {
   own at the top level, as a declaration, a component or an import, keeps
   it. `route` and `Route` go together: a program with either has neither
   of den's, and using the other says so.
+
+<a id="async-data"></a>**Async data**
+
+```go
+type User struct {
+    ID   int    `json:"id"`
+    Name string `json:"name"`
+}
+
+component Users() {
+    page := signal(1)
+    users := resource(fetchJSON[[]User]("/users/" + itoa(page.Get()) + ".json"))
+    <div>
+        {if users.Loading() { <p>Loading...</p> }}
+        {if users.Err() != nil { <p>{users.Err().Error()}</p> }}
+        <ul>{for _, u := range users.Data() key u.ID { <li>{u.Name}</li> }}</ul>
+        <button onclick={page.Set(page.Get() + 1)}>Next</button>
+        <button onclick={users.Reload()}>Reload</button>
+    </div>
+}
+```
+
+- `resource(f(args))` takes a call that returns `(T, error)`, as Go
+  passes such a call to a function of two parameters, and is a
+  `*Resource[T]`. Today the call is `fetchJSON[T](url)`.
+- The arguments are read like `computed`'s: when a signal they read
+  changes, the request in flight is aborted and a new one starts. The
+  first starts when the component is made. `r.Reload()` aborts the
+  request in flight, if any, and starts again with the current arguments.
+- `r.Loading()` is true while a request is in flight. `r.Data()` is the
+  value of the latest request that succeeded (the zero `T` before one),
+  kept while the next one loads and when it fails. `r.Err()` is the error
+  of the latest request to finish, kept while the next one loads, and nil
+  after a success. All three are reactive, like `.Get()`. Only the latest
+  request's outcome lands: an aborted request's never does.
+- When the component that made the resource goes away (with its `{if}`
+  branch or `{for}` row, say), the request in flight is aborted, and
+  nothing lands afterwards. A panic while the arguments are evaluated is
+  reported as a binding's is, and the resource keeps its state.
+- `fetchJSON[T](url)` is a GET of `url`, resolved against the page. It
+  must be on the page's origin, or `Err()` says so and no request is made
+  (`fetchJSON: https://x.example/a.json is not on this origin`); the
+  request also asks the browser to refuse other origins, after redirects
+  too (`mode: "same-origin"`), sends same-origin credentials and `Accept:
+  application/json`, and the page's CSP allows only its own origin. A
+  status other than 2xx is an error (`fetchJSON: GET /users/4.json: 404
+  Not Found`), and so is a failed request.
+- The body is parsed with `JSON.parse`, never evaluated, and decoded into
+  `T` as Go's `encoding/json` decodes it. Only exported fields are
+  filled, along with the fields of embedded structs, promoted as Go
+  promotes them; a field's key is its `json` tag's name, or else its own
+  name, and `json:"-"` leaves it out. A key matches a field exactly or,
+  failing that, ignoring case as Go folds it (`"id"` and `"Id"` fill
+  `ID`); keys of no field are ignored and missing ones leave zero values.
+  `null` leaves a value as it is, except that a slice becomes nil and a
+  map empty. A number goes into an integer only if it is written as one
+  and is in the type's range (`1.0`, `1e2` and, for unsigned types, `-0`
+  do not fit). An array takes up to its length, the rest zero; a map
+  takes string keys, or integer keys parsed from the object's keys; a
+  `[]byte` takes base64 text. A key given twice is decoded twice, in
+  order: a second object merges into the first, as in Go. A value that
+  does not fit is an error worded like Go's (`json: cannot unmarshal
+  string into Go struct field User.id of type int`), and JSON that does
+  not parse is `fetchJSON: GET /a.json: invalid JSON: ...`.
+- Where versions of Go's `encoding/json` differ, den follows the one
+  built on json/v2 (the default since Go 1.27): a key that matches two
+  fields only ignoring case goes to the first found breadth-first, so
+  `"NAME"` fills an outer `Name` rather than one promoted from an
+  embedded struct. Where den differs from Go: `int64` and `uint64` values
+  beyond 2^53 lose precision, as den's integers do; a `float32` is
+  rounded from the nearest `float64`, which can differ from Go in the
+  last bit in rare halfway cases; and browsers drop a UTF-8 byte order
+  mark at the start of a response, which Go rejects.
+- These are compile errors: `fetchJSON` anywhere but as `resource`'s
+  whole argument; `resource` outside a component's statements (in a
+  function, a func literal, a handler, markup, a prop, or the argument of
+  `computed`, `spring` or another `resource`); `resource` of anything but
+  a call of `fetchJSON` (typed server functions are planned); a `T` den
+  cannot decode into (funcs, channels, complex numbers, pointers,
+  interfaces, den's own types, maps with keys that are not strings or
+  integers), reported at `T`; `json` tag options other than `omitempty`
+  and `omitzero`, which change nothing in decoding (`,string` is not
+  supported yet); `json` tag names with characters other than letters,
+  digits, spaces and ASCII punctuation other than quotes, backquotes and
+  backslashes, which versions of Go read differently; and `resource` or
+  `fetchJSON` used as a value. For example, `app.den:3:29: fetchJSON
+  cannot decode JSON into func() int (field F of T): den decodes JSON
+  into strings, numbers, bools, and structs, arrays, slices and maps of
+  them`.
+- Static files: `den build` and `den dev` copy the app's `public/`
+  directory, if it has one, into `dist` as it is, so `public/pages/1.json`
+  is served as `/pages/1.json` next to the app, and `den dev` rebuilds
+  when a file in it changes. A file there that would replace `app.js`,
+  `index.html`, `den.css` or `style.css`, or anything under `__den/`,
+  where `den dev` serves live reload, is an error (names compared
+  ignoring case). Files removed from `public/` stay in `dist` until it is
+  removed. `examples/fetch` pages through three such files.
+- `resource`, `Resource` and `fetchJSON` are ordinary names: a program
+  that has its own at the top level keeps it. `resource` and `Resource`
+  go together, and `fetchJSON` goes with them; using one then says why.
 
 **Styles**
 

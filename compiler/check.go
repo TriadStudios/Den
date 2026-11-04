@@ -172,6 +172,30 @@ func provide[T any](v T) {}
 func use[T any]() (v T) { return }
 `
 )
+// preludeResource declares resource and Resource, unless the program
+// declares its own resource or Resource: resource returns a *Resource[T],
+// so the two come and go together.
+const preludeResource = `
+// Resource is data loaded asynchronously: resource(fetchJSON[T](url)).
+type Resource[T any] struct{ v T }
+
+func (r *Resource[T]) Data() T       { return r.v }
+func (r *Resource[T]) Err() error    { return nil }
+func (r *Resource[T]) Loading() bool { return false }
+func (r *Resource[T]) Reload()       {}
+
+// resource takes a call that returns (T, error), resource(f(args)), and
+// makes the request again whenever the signals args read change.
+func resource[T any](v T, err error) *Resource[T] { return nil }
+`
+
+// preludeFetchJSON declares fetchJSON, unless the program declares its own
+// or has neither resource nor Resource of den's, whose argument it is.
+const preludeFetchJSON = `
+// fetchJSON is a GET of url on the page's origin, decoding the JSON
+// response into a T; only as resource's argument.
+func fetchJSON[T any](url string) (T, error) { var v T; return v, nil }
+`
 
 // preludeDen ends the prelude of a program that imports the built-in
 // package den, which is every program that does not declare its own den.
@@ -422,6 +446,7 @@ func check(files []*File) (*checked, error) {
 	}
 	// field returns a *Field[T], so the two come and go together.
 	fieldTaken := own["field"] != "" || own["Field"] != ""
+	resourceBy := resourceNames(own)
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -481,6 +506,12 @@ func check(files []*File) (*checked, error) {
 		src.WriteString(preludeField)
 	}
 	src.WriteString(preludeBind)
+	if resourceBy["Resource"] == "" {
+		src.WriteString(preludeResource)
+	}
+	if resourceBy["fetchJSON"] == "" {
+		src.WriteString(preludeFetchJSON)
+	}
 	if denTaken {
 		src.WriteString(preludePlain)
 	} else {
@@ -623,6 +654,9 @@ next:
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[by])
 		}
 		msg = strings.Replace(msg, " in call to denBind", " in bind=", 1)
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && resourceBy[name] != "" {
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[resourceBy[name]])
+		}
 		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing denOpaqueRef cannot be compared", "a Ref cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing time.opaque cannot be compared", "den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0", 1)
@@ -673,6 +707,7 @@ next:
 		checkLifecycle(file, info, fset, byName, errAt)
 		preludeValues(file, info, fset, byName, errAt)
 		ctx = checkContext(file, info, pkg, fset, byName, errAt)
+		checkResources(file, info, pkg, fset, byName, own, errAt)
 	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
@@ -1978,12 +2013,15 @@ func (ck *checked) reactive(n ast.Node) bool {
 		}
 		switch fun := callee(ck.info, ast.Unparen(call.Fun)).(type) {
 		case *ast.SelectorExpr:
-			// A route's Matches and Params read the path signal.
+			// A route's Matches and Params read the path signal, and a
+			// resource's Data, Err and Loading read its state's signals.
 			switch recv := ck.recvName(fun); fun.Sel.Name {
 			case "Get":
 				found = recv == "Signal" || recv == "Computed"
 			case "Matches", "Params":
 				found = recv == "Route"
+			case "Data", "Err", "Loading":
+				found = recv == "Resource"
 			}
 			// A field's Get, Error and Touched read its signals.
 			switch fun.Sel.Name {

@@ -96,6 +96,68 @@ func TestWriteDistCSS(t *testing.T) {
 	}
 }
 
+// The files of an app's public directory are copied into dist as they
+// are, at the same paths, and dev watches them. One that would replace a
+// file den writes is an error, and nothing is written then.
+func TestWriteDistPublic(t *testing.T) {
+	write := func(root string, files map[string]string) {
+		for name, body := range files {
+			p := filepath.Join(root, filepath.FromSlash(name))
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			os.WriteFile(p, []byte(body), 0o644)
+		}
+	}
+	res := &compiler.Result{JS: "js"}
+	dir, out := t.TempDir(), t.TempDir()
+	write(dir, map[string]string{"public/pages/1.json": `{"n":1}`, "public/robots.txt": "x\r\n", "public/sub/app.js": "not den's"})
+	before := snapshot(dir)
+	if err := writeDist(dir, out, res, false); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"pages/1.json": `{"n":1}`, "robots.txt": "x\r\n", "sub/app.js": "not den's", "app.js": "js"} {
+		if b, err := os.ReadFile(filepath.Join(out, filepath.FromSlash(name))); err != nil || string(b) != want {
+			t.Errorf("dist/%s: %q, %v; want %q", name, b, err, want)
+		}
+	}
+	write(dir, map[string]string{"public/pages/2.json": "[]"})
+	if snapshot(dir) == before {
+		t.Error("a new file in public does not change the dev snapshot")
+	}
+
+	// A dist inside public is not copied into itself.
+	dir = t.TempDir()
+	write(dir, map[string]string{"public/a.json": "1"})
+	inside := filepath.Join(dir, "public", "dist")
+	if err := writeDist(dir, inside, res, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDist(dir, inside, res, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(inside, "dist")); err == nil {
+		t.Error("dist was copied into itself")
+	}
+
+	for _, name := range []string{"app.js", "INDEX.HTML", "den.css", "style.css", "__den/reload.js", "App.js/x.json"} {
+		dir, out := t.TempDir(), t.TempDir()
+		write(dir, map[string]string{"public/" + name: "x"})
+		err := writeDist(dir, out, res, false)
+		if err == nil || !strings.Contains(err.Error(), filepath.Join(dir, "public", strings.Split(name, "/")[0])) {
+			t.Errorf("public/%s: %v", name, err)
+		}
+		if entries, _ := os.ReadDir(out); len(entries) > 0 {
+			t.Errorf("public/%s: wrote %d files before failing", name, len(entries))
+		}
+	}
+
+	// A file named public is no directory.
+	dir = t.TempDir()
+	write(dir, map[string]string{"public": "x"})
+	if err := writeDist(dir, t.TempDir(), res, false); err == nil || !strings.Contains(err.Error(), "is not a directory") {
+		t.Errorf("public as a file: %v", err)
+	}
+}
+
 func TestSize(t *testing.T) {
 	for n, want := range map[int]string{0: "0 B", 40: "40 B", 1023: "1023 B", 1024: "1.0 KB", 1317: "1.3 KB"} {
 		if got := size(n); got != want {

@@ -1,0 +1,51 @@
+// A pager over JSON pages: resource(fetchJSON[T](url)) loads the page the
+// signal n names, and loads it again when n changes. den build copies
+// public/ into dist, so the pages are served next to the app. There are
+// three; Next on the last asks for a fourth, and the server answers 404.
+
+type Planet struct {
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+	Moons int    `json:"moons"`
+}
+
+type Page struct {
+	Planets []Planet `json:"planets"`
+	Last    bool     `json:"last"`
+}
+
+func moons(n int) string {
+	if n == 1 {
+		return "1 moon"
+	}
+	return itoa(n) + " moons"
+}
+
+component App() {
+	n := signal(1)
+	page := resource(fetchJSON[Page]("pages/" + itoa(n.Get()) + ".json"))
+	<main class="app">
+		<h1>Planets</h1>
+		<p class="sub">Each page is JSON, fetched and decoded into Go types.</p>
+		<nav>
+			<button disabled={n.Get() == 1} onclick={n.Set(n.Get() - 1)}>Previous</button>
+			<span>Page {n.Get()}</span>
+			<button onclick={n.Set(n.Get() + 1)}>Next</button>
+			<button onclick={page.Reload()}>Reload</button>
+		</nav>
+		{if page.Loading() {
+			<p class="status">Loading page {n.Get()}…</p>
+		}}
+		{if page.Err() != nil {
+			<p class="error">{page.Err().Error()}</p>
+		}}
+		<ul class="planets">
+			{for _, p := range page.Data().Planets key p.Name {
+				<li><b>{p.Name}</b><span>{p.Kind}, {moons(p.Moons)}</span></li>
+			}}
+		</ul>
+		{if page.Data().Last && page.Err() == nil {
+			<p class="status">That is every planet. Next asks for a page that is not there.</p>
+		}}
+	</main>
+}

@@ -1,0 +1,7 @@
+{
+  "planets": [
+    {"name": "Uranus", "kind": "ice giant", "moons": 28},
+    {"name": "Neptune", "kind": "ice giant", "moons": 16}
+  ],
+  "last": true
+}

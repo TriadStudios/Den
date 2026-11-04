@@ -212,6 +212,31 @@ const rafs = new Map();
 let rafID = 0, now = 0;
 globalThis.requestAnimationFrame = (f) => { rafs.set(++rafID, f); return rafID; };
 globalThis.cancelAnimationFrame = (id) => { rafs.delete(id); };
+// fetch answers as the test says. Each call is kept in fetches as {url,
+// opts, signal, done}, and its promise settles when the test calls
+// reply(f, status, body) or fail(f, message); an abort before that rejects
+// it with an AbortError, as fetch does. The response's text() resolves
+// whatever happens after, so a test can have a response land after its
+// request was aborted. With serve set to a function of a URL returning
+// [status, body], every request is answered so, after a tick (a real one).
+const fetches = [];
+let serve = null;
+const statusTexts = { 200: "OK", 404: "Not Found", 500: "Internal Server Error" };
+globalThis.fetch = (u, opts = {}) => new Promise((resolve, reject) => {
+  const f = { url: String(u), opts, signal: opts.signal, done: false, resolve, reject };
+  fetches.push(f);
+  opts.signal?.addEventListener("abort", () => { if (!f.done) { f.done = true; reject(new DOMException("This operation was aborted", "AbortError")); } });
+  if (serve) realTimeout(() => reply(f, ...serve(f.url)), 0); // not a timer fakeTimers holds back
+});
+function reply(f, status, body = "") {
+  if (f.done) return;
+  f.done = true;
+  f.resolve({ ok: status >= 200 && status < 300, status, statusText: statusTexts[status] ?? "", text: async () => body });
+}
+function fail(f, message) { if (!f.done) { f.done = true; f.reject(new TypeError(message)); } }
+// inFlight lists the URLs of the requests not settled yet.
+function inFlight() { return fetches.filter((f) => !f.done).map((f) => f.url); }
+
 // reportError is how the runtime reports an error it caught (an effect
 // that threw); here it logs the message, so tests see it.
 globalThis.reportError = (e) => console.log("reportError:", e?.message ?? e);

@@ -641,6 +641,154 @@ component App() {
     f := path
     <p>{f().Get()}</p>
 }`, `app.den:3:10: path can only be called, not used as a value`},
+		{"fetchJSON outside resource", `
+component App() {
+    n, err := fetchJSON[int]("/n.json")
+    <p>{n} {err != nil}</p>
+}`, `app.den:3:15: fetchJSON can only be used as resource's argument: resource(fetchJSON[T](url))`},
+		{"fetchJSON in a function", `
+func load() (int, error) { return fetchJSON[int]("/n.json") }
+component App() {
+    n, _ := load()
+    <p>{n}</p>
+}`, `app.den:2:35: fetchJSON can only be used as resource's argument: resource(fetchJSON[T](url))`},
+		{"fetchJSON used as a value", `
+component App() {
+    f := fetchJSON[int]
+    n, _ := f("/n.json")
+    <p>{n}</p>
+}`, `app.den:3:10: fetchJSON can only be called, not used as a value`},
+		{"resource used as a value", `
+component App() {
+    f := resource[int]
+    r := f(0, nil)
+    <p>{r.Data()}</p>
+}`, `app.den:3:10: resource can only be called, not used as a value`},
+		{"resource in a handler", `
+component App() {
+    <button onclick={resource(fetchJSON[int]("/n.json")).Reload()}>x</button>
+}`, `app.den:3:22: resource can only be called in a component's statements`},
+		{"resource in markup", `
+component App() {
+    <p>{resource(fetchJSON[int]("/n.json")).Data()}</p>
+}`, `app.den:3:9: resource can only be called in a component's statements`},
+		{"resource in a func literal", `
+component App() {
+    load := func() *Resource[int] { return resource(fetchJSON[int]("/n.json")) }
+    <p>{load().Data()}</p>
+}`, `app.den:3:44: resource can only be called in a component's statements`},
+		{"resource in computed", `
+component App() {
+    n := computed(resource(fetchJSON[int]("/n.json")).Data())
+    <p>{n.Get()}</p>
+}`, `app.den:3:19: resource can only be called in a component's statements`},
+		{"resource in a top-level function", `
+func load() *Resource[int] { return resource(fetchJSON[int]("/n.json")) }
+component App() {
+    <p>{load().Data()}</p>
+}`, `app.den:2:37: resource can only be called in a component's statements`},
+		{"resource in a prop", `
+component Show(r *Resource[int]) {
+    <p>{r.Data()}</p>
+}
+component App() {
+    <Show r={resource(fetchJSON[int]("/n.json"))} />
+}`, `app.den:6:14: resource can only be called in a component's statements`},
+		{"resource in the arguments of resource", `
+component App() {
+    r := resource(fetchJSON[int]("/" + itoa(resource(fetchJSON[int]("/n.json")).Data())))
+    <p>{r.Data()}</p>
+}`, `app.den:3:45: resource can only be called in a component's statements`},
+		{"resource of values", `
+component App() {
+    r := resource(1, nil)
+    <p>{r.Data()}</p>
+}`, `app.den:3:19: resource takes a call of fetchJSON, as in resource(fetchJSON[T](url))`},
+		{"resource of a function of the program's", `
+func load(url string) (int, error) { return len(url), nil }
+component App() {
+    r := resource(load("/n.json"))
+    <p>{r.Data()}</p>
+}`, `app.den:4:19: resource takes a call of fetchJSON, as in resource(fetchJSON[T](url))`},
+		{"fetchJSON into a func", `
+component App() {
+    r := resource(fetchJSON[func()]("/f.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:3:29: fetchJSON cannot decode JSON into func(): den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them`},
+		{"fetchJSON into a struct with a func field", `
+type T struct {
+    Name string
+    F    func() int
+}
+component App() {
+    r := resource(fetchJSON[[]T]("/t.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:7:29: fetchJSON cannot decode JSON into func() int (field F of T): den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them`},
+		{"fetchJSON into a map with bool keys", `
+component App() {
+    r := resource(fetchJSON[map[bool]int]("/m.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:3:29: fetchJSON cannot decode JSON into map[bool]int: the keys of a JSON object decode only into strings and integers`},
+		{"fetchJSON into an interface", `
+component App() {
+    r := resource(fetchJSON[map[string]any]("/m.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:3:29: fetchJSON cannot decode JSON into any (the values of map[string]any): den does not decode JSON into interfaces`},
+		{"fetchJSON into a pointer", `
+component App() {
+    r := resource(fetchJSON[[]*int]("/p.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:3:29: fetchJSON cannot decode JSON into *int (the elements of []*int): den does not support pointers yet`},
+		{"fetchJSON into a complex number", `
+component App() {
+    r := resource(fetchJSON[[2]complex128]("/c.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:3:29: fetchJSON cannot decode JSON into complex128 (the elements of [2]complex128): den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them`},
+		{"fetchJSON into den.Children", `
+component App() {
+    r := resource(fetchJSON[den.Children]("/c.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:3:29: fetchJSON cannot decode JSON into den.Children: it is one of den's own types`},
+		{"fetchJSON into a Transition", `
+type T struct{ In Transition }
+component App() {
+    r := resource(fetchJSON[T]("/t.json"))
+    <p>{r.Loading()}</p>
+}`, `app.den:4:29: fetchJSON cannot decode JSON into Transition (field In of T): it is one of den's own types`},
+		{"fetchJSON with the string tag option", `
+type T struct {
+    ID int "json:\"id,string\""
+}
+component App() {
+    r := resource(fetchJSON[T]("/t.json"))
+    <p>{r.Data().ID}</p>
+}`, `app.den:3:5: fetchJSON does not support the json tag option "string" yet (on field ID of T): only omitempty and omitzero, which change nothing in decoding`},
+		{"fetchJSON with a tag name Go versions read differently", `
+type T struct {
+    Price int "json:\"price€\""
+}
+component App() {
+    r := resource(fetchJSON[T]("/t.json"))
+    <p>{r.Data().Price}</p>
+}`, `app.den:3:5: fetchJSON does not support the json tag name "price€" (on field Price of T): versions of Go's encoding/json read it differently; use letters, digits, spaces and ASCII punctuation other than quotes, backquotes and backslashes`},
+		{"fetchJSON hidden by the program's resource", `
+func resource(n int) int { return n }
+component App() {
+    n, _ := fetchJSON[int]("/n.json")
+    <p>{resource(n)}</p>
+}`, `app.den:4:13: fetchJSON is not available because this program declares its own resource; rename it`},
+		{"resource hidden by the program's Resource", `
+type Resource struct{ N int }
+component App() {
+    r := resource(fetchJSON[int]("/n.json"))
+    <p>{r.Data()}</p>
+}`, `app.den:4:10: resource is not available because this program declares its own Resource; rename it`},
+		{"den's fetchJSON hidden by the program's", `
+func fetchJSON[T any](url string) (T, error) { var v T; return v, nil }
+component App() {
+    r := resource(fetchJSON[int]("/n.json"))
+    <p>{r.Data()}</p>
+}`, `app.den:4:19: resource takes a call of den's fetchJSON, which is not available because this program declares its own fetchJSON; rename it`},
 		{"second style block", `
 component App() {
     style { p { color: red; } }

@@ -91,6 +91,7 @@ func Compile(sources []Source) (*Result, error) {
 	if len(e.errs) > 0 {
 		return nil, e.errs.sorted()
 	}
+	e.tplOut.WriteString(e.json.out())
 	body.WriteString("$mount(App, document.getElementById(\"app\"));\n")
 	code := e.tplOut.String() + body.String()
 	if e.motion {
@@ -166,6 +167,7 @@ type emitter struct {
 	motion  bool                  // a block compiled to $ifm or $form, whose leaving elements need $evs
 	ctx     string                // the JS name of the context in effect, or "" in a program that provides nothing (context.go)
 	slots   int                   // the slot closures around the code being emitted, each with a context of its own
+	json    jsonTable             // the JSON descriptors of fetchJSON's types, $jt
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -1520,26 +1522,30 @@ func (e *emitter) compositeLit(x *ast.CompositeLit) string {
 	return "undefined"
 }
 
-func (e *emitter) call(x *ast.CallExpr) string {
-	args := func() string {
-		var out []string
-		for _, a := range x.Args {
-			out = append(out, e.expr(a))
-		}
-		if len(x.Args) == 1 {
-			if tup, ok := e.ck.info.TypeOf(x.Args[0]).(*types.Tuple); ok && tup.Len() > 1 {
-				return "..." + out[0] // f(g()) where g returns several values
-			}
-		}
-		// A variadic function takes its extra arguments as one slice, as in Go.
-		if sig, ok := e.ck.info.TypeOf(x.Fun).(*types.Signature); ok && sig.Variadic() && !x.Ellipsis.IsValid() {
-			n := sig.Params().Len() - 1
-			if n <= len(out) {
-				out = append(out[:n:n], "$sl(["+strings.Join(out[n:], ", ")+"])")
-			}
-		}
-		return strings.Join(out, ", ")
+// callArgs returns the JS for the arguments of call x, separated by
+// commas.
+func (e *emitter) callArgs(x *ast.CallExpr) string {
+	var out []string
+	for _, a := range x.Args {
+		out = append(out, e.expr(a))
 	}
+	if len(x.Args) == 1 {
+		if tup, ok := e.ck.info.TypeOf(x.Args[0]).(*types.Tuple); ok && tup.Len() > 1 {
+			return "..." + out[0] // f(g()) where g returns several values
+		}
+	}
+	// A variadic function takes its extra arguments as one slice, as in Go.
+	if sig, ok := e.ck.info.TypeOf(x.Fun).(*types.Signature); ok && sig.Variadic() && !x.Ellipsis.IsValid() {
+		n := sig.Params().Len() - 1
+		if n <= len(out) {
+			out = append(out[:n:n], "$sl(["+strings.Join(out[n:], ", ")+"])")
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+func (e *emitter) call(x *ast.CallExpr) string {
+	args := func() string { return e.callArgs(x) }
 	// Type conversions: int(x), float64(x), string(x), named types...
 	if tv, ok := e.ck.info.Types[x.Fun]; ok && tv.IsType() {
 		if len(x.Args) != 1 {
@@ -1625,6 +1631,14 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return obj + ".p.get()"
 		case "Route.Link":
 			return "$linkTo(" + obj + ", " + args() + ")"
+		case "Resource.Data":
+			return obj + ".d.get()"
+		case "Resource.Err":
+			return obj + ".e.get()"
+		case "Resource.Loading":
+			return obj + ".l.get()"
+		case "Resource.Reload":
+			return obj + ".r()"
 		case "Transition.For":
 			ms := jsNumber(e.ck.durations[x])
 			if js, ok := e.transition(fun.X, ms); ok {
@@ -1719,6 +1733,8 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return e.use(x)
 				case "field":
 					return "$field(" + args() + ")"
+				case "resource":
+					return e.resourceCall(x)
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
