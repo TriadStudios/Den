@@ -291,22 +291,25 @@ function $spring(f) {
 // gets a record c = $life() first thing when it is built, kept in the
 // scope it is built in: s, the functions to run when the component goes
 // (its cleanups, and the stops of its timers), run newest first; and x,
-// set once it has gone. As the oldest entry the component puts in that
-// scope, the record goes after everything the component made, as a
-// deferred call would. Other stdlib code ties work to a component with
-// $onCleanup(c, f).
+// set once it has gone; and p, the owner of the nodes the component makes
+// (see $scope). As the oldest entry the component puts in that scope, the
+// record goes after everything the component made, as a deferred call
+// would. Other stdlib code ties work to a component with $onCleanup(c, f).
 function $life() {
-  const c = { s: new Set(), x: 0 };
-  $cleanup(() => { c.x = 1; [...c.s].reverse().forEach((f) => $lifeTry(c, f)); });
+  const c = { s: new Set(), x: 0, p: $owner?.p };
+  $cleanup(() => { c.x = 1; [...c.s].reverse().forEach((f) => $lifeTry(c, f)); c.s.clear(); });
   return c;
 }
 // $lifeTry runs f, a callback of component c, as den runs an event
 // handler: untracked, and reporting a panic rather than passing it on.
 // It runs in a scope of its own that goes with c, so what f makes (a
-// computed, a spring) stops with the component; a callback that makes
-// nothing adds nothing to the record.
+// computed, a spring) stops with the component, and has the component's
+// owner, so it never runs while the block that would take the component
+// away is due. A callback that makes nothing adds nothing to the record.
 function $lifeTry(c, f) {
-  try { const h = $scope(f)[1]; h && $onCleanup(c, () => $free(h)); } catch (e) { reportError(e); }
+  const o = $owner;
+  $owner = c;
+  try { const h = $scope(f)[1]; h && $onCleanup(c, () => $free(h)); } catch (e) { reportError(e); } finally { $owner = o; }
 }
 // $onCleanup runs f when the component goes, or at once if it has gone.
 // It returns a function that takes f back, for work that ends first.

@@ -1706,6 +1706,21 @@ component App() {
 component App() {
     <p>{denTime.Now().Hour()}</p>
 }`, `app.den:3:9: undefined: denTime`},
+		{"a name the prelude's time does not have", `
+component App() {
+    d := denTime.Nope
+    <p>{d}</p>
+}`, `app.den:3:10: undefined: denTime`},
+		{"the prelude's time alone", `
+component App() {
+    d := denTime
+    <p>{d}</p>
+}`, `app.den:3:10: undefined: denTime`},
+		{"the prelude's time when the program has a denTime", `
+func denTime() int { return 1 }
+component App() {
+    <p>{denTime_.Second}</p>
+}`, `app.den:4:9: undefined: denTime_`},
 		// A func literal that is a whole prop may call after; one called
 		// as a prop is evaluated may not.
 		{"after in a func literal called in a prop", `

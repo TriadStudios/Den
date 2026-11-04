@@ -3367,3 +3367,72 @@ log("timers:", pending());`)
 		`timers: 1`,
 		`timers: 0`)
 }
+
+// What a callback makes has its component's owner, so it never runs
+// while the block that is taking the component away is due: here the
+// spring would read xs[1] after xs shrank, before the {if} dropped Kid.
+func TestRunCallbackNodesOrder(t *testing.T) {
+	for _, call := range []string{
+		`onMount(func() { _ = spring(float64(y.Get() + xs.Get()[1])) })`,
+		`after(time.Millisecond, func() { _ = spring(float64(y.Get() + xs.Get()[1])) })`,
+	} {
+		got := runAppWith(t, `
+import "time"
+
+component App() {
+    xs := signal([]int{1, 2})
+    y := signal(0)
+    <div>
+        {if len(xs.Get()) > 1 { <Kid xs={xs} y={y} /> }}
+        <button onclick={
+            y.Set(1)
+            xs.Set([]int{1})
+        }>go</button>
+    </div>
+}
+
+component Kid(xs *Signal[[]int], y *Signal[int]) {
+    `+call+`
+    _ = time.Second
+    <i>kid</i>
+}`, `fakeTimers();`, `
+await advance(1);
+click(find("button")); await settle();
+log(html());`)
+		expectLines(t, got, `<div><button>go</button></div>`)
+	}
+}
+
+// A program may have its own denTime, which den's own import of package
+// time then makes way for.
+func TestRunOwnDenTime(t *testing.T) {
+	for _, c := range []struct{ src, want string }{{`
+import "time"
+
+func denTime() int { return 3 }
+
+component App() {
+    n := signal(0)
+    after(time.Millisecond, func() { n.Set(denTime()) })
+    <p>{n.Get()}</p>
+}`, `<p>3</p>`}, {`
+import denTime "time"
+
+component App() {
+    n := signal(0)
+    every(denTime.Second, func() { n.Set(n.Get() + 1) })
+    <p>{n.Get()}</p>
+}`, `<p>2</p>`}, {`
+type denTime int
+
+const denTime_ = 2
+
+component App() {
+    n := signal(denTime(denTime_))
+    every(1000000, func() { n.Set(n.Get() + 1) })
+    <p>{n.Get()}</p>
+}`, `<p>2002</p>`}} {
+		got := runAppWith(t, c.src, `fakeTimers();`, `await advance(2000); log(html());`)
+		expectLines(t, got, c.want)
+	}
+}

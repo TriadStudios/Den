@@ -613,8 +613,9 @@ component Search() {
   handler does: reading signals subscribes to nothing, and the signals
   it sets update the page once, in a microtask. What it makes, such as
   a `computed` or a `spring`, belongs to the component and stops with
-  it. A panic in one is reported with `reportError` and the rest still
-  run; `every` keeps ticking.
+  it, so what an `every` callback makes piles up, one per tick, until
+  the component goes. A panic in one is reported with `reportError` and
+  the rest still run; `every` keeps ticking.
 - `ref()` makes a `*Ref`. `ref={r}` on an HTML or SVG element puts the
   element in `r` when den makes it, and takes it out when the block that
   made it goes, unless another element has taken `r` by then.

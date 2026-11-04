@@ -123,7 +123,8 @@ func spring(target float64) *Computed[float64] { return nil }
 // preludeLife declares den's lifecycle functions and timers, each unless
 // the program has a name of its own for it. after and every take the
 // Duration of den's package time, which the prelude imports as denTime
-// when it declares either.
+// when it declares either (as denTime_ and so on in a program that has a
+// denTime of its own, which check writes in their place).
 var preludeLife = [][2]string{
 	{"onMount", "\n// onMount runs f once the component's nodes are in the document.\nfunc onMount(f func()) {}\n"},
 	{"onCleanup", "\n// onCleanup runs f when the component goes away.\nfunc onCleanup(f func()) {}\n"},
@@ -393,8 +394,13 @@ func check(files []*File) (*checked, error) {
 			refBy = name
 		}
 	}
-	// denTime is den's package time, for after and every.
+	// timeName is what the prelude imports den's package time as, for after
+	// and every: a name the program does not have at the top level.
 	needTime := own["after"] == "" || own["every"] == ""
+	timeName := "denTime"
+	for own[timeName] != "" {
+		timeName += "_"
+	}
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -412,7 +418,7 @@ func check(files []*File) (*checked, error) {
 		src.WriteString("import /*line " + preludeFile + ":1:1*/\"den\"\n")
 	}
 	if needTime {
-		src.WriteString("import /*line " + preludeFile + ":1:1*/denTime \"time\"\n")
+		src.WriteString("import /*line " + preludeFile + ":1:1*/" + timeName + " \"time\"\n")
 	}
 	src.WriteString(importSrc.String())
 	// The import directives would otherwise carry on into the prelude.
@@ -436,7 +442,7 @@ func check(files []*File) (*checked, error) {
 	}
 	for _, d := range preludeLife {
 		if own[d[0]] == "" {
-			src.WriteString(d[1])
+			src.WriteString(strings.ReplaceAll(d[1], "denTime.", timeName+"."))
 		}
 	}
 	if refBy == "" {
@@ -527,6 +533,27 @@ func check(files []*File) (*checked, error) {
 			return true
 		})
 	}
+	// The prelude's import of package time is in the same file as the
+	// program, but not the program's: Go would not know the name. Say so,
+	// instead of any error Go has about what the program selects from it.
+	timeUses := map[*ast.Ident]bool{}
+	for id, obj := range info.Uses {
+		if pn, ok := obj.(*types.PkgName); ok && pn.Name() == timeName && fset.Position(pn.Pos()).Filename == preludeFile && fset.Position(id.Pos()).Filename != preludeFile {
+			timeUses[id] = true
+			errAt(id.Pos(), "undefined: "+timeName)
+			replaced = append(replaced, [2]token.Pos{id.Pos(), id.End()})
+		}
+	}
+	if len(timeUses) > 0 {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && timeUses[id] {
+					replaced = append(replaced, [2]token.Pos{sel.Pos(), sel.End()})
+				}
+			}
+			return true
+		})
+	}
 next:
 	for _, te := range typeErrs {
 		for _, r := range replaced {
@@ -561,13 +588,6 @@ next:
 			msg = strings.Replace(msg, " in argument to den"+strings.ToUpper(a[:1])+a[1:], " in "+a+"=", 1)
 		}
 		errAt(te.Pos, msg)
-	}
-	// The prelude's import of package time, denTime, is in the same file
-	// as the program, but not the program's: Go would not know the name.
-	for id, obj := range info.Uses {
-		if pn, ok := obj.(*types.PkgName); ok && pn.Name() == "denTime" && fset.Position(pn.Pos()).Filename == preludeFile && fset.Position(id.Pos()).Filename != preludeFile {
-			errAt(id.Pos(), "undefined: denTime")
-		}
 	}
 	// gen took a prop for den.Children by reading its type; go/types must
 	// agree, or the markup passed to it would be handled the wrong way.
