@@ -1931,6 +1931,199 @@ func TestRuntimeNames(t *testing.T) {
 	}
 }
 
+// TestReservedGlobals checks that every global the shipped JS uses, the
+// browser's (setTimeout, history, Date...) and the language's (Math,
+// Map...), is in jsReserved. A Go name that is not renamed would shadow
+// it inside the app's function: with its own func setInterval, every
+// would never tick.
+func TestReservedGlobals(t *testing.T) {
+	free := jsGlobals(minifyJS(runtimeJS + "\n" + stdlibJS))
+	// The globals emit writes into the code it generates.
+	free = append(free, "document", "String", "queueMicrotask", "Array", "Math", "Map", "Number", "Object")
+	if !slices.Contains(free, "setTimeout") || !slices.Contains(free, "history") || slices.Contains(free, "$owner") {
+		t.Fatalf("the scan is broken: %v", free)
+	}
+	for _, name := range free {
+		// $ names ($evs, which the compiler writes) are never Go names.
+		if !jsReserved[name] && name[0] != '$' {
+			t.Errorf("%s is a global the runtime or stdlib uses, but not in jsReserved", name)
+		}
+	}
+}
+
+// jsKeywords are the JS keywords and literals that jsGlobals meets in
+// den's own JS; they are no names.
+var jsKeywords = map[string]bool{
+	"break": true, "case": true, "catch": true, "class": true, "const": true, "continue": true,
+	"default": true, "delete": true, "do": true, "else": true, "extends": true, "finally": true,
+	"for": true, "function": true, "if": true, "in": true, "instanceof": true, "let": true,
+	"new": true, "of": true, "return": true, "super": true, "switch": true, "this": true,
+	"throw": true, "try": true, "typeof": true, "var": true, "void": true, "while": true,
+	"null": true, "undefined": true, "true": true, "false": true,
+}
+
+// jsGlobals returns the names that js, den's minified runtime and stdlib,
+// uses without declaring them anywhere: a token-level scan, not a parser,
+// that is enough for den's own JS. It drops property names (after . or
+// ?.), object keys ({k: v}), and every name the code binds anywhere
+// (declarations, parameters, arrow parameters, destructuring, catch),
+// ignoring scopes.
+func jsGlobals(js string) []string {
+	var toks []string
+	last := byte('\n')
+	for i := 0; i < len(js); {
+		c := js[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			i++
+			continue
+		case c == '"' || c == '\'' || c == '`' || c == '/' && strings.IndexByte("(,=:[!&|?{};\n", last) >= 0:
+			// A string, a template (the names in ${} are locals) or a
+			// regular expression, as minifyJS reads them.
+			j, class := i+1, false
+			for ; j < len(js); j++ {
+				switch {
+				case js[j] == '\\':
+					j++
+				case c == '/' && js[j] == '[':
+					class = true
+				case c == '/' && js[j] == ']':
+					class = false
+				case js[j] == c && !class:
+					goto end
+				}
+			}
+		end:
+			for j++; c == '/' && j < len(js) && isLetter(js[j]); j++ {
+			}
+			toks = append(toks, `""`)
+			i = j
+		case isLetter(c) || c == '$':
+			j := i
+			for j < len(js) && (isLetter(js[j]) || js[j] == '$' || js[j] >= '0' && js[j] <= '9') {
+				j++
+			}
+			toks = append(toks, js[i:j])
+			i = j
+		case c >= '0' && c <= '9':
+			j := i
+			for j < len(js) && (isLetter(js[j]) || js[j] >= '0' && js[j] <= '9' || js[j] == '.') {
+				j++
+			}
+			toks = append(toks, "0")
+			i = j
+		default:
+			n := 1
+			for _, p := range []string{"...", "?.", "=>"} {
+				if strings.HasPrefix(js[i:], p) {
+					n = len(p)
+				}
+			}
+			toks = append(toks, js[i:i+n])
+			i += n
+		}
+		last = js[i-1]
+	}
+	isName := func(s string) bool { return s != "" && (isLetter(s[0]) || s[0] == '$') && !jsKeywords[s] }
+	// match returns the index of the bracket that closes the one at i.
+	match := func(i int) int {
+		depth := 0
+		for j := i; j < len(toks); j++ {
+			switch toks[j] {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				if depth--; depth == 0 {
+					return j
+				}
+			}
+		}
+		return len(toks) - 1
+	}
+	bound := map[string]bool{}
+	notUse := map[int]bool{}
+	// bindAll binds the names in toks[from:to] that follow one of ( [ {
+	// , or ...: parameters and destructuring patterns.
+	bindAll := func(from, to int) {
+		for j := from; j < to; j++ {
+			if isName(toks[j]) && j > 0 && slices.Contains([]string{"(", "[", "{", ",", "..."}, toks[j-1]) {
+				bound[toks[j]] = true
+				notUse[j] = true
+			}
+		}
+	}
+	for i, tk := range toks {
+		next := func(k int) string {
+			if i+k < len(toks) {
+				return toks[i+k]
+			}
+			return ""
+		}
+		switch {
+		case tk == "function" || tk == "class":
+			if isName(next(1)) {
+				bound[next(1)] = true
+				notUse[i+1] = true
+			}
+		case tk == "catch" && next(1) == "(":
+			bindAll(i+1, match(i+1))
+		case tk == "let" || tk == "const" || tk == "var":
+			// Declarators up to the ; or the of/in of a for, at depth 0.
+			depth := 0
+			for j := i + 1; j < len(toks); j++ {
+				s := toks[j]
+				if depth == 0 && (s == ";" || s == "of" || s == "in" || s == ")") {
+					break
+				}
+				if depth == 0 && (toks[j-1] == tk || toks[j-1] == ",") {
+					if isName(s) {
+						bound[s] = true
+						notUse[j] = true
+					} else if s == "[" || s == "{" {
+						bindAll(j, match(j))
+					}
+				}
+				switch s {
+				case "(", "[", "{":
+					depth++
+				case ")", "]", "}":
+					depth--
+				}
+			}
+		case tk == "=>":
+			if toks[i-1] == ")" {
+				for j := i - 1; j >= 0; j-- {
+					if toks[j] == "(" && match(j) == i-1 {
+						bindAll(j, i-1)
+						break
+					}
+				}
+			} else if isName(toks[i-1]) {
+				bound[toks[i-1]] = true
+				notUse[i-1] = true
+			}
+		case isName(tk) && next(1) == "(" && match(i+1)+1 < len(toks) && toks[match(i+1)+1] == "{":
+			// A function or method with its body: the name is declared
+			// (function f) or a method (get() {...}), and the parameters
+			// are bound.
+			notUse[i] = true
+			bindAll(i+1, match(i+1))
+		}
+	}
+	var free []string
+	for i, tk := range toks {
+		switch {
+		case !isName(tk) || notUse[i] || bound[tk]:
+		case i > 0 && (toks[i-1] == "." || toks[i-1] == "?."):
+		case i > 0 && i+1 < len(toks) && toks[i+1] == ":" && (toks[i-1] == "{" || toks[i-1] == ","):
+		case !slices.Contains(free, tk):
+			free = append(free, tk)
+		}
+	}
+	slices.Sort(free)
+	return free
+}
+
 // An app that uses neither route nor path ships none of the router, and
 // one that uses only path ships no route matching.
 func TestRouterTreeShaking(t *testing.T) {

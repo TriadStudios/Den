@@ -3436,3 +3436,32 @@ component App() {
 		expectLines(t, got, c.want)
 	}
 }
+
+// A program's own setInterval, setTimeout and Date are renamed in JS, as
+// den does with every Go name that is a global its JS uses: before, they
+// hid the browser's, and every never ticked.
+func TestRunOwnGlobalNames(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+func setInterval() int { return 1 }
+
+func setTimeout() int { return 2 }
+
+func Date() int { return 3 }
+
+component App() {
+    n := signal(0)
+    start := time.Now()
+    since := signal(time.Duration(0))
+    every(time.Second, func() {
+        n.Set(n.Get() + setInterval())
+        since.Set(time.Since(start))
+    })
+    after(time.Second/2, func() { n.Set(n.Get() + 10*setTimeout()) })
+    <p>{n.Get()} {Date()} {since.Get().Milliseconds()} {start.Hour()}</p>
+}`, `process.env.TZ = "UTC"; fakeTimers(Date.UTC(2026, 10, 4, 13, 0, 0));`, `
+await advance(2000);
+log(html());`)
+	expectLines(t, got, `<p>22 3 2000 13</p>`)
+}

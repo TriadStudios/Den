@@ -1924,6 +1924,14 @@ var jsReserved = map[string]bool{
 	// globals the runtime and generated code use
 	"Object": true, "String": true, "Number": true, "Boolean": true, "Array": true, "Math": true,
 	"Set": true, "Map": true, "JSON": true, "Error": true, "Symbol": true, "Promise": true,
+	// and the rest of those the runtime and stdlib use (TestReservedGlobals
+	// finds them): a Go name like setInterval would hide one inside the app.
+	"Date": true, "RegExp": true, "TextEncoder": true, "URL": true, "globalThis": true,
+	"decodeURIComponent": true, "encodeURIComponent": true, "reportError": true,
+	"setTimeout": true, "setInterval": true, "clearTimeout": true,
+	"requestAnimationFrame": true, "cancelAnimationFrame": true,
+	"addEventListener": true, "removeEventListener": true,
+	"history": true, "location": true, "localStorage": true,
 }
 
 // jsIdent renames Go identifiers that would clash with JS. Go identifiers
