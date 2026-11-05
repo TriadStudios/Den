@@ -7,8 +7,9 @@
 //
 // Each operation is timed from the click to the end of the next frame, so
 // script, style, layout and paint are all included. The CPU is throttled
-// 4x, as js-framework-benchmark does for its slower cases, to make the
-// numbers stable. The result is the median of the iterations; the summary
+// 4x for every operation to make the numbers stable (js-framework-benchmark
+// throttles only five: 4x for update, select, swap and clear, 2x for
+// remove). The result is the median of the iterations; the summary
 // is the geometric mean of den's time over vanilla's.
 "use strict";
 const http = require("http");

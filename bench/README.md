@@ -9,6 +9,14 @@ of vanilla JS on the js-framework-benchmark operations.
   rows, one delegated click listener and direct DOM updates.
 - `run.js` serves both, drives them in Chromium with Playwright and compares
   them.
+- `jsfb/` is den's entry for the official js-framework-benchmark harness.
+
+The results on this page are from `run.js`, not from the official harness.
+In the official harness (two runs, headless Chrome for Testing 157 on
+Windows) den's weighted geometric mean was 1.11 and 1.12 against 1.00 and
+1.01 for vanilla JS, and its memory after creating 1,000 rows 1.13x vanilla
+JS's. [COMPARISON.md](COMPARISON.md) has those results, the other
+frameworks, and how the two measurements differ.
 
 ```sh
 go run ./cmd/den build bench/den
@@ -22,21 +30,27 @@ dependencies.
 
 Each operation runs on a fresh page after warm-up runs. It is timed from the
 click to the end of the next frame (`requestAnimationFrame` then
-`setTimeout`), so script, style, layout and paint are all counted, which is
-also what js-framework-benchmark reports. The CPU is throttled 4x, as
-js-framework-benchmark does for its slower cases, to steady the numbers. Each
+`setTimeout`), so script, style, layout and paint are all counted.
+js-framework-benchmark counts the same work but reads it from a Chrome
+trace, up to the end of the compositor commit. The CPU is throttled 4x for
+every operation to steady the numbers; js-framework-benchmark throttles only
+five of them (4x for update, select, swap and clear, 2x for remove). Each
 result is the median of the runs, and the summary is the unweighted geometric
 mean of den's time over vanilla's. The script column stops once the click's
 microtasks (den's update flush) have run. Memory is the JS heap
 (`Runtime.getHeapUsage`) after creating 1,000 rows and forcing a garbage
-collection, which is what js-framework-benchmark's memory results report.
+collection; js-framework-benchmark reports
+`performance.measureUserAgentSpecificMemory()` after a forced collection
+instead.
 
 This is a local reimplementation of the js-framework-benchmark keyed
 operations, not the official harness, which needs npm and its own server.
+Its vanilla JS app is `vanilla/`, not the harness's vanillajs entry.
 
 ## Results
 
-Chromium (Playwright's build), Linux container, 15 runs per operation:
+`run.js` in Chromium (Playwright's build), Linux container, 15 runs per
+operation:
 
 | Operation | Vanilla ms | den ms | den / vanilla | Vanilla script | den script |
 | --- | --- | --- | --- | --- | --- |
@@ -50,12 +64,12 @@ Chromium (Playwright's build), Linux container, 15 runs per operation:
 | Append 1,000 rows | 292.9 | 321.5 | 1.10 | 29.8 | 37.6 |
 | Clear 1,000 rows | 21.9 | 22.1 | 1.01 | 18.8 | 19.7 |
 
-**Speed: 1.00x vanilla** (geometric mean; gate 1.30). Single operations vary
-between runs by more than some of the differences shown. On script time
-alone den is slower on the small updates (select, swap, remove), where
-vanilla touches two rows directly and den runs its keyed diff or
-re-evaluates each row's binding; those are well under 2 ms even with the CPU
-throttled.
+**Speed: 1.00x vanilla** (geometric mean in this runner; gate 1.30).
+Single operations vary between runs by more than some of the differences
+shown. On script time alone den is slower on the small updates (select,
+swap, remove), where vanilla touches two rows directly and den runs its
+keyed diff or re-evaluates each row's binding; those are well under 2 ms
+even with the CPU throttled.
 
 **Memory: 1.15x vanilla** (JS heap after creating 1,000 rows and a full
 GC: 2.24 MB against 1.94 MB; budget 1.20). What keeps it down:

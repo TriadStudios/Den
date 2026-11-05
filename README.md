@@ -45,8 +45,15 @@ field or method Titel)` before any JavaScript is written.
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
-On the js-framework-benchmark operations den runs at **1.00x the time of
-hand-written vanilla JS, using 1.15x its memory** ([details](bench/README.md)).
+In local runs of the official
+[js-framework-benchmark](https://github.com/krausest/js-framework-benchmark)
+harness (den is not submitted upstream) den's weighted geometric mean was
+**1.11 and 1.12 in two runs, against 1.00 and 1.01 for vanilla JS**
+(headless Chrome for Testing 157 on Windows). That is within run-to-run noise of Solid and Svelte and ahead of
+Vue and React. After creating 1,000 rows den used 1.13x vanilla JS's memory
+([comparison](bench/COMPARISON.md)). Den's own local benchmark, which
+reimplements the same operations against its own vanilla JS app, measures
+1.00x the time and 1.15x the memory ([details](bench/README.md)).
 
 ## Quick start
 
