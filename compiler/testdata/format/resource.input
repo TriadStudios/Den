@@ -1,0 +1,25 @@
+// Async data: struct tags line up as gofmt lines them up, and the
+// resource call and its methods are ordinary Go.
+
+type User struct {
+  ID int `json:"id"`
+    Name   string `json:"name,omitempty"`
+  Tags []string `json:"tags"`
+	secret string
+}
+
+component Users( ) {
+    page:=signal( 1 )
+    users := resource( fetchJSON[ []User ]( "/users/"+itoa( page.Get() )+".json" ) )
+    <div>
+    {if users.Loading( ) {<p>Loading...</p>}}
+    {if users.Err()!=nil {<p class="error">{ users.Err().Error() }</p>}}
+    <ul>{for _, u := range users.Data() key u.ID {<li>{u.Name}</li>}}</ul>
+    <button onclick={ page.Set(page.Get()+1) }>Next</button>
+    <button onclick={users.Reload()}>Reload</button>
+    </div>
+}
+
+component App() {
+	<Users/>
+}

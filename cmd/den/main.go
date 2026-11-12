@@ -1,6 +1,6 @@
 // Command den builds, checks, serves and formats den apps.
 //
-//	den build <dir> [-o dist]   compile <dir>/*.den into dist/app.js + index.html
+//	den build <dir> [-o dist]   compile <dir>/*.den into dist/app.js + index.html, copy <dir>/public
 //	den check <dir>             type-check only
 //	den dev   <dir> [-addr :8080] build, serve and rebuild on save with live reload
 //	den fmt [-l] [-w] [-d] [path ...]  format .den files, as gofmt formats Go
@@ -11,6 +11,7 @@ import (
 	"compress/gzip"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -153,8 +154,13 @@ func indexHTML(denCSS, hasCSS, dev, router bool) string {
 // and can give the design tokens other values, and its style.css keeps
 // what only works at the start of a file, such as @import, @charset or a
 // byte order mark. The page's CSP allows no inline styles, so all CSS
-// goes in files.
+// goes in files. Last, it copies the files of the app's public directory,
+// if it has one, as they are (publicFiles).
 func writeDist(dir, out string, res *compiler.Result, dev bool) error {
+	public, err := publicFiles(dir, out)
+	if err != nil {
+		return err // before writing anything
+	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
@@ -176,7 +182,101 @@ func writeDist(dir, out string, res *compiler.Result, dev bool) error {
 			return err
 		}
 	}
-	return os.WriteFile(filepath.Join(out, "index.html"), []byte(indexHTML(denCSS, hasCSS, dev, res.Router)), 0o644)
+	if err := os.WriteFile(filepath.Join(out, "index.html"), []byte(indexHTML(denCSS, hasCSS, dev, res.Router)), 0o644); err != nil {
+		return err
+	}
+	for _, name := range public {
+		b, err := os.ReadFile(filepath.Join(dir, "public", name))
+		if err != nil {
+			return err
+		}
+		to := filepath.Join(out, name)
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(to, b, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// distNames are the names den writes at the top of dist, which no file
+// of the app's public directory may take: its own files, and the path
+// den dev serves its live reload from.
+var distNames = []string{"app.js", "index.html", "den.css", "style.css", "__den"}
+
+// publicFiles returns the files in dir/public, such as JSON an app
+// fetches or images, by their paths in it, which are their paths in dist
+// too. There are none when the app has no public directory. Everything
+// is decided here, before writeDist writes anything, so a failed build
+// leaves no dist half written. Names are compared ignoring case, as on the
+// file systems of Windows and macOS: a file that would replace one den
+// writes is an error. So is anything in public but plain files and
+// directories, symbolic links and Windows junctions included, which could
+// lead out of it, and an output directory inside public, which den would
+// copy into itself (and den dev, which watches public, rebuild forever).
+func publicFiles(dir, out string) ([]string, error) {
+	root := filepath.Join(dir, "public")
+	if st, err := os.Lstat(root); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	} else if !st.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory (den follows no links): den copies the files in an app's public directory into dist", root)
+	}
+	if within(out, root) {
+		return nil, fmt.Errorf("the output directory %s is inside %s, which den copies into it; write it elsewhere", out, root)
+	}
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&^fs.ModeDir != 0 {
+			return fmt.Errorf("%s is not a file or a directory (a symbolic link or a junction, say): den copies only those from public", path)
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+		for _, n := range distNames {
+			if strings.EqualFold(first, n) {
+				if n == "__den" {
+					return fmt.Errorf("%s: den dev serves its own files under /__den/; rename it", filepath.Join(root, first))
+				}
+				return fmt.Errorf("%s would replace the %s that den writes into dist; rename it", filepath.Join(root, first), n)
+			}
+		}
+		if !d.IsDir() {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	return files, err
+}
+
+// within reports whether path p is directory dir or inside it, by the
+// file system's own idea of which file is which (os.SameFile), so that
+// neither case (PUBLIC for public on Windows) nor links fool it. p need
+// not exist yet.
+func within(p, dir string) bool {
+	d, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	p, _ = filepath.Abs(p)
+	for {
+		if st, err := os.Stat(p); err == nil && os.SameFile(st, d) {
+			return true
+		}
+		up := filepath.Dir(p)
+		if up == p {
+			return false
+		}
+		p = up
+	}
 }
 
 func gzipSize(b []byte) int {
@@ -254,11 +354,13 @@ func dev(dir, out, addr string) {
 			h.broadcast("error\n" + lastErr)
 			return
 		}
-		lastErr = ""
 		if err := writeDist(dir, out, res, true); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			lastErr = err.Error()
+			fmt.Fprintln(os.Stderr, lastErr)
+			h.broadcast("error\n" + lastErr)
 			return
 		}
+		lastErr = ""
 		fmt.Printf("rebuilt in %s\n", time.Since(start).Round(time.Millisecond))
 		h.broadcast("reload\n")
 	}
@@ -342,16 +444,29 @@ func devFiles(out string) http.Handler {
 	})
 }
 
+// snapshot sums up the files a build reads: the .den and .css files of
+// dir, and every file in dir/public.
 func snapshot(dir string) string {
 	var b strings.Builder
+	stamp := func(path string, st os.FileInfo) {
+		fmt.Fprintf(&b, "%s:%d:%d;", path, st.ModTime().UnixNano(), st.Size())
+	}
 	matches, _ := filepath.Glob(filepath.Join(dir, "*"))
 	for _, m := range matches {
 		if ext := filepath.Ext(m); ext != ".den" && ext != ".css" {
 			continue
 		}
 		if st, err := os.Stat(m); err == nil {
-			fmt.Fprintf(&b, "%s:%d:%d;", m, st.ModTime().UnixNano(), st.Size())
+			stamp(m, st)
 		}
 	}
+	filepath.WalkDir(filepath.Join(dir, "public"), func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if st, err := d.Info(); err == nil {
+				stamp(path, st)
+			}
+		}
+		return nil
+	})
 	return b.String()
 }

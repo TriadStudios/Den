@@ -1,0 +1,8 @@
+{
+  "planets": [
+    {"name": "Mars", "kind": "rocky", "moons": 2},
+    {"name": "Jupiter", "kind": "gas giant", "moons": 95},
+    {"name": "Saturn", "kind": "gas giant", "moons": 146}
+  ],
+  "last": false
+}
