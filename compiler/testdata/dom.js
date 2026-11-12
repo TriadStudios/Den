@@ -3,6 +3,9 @@
 // check that keyed lists move rows instead of rebuilding them.
 "use strict";
 let domOps = 0;
+// With focusEvents set, blur() and removing the focused element (or one
+// holding it) fire focusout on it, as Chromium does.
+let focusEvents = false;
 class Node {
   constructor() { this.parentNode = null; this.childNodes = []; }
   get firstChild() { return this.childNodes[0] ?? null; }
@@ -33,10 +36,12 @@ class Node {
   before(...nodes) { this.parentNode.#insert(nodes.filter((n) => n !== this), this); }
   remove() {
     if (!this.parentNode) return;
+    const a = document.activeElement, lost = focusEvents && a && this.contains(a);
     const s = this.parentNode.childNodes;
     s.splice(s.indexOf(this), 1);
     this.parentNode = null;
     domOps++;
+    if (lost) { document.activeElement = null; a.dispatch("focusout"); }
   }
   replaceChildren(...nodes) { for (const c of [...this.childNodes]) c.remove(); this.append(...nodes); }
   replaceWith(...nodes) { const p = this.parentNode; p.#insert(nodes.filter((n) => n !== this), this); this.remove(); }
@@ -81,13 +86,19 @@ class Element extends Node {
   }
   get nodeType() { return 1; }
   get localName() { return this.tagName; }
-  shallow() { const e = new Element(this.tagName, this.namespaceURI); e.attributes = new Map(this.attributes); return e; }
+  shallow() { const e = make(this.tagName, this.namespaceURI); e.attributes = new Map(this.attributes); return e; }
   setAttribute(k, v) { this.attributes.set(k, String(v)); }
   getAttribute(k) { return this.attributes.get(k) ?? null; }
   removeAttribute(k) { this.attributes.delete(k); }
   addEventListener(type, fn, capture) { ((capture ? this.captures : this.listeners)[type] ??= []).push(fn); }
-  focus() { document.activeElement = this; }
-  blur() { if (document.activeElement === this) document.activeElement = null; }
+  // focus records whether the element was in the document (under the
+  // app's root) when it was focused.
+  focus() { document.activeElement = this; this.focusedInDoc = root.contains(this); }
+  blur() { if (document.activeElement === this) { document.activeElement = null; if (focusEvents) this.dispatch("focusout"); } }
+  // Only inputs and textareas have select, as in browsers; it and
+  // scrollIntoView count their calls.
+  get select() { return this.tagName === "input" || this.tagName === "textarea" ? () => { this.selects = (this.selects ?? 0) + 1; } : undefined; }
+  scrollIntoView() { this.scrolls = (this.scrolls ?? 0) + 1; }
   // animate records each animation in anims; finish() and cancel() end it.
   animate(k, o) { const a = new Animation(this, k, o); anims.push(a); return a; }
   // An element is where rect says, or else in a column: 10px down for each
@@ -115,6 +126,25 @@ class Element extends Node {
     return ev;
   }
 }
+// <option> and <select>, for bind: an option's value is the one set, else
+// its value attribute, else its text. A select's value is its selected
+// option's: the first option until one is chosen. Setting it selects the
+// first option with that value, or none (value "") if no option has it.
+class Option extends Element {
+  constructor(t, ns) { super(t, ns); this.v = undefined; this.selected = false; }
+  get value() { return this.v ?? this.getAttribute("value") ?? this.textContent; }
+  set value(v) { this.v = String(v); }
+}
+class Select extends Element {
+  constructor(t, ns) { super(t, ns); this.none = false; }
+  get value() { const o = findAll("option", this); return (o.find((x) => x.selected) ?? (this.none ? null : o[0]))?.value ?? ""; }
+  set value(v) {
+    let hit = false;
+    for (const o of findAll("option", this)) o.selected = !hit && (hit = o.value === String(v));
+    this.none = !hit;
+  }
+}
+function make(t, ns) { return t === "option" ? new Option(t, ns) : t === "select" ? new Select(t, ns) : new Element(t, ns); }
 // An Animation as element.animate returns it: el, its keyframes k and
 // options o. finish() runs onfinish; a cancelled one never finishes.
 let anims = [];
@@ -127,8 +157,8 @@ const root = new Element("div", "html");
 const docListeners = {};
 globalThis.document = {
   addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
-  createElement: (t) => new Element(t, "html"),
-  createElementNS: (ns, t) => new Element(t, ns),
+  createElement: (t) => make(t, "html"),
+  createElementNS: (ns, t) => make(t, ns),
   createTextNode: (s) => new Text(s),
   createComment: (s) => new Comment(s),
   createDocumentFragment: () => new DocumentFragment(),
@@ -182,9 +212,73 @@ const rafs = new Map();
 let rafID = 0, now = 0;
 globalThis.requestAnimationFrame = (f) => { rafs.set(++rafID, f); return rafID; };
 globalThis.cancelAnimationFrame = (id) => { rafs.delete(id); };
+// fetch answers as the test says. Each call is kept in fetches as {url,
+// opts, signal, done}, and its promise settles when the test calls
+// reply(f, status, body) or fail(f, message); an abort before that rejects
+// it with an AbortError, as fetch does. The response's text() resolves
+// whatever happens after, so a test can have a response land after its
+// request was aborted. With serve set to a function of a URL returning
+// [status, body], every request is answered so, after a tick (a real one).
+const fetches = [];
+let serve = null;
+const statusTexts = { 200: "OK", 404: "Not Found", 500: "Internal Server Error" };
+globalThis.fetch = (u, opts = {}) => new Promise((resolve, reject) => {
+  const f = { url: String(u), opts, signal: opts.signal, done: false, resolve, reject };
+  fetches.push(f);
+  opts.signal?.addEventListener("abort", () => { if (!f.done) { f.done = true; reject(new DOMException("This operation was aborted", "AbortError")); } });
+  if (serve) realTimeout(() => reply(f, ...serve(f.url)), 0); // not a timer fakeTimers holds back
+});
+function reply(f, status, body = "") {
+  if (f.done) return;
+  f.done = true;
+  f.resolve({ ok: status >= 200 && status < 300, status, statusText: statusTexts[status] ?? "", text: async () => body });
+}
+function fail(f, message) { if (!f.done) { f.done = true; f.reject(new TypeError(message)); } }
+// inFlight lists the URLs of the requests not settled yet.
+function inFlight() { return fetches.filter((f) => !f.done).map((f) => f.url); }
+
 // reportError is how the runtime reports an error it caught (an effect
 // that threw); here it logs the message, so tests see it.
 globalThis.reportError = (e) => console.log("reportError:", e?.message ?? e);
+// Timers: once fakeTimers(wall) is called, the app's setTimeout,
+// setInterval, clearTimeout and clearInterval run on a fake clock (clock,
+// in ms from 0), performance.now() reads it, and Date.now() is wall plus
+// it. advance(ms) moves the clock on, running each timer that falls due in
+// order, with the microtasks it queues; pending() counts the timers set.
+// tick() and settle() still wait on node's own event loop.
+const realTimeout = setTimeout, realImmediate = setImmediate;
+let clock = 0, timerID = 0;
+const timers = new Map();
+function fakeTimers(wall = 0) {
+  const add = (f, ms, every) => {
+    ms = Math.max(Number(ms) || 0, 0);
+    timers.set(++timerID, { at: clock + ms, f, every: every ? Math.max(ms, 1) : 0 });
+    return timerID;
+  };
+  globalThis.setTimeout = (f, ms) => add(f, ms, false);
+  globalThis.setInterval = (f, ms) => add(f, ms, true);
+  globalThis.clearTimeout = globalThis.clearInterval = (id) => { timers.delete(id); };
+  Object.defineProperty(globalThis, "performance", { value: { timeOrigin: wall, now: () => clock }, configurable: true, writable: true });
+  Date.now = () => wall + clock;
+}
+function pending() { return timers.size; }
+async function advance(ms) {
+  // Microtasks queued before now run before any timer, as in browsers.
+  await settle();
+  const end = clock + ms;
+  for (;;) {
+    let id = 0, t = null;
+    for (const [i, u] of timers) if (u.at <= end && (!t || u.at < t.at)) { id = i; t = u; }
+    if (!t) break;
+    clock = t.at;
+    if (t.every) t.at += t.every;
+    else timers.delete(id);
+    t.f();
+    await settle();
+  }
+  clock = end;
+  await settle();
+}
 
 // ---- helpers for test scripts ----------------------------------------------
 function html(n = root) {
@@ -225,7 +319,14 @@ function visit(u) { history.pushState(null, "", u); traverse(0); }
 function key(el, k) { el.dispatch("keydown", { key: k }); }
 function check(el, on) { el.checked = on; el.dispatch("change"); }
 function input(el, value) { el.value = value; el.dispatch("input"); }
-function tick() { return new Promise((r) => setTimeout(r, 0)); }
+// choose picks the option with value in a select; leave moves focus out of
+// el, which fires focusout.
+function choose(el, value) { el.value = value; el.dispatch("change"); }
+function leave(el) { el.blur(); el.dispatch("focusout"); }
+function tick() { return new Promise((r) => realTimeout(r, 0)); }
+// settle waits until the microtasks queued so far, and those they queue,
+// have run: den's flushes and onMount callbacks.
+function settle() { return new Promise((r) => realImmediate(r)); }
 function ops() { const n = domOps; domOps = 0; return n; }
 function log(...a) { console.log(...a); }
 // running lists the animations still running, as tag:text; finishAll

@@ -1,0 +1,34 @@
+// Context: provide(v) and use[T](), in statements, closures, markup,
+// handlers, props and slots.
+
+type Theme struct {
+    Dark *Signal[bool]
+    Name string
+}
+
+type Box[T any] struct{ V T }
+
+type TabState struct{ Active *Signal[string] }
+
+component App() {
+    dark:=signal(false)
+    provide( Theme{Dark:dark,Name:"app"} )
+    provide(Box[int]{ 1 })
+    label := func() string { return use[ Theme ]().Name }
+<main class={use[Theme]( ).Name}>
+<button onclick={t:=use[Theme]()
+t.Dark.Set(!t.Dark.Get())}>{label()}</button>
+<Tabs first="a"><Tab name="a"/><Tab name={use[Theme]().Name}/></Tabs>
+<p>{use[Box[int]]().V}</p>
+</main>
+}
+
+component Tabs(first string, children den.Children) {
+    provide(TabState{Active:signal(first)})
+    <div>{children}</div>
+}
+
+component Tab(name string) {
+    s:=use[TabState]()
+    <button class={s.Active.Get()==name} onclick={s.Active.Set(name)}>{name}</button>
+}
