@@ -120,6 +120,43 @@ const preludeSpring = `
 func spring(target float64) *Computed[float64] { return nil }
 `
 
+// preludeLife declares den's lifecycle functions and timers, each unless
+// the program has a name of its own for it. after and every take the
+// Duration of den's package time, which the prelude imports as denTime
+// when it declares either (as denTime_ and so on in a program that has a
+// denTime of its own, which check writes in their place).
+var preludeLife = [][2]string{
+	{"onMount", "\n// onMount runs f once the component's nodes are in the document.\nfunc onMount(f func()) {}\n"},
+	{"onCleanup", "\n// onCleanup runs f when the component goes away.\nfunc onCleanup(f func()) {}\n"},
+	{"after", "\n// after runs f once, d from now, unless stopped first.\nfunc after(d denTime.Duration, f func()) (stop func()) { return nil }\n"},
+	{"every", "\n// every runs f every d until stopped.\nfunc every(d denTime.Duration, f func()) (stop func()) { return nil }\n"},
+}
+
+// preludeRef declares element refs, unless the program declares its own
+// ref or Ref, which then go together, as route and Route do. A Ref is
+// used as a *Ref; its own field type makes comparing two Refs an error
+// den can word on its own.
+const preludeRef = `
+// Ref holds the element that ref={r} is on, while it exists.
+type Ref struct{ _ denOpaqueRef }
+
+type denOpaqueRef func()
+
+func (r *Ref) Focus()          {}
+func (r *Ref) Blur()           {}
+func (r *Ref) Select()         {}
+func (r *Ref) ScrollIntoView() {}
+
+// ref is a new *Ref, holding no element.
+func ref() *Ref { return nil }
+
+func denRef(r *Ref) {}
+`
+
+// lifeNames are den's functions that need the component instance calling
+// them: they exist only in components, never in top-level functions.
+var lifeNames = []string{"onMount", "onCleanup", "after", "every"}
+
 // preludeDen ends the prelude of a program that imports the built-in
 // package den, which is every program that does not declare its own den.
 const preludeDen = `
@@ -233,6 +270,7 @@ const (
 	partFor
 	partMotion // enter=, exit= and animate=
 	partKey    // {key x { ... }}
+	partRef    // ref={r}
 )
 
 // part links a markup node to the Go AST that the type checker produced for it.
@@ -348,6 +386,21 @@ func check(files []*File) (*checked, error) {
 	if motionBy["Layout"] != "" {
 		motionBy["layout"] = "Layout"
 	}
+	// ref returns a *Ref, so the two come and go together, like route and
+	// Route; refBy names the program's name that took them, if any.
+	refBy := ""
+	for _, name := range []string{"Ref", "ref"} {
+		if own[name] != "" {
+			refBy = name
+		}
+	}
+	// timeName is what the prelude imports den's package time as, for after
+	// and every: a name the program does not have at the top level.
+	needTime := own["after"] == "" || own["every"] == ""
+	timeName := "denTime"
+	for own[timeName] != "" {
+		timeName += "_"
+	}
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -363,6 +416,9 @@ func check(files []*File) (*checked, error) {
 	src.WriteString("package app\n\n")
 	if !denTaken {
 		src.WriteString("import /*line " + preludeFile + ":1:1*/\"den\"\n")
+	}
+	if needTime {
+		src.WriteString("import /*line " + preludeFile + ":1:1*/" + timeName + " \"time\"\n")
 	}
 	src.WriteString(importSrc.String())
 	// The import directives would otherwise carry on into the prelude.
@@ -384,12 +440,20 @@ func check(files []*File) (*checked, error) {
 			src.WriteString(d[1])
 		}
 	}
+	for _, d := range preludeLife {
+		if own[d[0]] == "" {
+			src.WriteString(strings.ReplaceAll(d[1], "denTime.", timeName+"."))
+		}
+	}
+	if refBy == "" {
+		src.WriteString(preludeRef)
+	}
 	if denTaken {
 		src.WriteString(preludePlain)
 	} else {
 		src.WriteString(preludeDen)
 	}
-	g := &gen{src: &src, byName: byName, errs: &errs, own: own, motionBy: motionBy}
+	g := &gen{src: &src, byName: byName, errs: &errs, own: own, motionBy: motionBy, refBy: refBy}
 	for _, fr := range declFrags {
 		fr.start += src.Len()
 		fr.end += src.Len()
@@ -469,6 +533,29 @@ func check(files []*File) (*checked, error) {
 			return true
 		})
 	}
+	// The prelude's import of package time is in the same file as the
+	// program, but not the program's: Go would not know the name. Say so,
+	// instead of any error Go has about what the program selects from it.
+	timeUses := map[*ast.Ident]bool{}
+	for id, obj := range info.Uses {
+		if pn, ok := obj.(*types.PkgName); ok && pn.Name() == timeName && fset.Position(pn.Pos()).Filename == preludeFile && fset.Position(id.Pos()).Filename != preludeFile {
+			timeUses[id] = true
+			errAt(id.Pos(), "undefined: "+timeName)
+			replaced = append(replaced, [2]token.Pos{id.Pos(), id.End()})
+		}
+	}
+	if len(timeUses) > 0 {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok {
+				for id := range timeUses {
+					if sel.Pos() == id.Pos() {
+						replaced = append(replaced, [2]token.Pos{sel.Pos(), sel.End()})
+					}
+				}
+			}
+			return true
+		})
+	}
 next:
 	for _, te := range typeErrs {
 		for _, r := range replaced {
@@ -491,9 +578,15 @@ next:
 		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && motionBy[name] != "" {
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[motionBy[name]])
 		}
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && refBy != "" && (name == "ref" || name == "Ref") {
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[refBy])
+		}
 		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
-		// The value of enter= is checked as an argument to denEnter.
-		for _, a := range motionAttrs {
+		msg = strings.Replace(msg, "struct containing denOpaqueRef cannot be compared", "a Ref cannot be compared", 1)
+		msg = strings.Replace(msg, "struct containing time.opaque cannot be compared", "den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0", 1)
+		// The value of enter= is checked as an argument to denEnter, and
+		// that of ref= as one to denRef.
+		for _, a := range append(motionAttrs[:len(motionAttrs):len(motionAttrs)], "ref") {
 			msg = strings.Replace(msg, " in argument to den"+strings.ToUpper(a[:1])+a[1:], " in "+a+"=", 1)
 		}
 		errAt(te.Pos, msg)
@@ -530,6 +623,7 @@ next:
 	if len(typeErrs) == 0 {
 		routes = checkRoutes(file, info, pkg, fset, errAt)
 		durations = checkMotion(file, info, fset, errAt)
+		checkLifecycle(file, info, fset, byName, errAt)
 		preludeValues(file, info, fset, byName, errAt)
 	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
@@ -888,7 +982,9 @@ type gen struct {
 	errs     *ErrorList
 	own      map[string]string // check's own: the names the program claims, and how
 	motionBy map[string]string // den's motion names the program's own names take away
+	refBy    string            // the program's own name that takes ref and Ref away, if any
 	chain    []Node            // the {if}, {for} and {key} blocks whose top level is being written
+	rows     int               // how many {for} rows the markup being written is in
 	frags    []fragment        // the program's Go that gen copied into src, in order
 	shapes   []shape           // what gen wrote around it, in order
 	funcs    []int             // the offsets of the components' funcs
@@ -1293,7 +1389,9 @@ func (g *gen) node(n Node) {
 			return nil
 		})
 		g.call(g.d(n.KeyPos), "denKey", n.KeyPos, n.Key, "this list key")
+		g.rows++
 		g.body(n, n.Body)
+		g.rows--
 		g.src.WriteString("\t")
 		rb = g.src.Len()
 		g.src.WriteString("}\n")
@@ -1333,6 +1431,12 @@ func (g *gen) node(n Node) {
 			}
 			if isMotionAttr(a.Name) {
 				if err := g.motionAttr(a); err != nil {
+					*g.errs = append(*g.errs, err)
+				}
+				continue
+			}
+			if a.Name == "ref" {
+				if err := g.refAttr(a); err != nil {
 					*g.errs = append(*g.errs, err)
 				}
 				continue
@@ -1407,6 +1511,33 @@ func (g *gen) motionAttr(a *Attr) *Error {
 		err = bad("%s works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it", a.Name)
 	}
 	fn := "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
+	if err != nil {
+		fn = "denAny"
+	}
+	g.call(g.d(a.ValuePos), fn, a.ValuePos, a.Value, "this {...}")
+	return err
+}
+
+// refAttr checks what can be checked of ref={r} before types: that its
+// value is Go, that den's Ref is there, and that the element is made once
+// per component, not once per {for} row. It writes denRef(r), which
+// checks that r is a *Ref, or denAny(r) when it reports an error, as
+// motionAttr does.
+func (g *gen) refAttr(a *Attr) *Error {
+	bad := func(format string, args ...any) *Error {
+		return &Error{File: g.file, Pos: a.Pos, Msg: fmt.Sprintf(format, args...)}
+	}
+	if a.Kind != AttrExpr {
+		return bad("ref takes a *Ref in braces, like ref={box} where box := ref()")
+	}
+	var err *Error
+	switch {
+	case g.refBy != "":
+		err = bad("ref is not available because this program %s; rename it", g.own[g.refBy])
+	case g.rows > 0:
+		err = bad("ref= inside a {for} row: every row would set the same ref")
+	}
+	fn := "denRef"
 	if err != nil {
 		fn = "denAny"
 	}
@@ -1666,6 +1797,8 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 				fn = "denHandler"
 			case isMotionAttr(a.Name):
 				fn = "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
+			case a.Name == "ref":
+				fn = "denRef"
 			}
 			arg, rest, ok := pr.arg(a.Pos, stmts, fn)
 			if !ok {
@@ -1683,6 +1816,11 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 			case isMotionAttr(a.Name):
 				pr.cc.attrs[a] = &part{kind: partMotion, expr: arg}
 				pr.motion(n, a, arg)
+			case a.Name == "ref":
+				pr.cc.attrs[a] = &part{kind: partRef, expr: arg}
+				if pr.ck.reactive(arg) {
+					pr.errAt(arg, "ref= cannot depend on a signal: den reads it once, when it makes the element")
+				}
 			default:
 				pr.cc.attrs[a] = &part{kind: partAttr, expr: arg}
 			}
@@ -1907,6 +2045,8 @@ func (g *gen) component(el *Element) *Error {
 		switch {
 		case !ok && isMotionAttr(a.Name):
 			return bad(a.Pos, "%s works on HTML and SVG elements, not on components: <%s> has no prop %q", a.Name, el.Tag, a.Name)
+		case !ok && a.Name == "ref":
+			return bad(a.Pos, "ref works on HTML and SVG elements, not on components: <%s> has no prop %q; pass the *Ref as a prop and put ref= on an element inside", el.Tag, a.Name)
 		case !ok:
 			return bad(a.Pos, "<%s> has no prop %q", el.Tag, a.Name)
 		case p.Children && p.Name == "children":

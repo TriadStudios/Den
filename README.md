@@ -43,6 +43,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/todomvc` ([TodoMVC](https://todomvc.com), the full spec) | 5.4 KB |
 | `examples/router` (pages by URL path, a typed param, not found, scoped styles) | 4.2 KB |
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
+| `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -105,17 +106,17 @@ app.den:5:36: cannot use "hi" (untyped string constant) as int value in argument
 app.den:6:13: cannot render struct{A int}: only strings, numbers and bools can be shown in markup
 app.den:7:15: <Card> has no prop "titel"
 app.den:4:10: for in markup needs a key so rows can move instead of being rebuilt: {for _, x := range xs key x.ID { ... }}
-app.den:2:8: package "fmt" is not available in den; you can import strconv, strings
+app.den:2:8: package "fmt" is not available in den; you can import strconv, strings, time
 ```
 
 Other checks: missing props, wrong prop types, unknown names, unused
 variables and imports, mismatched tags, list and `{key}` keys that are
 not strings, numbers or bools, calling a component as a function,
 children or slots a component does not take, route patterns that do
-not fit their params, transitions where they could never play, and
-design tokens that do not exist, hold a bad value or are used in the
-wrong kind of property (`app.den:9:30: $surface is a den.Color, but
-padding takes a length`).
+not fit their params, transitions where they could never play, timers
+and cleanups outside a component, and design tokens that do not exist,
+hold a bad value or are used in the wrong kind of property
+(`app.den:9:30: $surface is a den.Color, but padding takes a length`).
 
 ## Security by default
 
@@ -556,6 +557,97 @@ component Dot(target *Signal[float64]) {
   it. `fade`, `scale` and `slide` give way along with `Transition`, and
   `layout` with `Layout`; using one then says why.
 
+**Lifecycle, refs and timers**
+
+```go
+import "time"
+
+component Search() {
+    box := ref()
+    n := signal(0)
+    onMount(func() { box.Focus() })
+    stop := every(time.Second, func() { n.Set(n.Get() + 1) })
+    onCleanup(func() { /* runs when the component goes away */ })
+    <div>
+        <input ref={box} />
+        <p>{n.Get()}</p>
+        <button onclick={stop()}>Stop</button>
+        <button onclick={after(2*time.Second, func() { n.Set(0) })}>Reset soon</button>
+    </div>
+}
+```
+
+- These belong to the component whose Go calls them: its statements,
+  the func literals there (also one passed whole as a prop, which runs
+  when the component given it calls it), its handlers (in its list rows
+  too) and the markup it passes to another component as children or a
+  slot. Each use of a component is one instance, with its own.
+- `onMount(f)` runs `f` once, after the build that made the component,
+  when its nodes are in the document and its refs are set: in a
+  microtask after the page, or the `{if}` branch, `{for}` row or `{key}`
+  block holding it, is built. Components mount in the order they were
+  built, so a parent before its children. A component that goes before
+  then, because the same update took its block away or a panic stopped
+  its block being built, never mounts.
+- `onCleanup(f)` runs `f` when the component goes, with the `{if}`
+  branch, `{for}` row or `{key}` block that made it (the page's own
+  components never go). Cleanups run newest first and after everything
+  the component made has stopped, as deferred calls do, so a child's run
+  before its parent's. Called after the component has gone, `onCleanup`
+  runs `f` at once. By then the component's own `computed` values have
+  stopped following their signals and may hold old values, so a cleanup
+  should read the signals themselves.
+- `after(d, f)` runs `f` once, `d` from now; `every(d, f)` runs it every
+  `d`. Each returns a `stop` func, and each stops when the component
+  goes, so a timer never outlives the component that set it. Calling
+  `stop` again does nothing. An `after` that has fired is forgotten, so
+  a button that calls `after` costs nothing once its timer has run. `d`
+  is a `time.Duration`: `after` with `d <= 0` runs on the next task,
+  `every` panics with `d <= 0` (as Go's `time.NewTicker` does), and both
+  panic when `d` is longer than a browser timer can wait (2^31-1 ms,
+  about 24.8 days). Called after the component has gone, they set no
+  timer. Each call starts a timer: a func among the statements that
+  calls `after` or `every`, called from markup that den evaluates again
+  (a `{...}` that reads a signal, say), starts one each time.
+- What `onMount`, `onCleanup`, `after` and `every` run, runs as an event
+  handler does: reading signals subscribes to nothing, and the signals
+  it sets update the page once, in a microtask. What it makes, such as
+  a `computed` or a `spring`, belongs to the component and stops with
+  it, so what an `every` callback makes piles up, one per tick, until
+  the component goes. A panic in one is reported with `reportError` and
+  the rest still run; `every` keeps ticking.
+- `ref()` makes a `*Ref`. `ref={r}` on an HTML or SVG element puts the
+  element in `r` when den makes it, and takes it out when the block that
+  made it goes, unless another element has taken `r` by then.
+  `r.Focus()`, `r.Blur()`, `r.Select()` (on elements that have `select`,
+  such as inputs) and `r.ScrollIntoView()` call the element. While `r`
+  holds no element they do nothing, and on a nil `*Ref` they panic, as a
+  nil pointer would in Go. A `*Ref` is a value like any other: pass it
+  to a component as a prop and it can focus an input inside it. Den
+  rejects `ref=` in a `{for}` row of the markup that holds it, but not
+  a `*Ref` given as a prop to components used in rows, nor `ref=` in
+  markup passed as children or a slot that the component given it shows
+  in its own rows, or more than once: there, the element made last holds
+  the ref.
+- These are compile errors: `onMount`, `onCleanup`, `after` and `every`
+  in a top-level function, which belongs to no component
+  (`app.den:3:5: onMount can only be called in a component: in its
+  statements, handlers or func literals`); any of them, or `ref`, in Go
+  that den evaluates again or once per row or element: the argument of
+  `computed` or `spring`, a `{...}` or attribute value in markup, an
+  `{if}`, `{for}` or `{key}` header, a list key, a prop (other than a
+  func literal that is the whole prop), or the value of `enter=`,
+  `exit=`, `animate=` or `ref=` (`app.den:4:32: after cannot
+  be called in computed(...): it would run again each time the value is
+  recomputed`); `ref=` on a component, given no value, a string or
+  anything but a `*Ref`, reading a signal, or inside a `{for}` row, where
+  every row would set the same ref; a `Ref` that is not a `*Ref`;
+  comparing Refs or times; and den's functions used as values (`f :=
+  after`).
+- `onMount`, `onCleanup`, `after`, `every`, `ref` and `Ref` are ordinary
+  names: a program that has its own at the top level keeps it. `ref` and
+  `Ref` give way together.
+
 **Go**
 - `type`, `const` and `func` declarations, including generic and variadic
   functions, named results and multiple return values.
@@ -571,13 +663,25 @@ component Dot(target *Signal[float64]) {
   `TrimPrefix`, `TrimSuffix`, `ToLower`, `ToUpper`, `Split`, `Join`,
   `Repeat`, `ReplaceAll`, `Fields`. `import "strconv"`: `Itoa`, `Atoi`,
   `FormatBool`. Errors support `err != nil` and `err.Error()`.
+- `import "time"`: `Duration`, its constants `Nanosecond` to `Hour`,
+  `d.Milliseconds()` and `d.Seconds()`; `Time`, `Now`, `Since`,
+  `t.Sub(u)`, `t.UnixMilli()`, and `t.Hour()`, `t.Minute()` and
+  `t.Second()` in local time. A `Time` holds the wall clock and the
+  monotonic clock, as Go's does: `Sub` and `Since` use the monotonic
+  one, which never jumps, and `Hour` and the rest the wall clock. The
+  zero `Time` is Go's (January 1, year 1, UTC). `time.Now` is not a
+  signal: to show the time, keep it in one and set it from `every`.
+  Den does not compare times with `==` (Go does): compare
+  `t.UnixMilli()`, or test `t.Sub(u) == 0`.
 
 `compiler/testdata/conform/` holds Go programs that the tests run with both Go
 and den and require to print the same thing.
 
 **Where den still differs from Go.** These are known and planned:
 - `int` is a JS number, exact up to ±2^53, and does not wrap around on
-  overflow. (The plan is BigInt for explicit `int64` and `uint64`.)
+  overflow. (The plan is BigInt for explicit `int64` and `uint64`.) So
+  is a `time.Duration`, which is exact up to about 104 days; `Sub`
+  saturates at Go's limits, which a JS number holds only roughly.
 - Floats are printed the JavaScript way (`1000000`, where Go prints `1e+06`).
 - Strings are JS strings: `len` counts UTF-8 bytes as in Go, but indexing
   and slicing strings are not supported yet. `strings.ToLower` and `ToUpper`

@@ -282,6 +282,13 @@ func (e *emitter) component(cc *checkedComponent) {
 		params = append(params, jsIdent(p.Name))
 	}
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
+	if e.ck.usesLife(cc.decl) {
+		// The component's lifecycle record, which every onMount, onCleanup,
+		// after and every in its Go uses: its statements, func literals
+		// and handlers, hoisted row handlers and slot markup included, all
+		// of which are written inside this function.
+		e.line("const $c = $life();")
+	}
 	e.stmts(cc.stmts)
 	e.line("return %s;", e.instantiate([]Node{cc.c.Root}, nsHTML))
 	e.w.WriteString("}\n")
@@ -604,6 +611,10 @@ func (e *emitter) bind(ts []*tnode) {
 				pt := e.cc.attrs[a]
 				if pt.kind == partMotion {
 					e.line("%s.%s = %s;", t.v, motionProps[a.Name], e.motionValue(pt.expr))
+					continue
+				}
+				if pt.kind == partRef {
+					e.line("$setRef(%s, %s);", t.v, e.expr(pt.expr))
 					continue
 				}
 				if pt.kind == partHandler {
@@ -1564,6 +1575,30 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return "({ ..." + obj + ", d: " + ms + " })"
 		case "error.Error":
 			return obj + ".message"
+		case "Ref.Focus":
+			return obj + ".e?.focus()"
+		case "Ref.Blur":
+			return obj + ".e?.blur()"
+		case "Ref.Select":
+			return obj + ".e?.select?.()"
+		case "Ref.ScrollIntoView":
+			return obj + ".e?.scrollIntoView()"
+		case "Duration.Milliseconds":
+			// Exact while d is: a quotient of integers under 2^53 is never
+			// rounded onto the next whole number.
+			return "Math.trunc(" + obj + " / 1e6)"
+		case "Duration.Seconds":
+			return "$tsecs(" + obj + ")"
+		case "Time.Sub":
+			return "$tsub(" + obj + ", " + args() + ")"
+		case "Time.UnixMilli":
+			return "$tms(" + obj + ")"
+		case "Time.Hour":
+			return "$tclock(" + obj + `, "getHours")`
+		case "Time.Minute":
+			return "$tclock(" + obj + `, "getMinutes")`
+		case "Time.Second":
+			return "$tclock(" + obj + `, "getSeconds")`
 		}
 		if sel := e.ck.info.Selections[fun]; sel != nil && sel.Kind() == types.FieldVal {
 			return e.expr(fun) + "(" + args() + ")" // a func-typed field
@@ -1615,6 +1650,11 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "1"
 				case "spring":
 					return "$spring(() => " + args() + ")"
+				case "onMount", "onCleanup", "after", "every":
+					// check allows them only in components, which have $c.
+					return "$" + o.Name() + "($c, " + args() + ")"
+				case "ref":
+					return "({ e: null })"
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -1667,6 +1707,8 @@ var stdCalls = map[string]func(a []string) string{
 	"strconv.Itoa":       func(a []string) string { return "String(" + a[0] + ")" },
 	"strconv.FormatBool": func(a []string) string { return "String(" + a[0] + ")" },
 	"strconv.Atoi":       func(a []string) string { return "$atoi(" + a[0] + ")" },
+	"time.Now":           func(a []string) string { return "$tnow()" },
+	"time.Since":         func(a []string) string { return "$tsince(" + a[0] + ")" },
 }
 
 // decoder returns JS that turns the parsed JSON in x back into a den value
@@ -1882,6 +1924,14 @@ var jsReserved = map[string]bool{
 	// globals the runtime and generated code use
 	"Object": true, "String": true, "Number": true, "Boolean": true, "Array": true, "Math": true,
 	"Set": true, "Map": true, "JSON": true, "Error": true, "Symbol": true, "Promise": true,
+	// and the rest of those the runtime and stdlib use (TestReservedGlobals
+	// finds them): a Go name like setInterval would hide one inside the app.
+	"Date": true, "RegExp": true, "TextEncoder": true, "URL": true, "globalThis": true,
+	"decodeURIComponent": true, "encodeURIComponent": true, "reportError": true,
+	"setTimeout": true, "setInterval": true, "clearTimeout": true, "clearInterval": true,
+	"requestAnimationFrame": true, "cancelAnimationFrame": true,
+	"addEventListener": true, "removeEventListener": true,
+	"history": true, "location": true, "localStorage": true,
 }
 
 // jsIdent renames Go identifiers that would clash with JS. Go identifiers
