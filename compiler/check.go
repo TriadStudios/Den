@@ -1578,6 +1578,26 @@ func (g *gen) node(n Node) {
 		rb = g.src.Len()
 		g.src.WriteString("}\n")
 	case *Element:
+		// <set>, <animate> and <animateTransform> write the attribute they
+		// name, in any ASCII case (<SET>, <animateTransform>). A non-constant
+		// name could be href, and a constant href would put a URL into
+		// to/from/by/values without going through the attribute sanitizer.
+		// This runs before the component check: a capital tag is a component
+		// use, and <SET> would otherwise miss the check. The element
+		// <animate> is not the motion attribute animate=.
+		if isSMILTag(n.Tag) {
+			for _, a := range n.Attrs {
+				if asciiLower(a.Name) != "attributename" {
+					continue
+				}
+				switch {
+				case a.Kind == AttrExpr:
+					*g.errs = append(*g.errs, &Error{File: g.file, Pos: a.Pos, Msg: fmt.Sprintf("attributeName on <%s> must be a constant", n.Tag)})
+				case a.Kind == AttrStatic && isHrefAttrName(a.Value):
+					*g.errs = append(*g.errs, &Error{File: g.file, Pos: a.Pos, Msg: "cannot animate href"})
+				}
+			}
+		}
 		if n.IsComponent() {
 			if err := g.component(n); err != nil {
 				*g.errs = append(*g.errs, err)
@@ -2173,12 +2193,61 @@ func validateAttr(file string, el *Element, a *Attr) *Error {
 		return bad("event handler %q must be Go code in {...}; inline JS strings are not allowed", a.Name)
 	case strings.HasPrefix(lname, "on") && !isEventAttr(a.Name):
 		return bad("unknown event attribute %q (use lowercase, e.g. onclick)", a.Name)
-	case urlAttrs[lname] && a.Kind == AttrStatic:
+	case (urlAttrs[lname] || smilURLValue(el, a)) && a.Kind == AttrStatic:
 		if !safeStaticURL(a.Value) {
 			return bad("unsafe URL in %s: only http, https, mailto, tel and relative URLs are allowed", a.Name)
 		}
 	}
 	return nil
+}
+
+// isSMILTag reports whether tag is an SVG animation element that sets an
+// attribute by name. Comparison is ASCII case-fold, so <SET> counts. The
+// motion attribute animate= is a different check.
+func isSMILTag(tag string) bool {
+	switch asciiLower(tag) {
+	case "set", "animate", "animatetransform":
+		return true
+	}
+	return false
+}
+
+// isHrefAttrName reports whether a static attributeName names href.
+func isHrefAttrName(v string) bool {
+	switch asciiLower(v) {
+	case "href", "xlink:href":
+		return true
+	}
+	return false
+}
+
+// smilAnimatesHref reports whether el's constant attributeName is href or
+// xlink:href. A non-constant name is rejected on its own and is not treated
+// as href here.
+func smilAnimatesHref(el *Element) bool {
+	if el == nil || !isSMILTag(el.Tag) {
+		return false
+	}
+	for _, a := range el.Attrs {
+		if asciiLower(a.Name) == "attributename" && a.Kind == AttrStatic && isHrefAttrName(a.Value) {
+			return true
+		}
+	}
+	return false
+}
+
+// smilURLValue reports whether a carries the URL that a SMIL element would
+// write into href. Those values go through the same checks as href itself,
+// so skipping the attributeName error cannot emit one raw.
+func smilURLValue(el *Element, a *Attr) bool {
+	if !smilAnimatesHref(el) {
+		return false
+	}
+	switch asciiLower(a.Name) {
+	case "to", "from", "by", "values":
+		return true
+	}
+	return false
 }
 
 func safeStaticURL(u string) bool {

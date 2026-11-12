@@ -650,7 +650,7 @@ func (e *emitter) bind(ts []*tnode) {
 					continue
 				}
 				x := e.expr(pt.expr)
-				if urlAttrs[strings.ToLower(a.Name)] {
+				if urlAttrs[strings.ToLower(a.Name)] || smilURLValue(n, a) {
 					x = "$url(" + x + ")"
 				}
 				if e.ck.reactive(pt.expr) {

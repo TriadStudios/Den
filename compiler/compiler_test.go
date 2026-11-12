@@ -85,6 +85,28 @@ component App() {
     <a href="javascript:alert(1)">x</a>
 }`, `app.den:3:8: unsafe URL in href`},
 		{"obfuscated javascript url", "\ncomponent App() {\n    <a href=\"java\tscript:alert(1)\">x</a>\n}", `app.den:3:8: unsafe URL in href`},
+		{"set animating href", `
+component App() {
+    x := signal("javascript:alert(1)")
+    <svg><a href="/ok"><set attributeName="href" to={x.Get()}/></a></svg>
+}`, `cannot animate href`},
+		{"SET tag animating href", `
+component App() {
+    <svg><SET attributeName="href" to="javascript:alert(1)"/></svg>
+}`, `cannot animate href`},
+		{"animate xlink:href", `
+component App() {
+    <svg><animate attributeName="xlink:href" to="javascript:alert(1)"/></svg>
+}`, `cannot animate href`},
+		{"animateTransform href", `
+component App() {
+    <svg><animateTransform attributeName="HREF" from="javascript:alert(1)"/></svg>
+}`, `cannot animate href`},
+		{"set attributeName not constant", `
+component App() {
+    name := "href"
+    <svg><set attributeName={name} to="1"/></svg>
+}`, `attributeName on <set> must be a constant`},
 		{"raw html", `
 component App() {
     <div innerHTML={"<b>x</b>"}></div>
@@ -2398,6 +2420,24 @@ component App() {
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)
+		}
+	}
+}
+
+// SMIL may still set ordinary presentation attributes. Only href is refused.
+func TestSMILNonURLCompiles(t *testing.T) {
+	for _, src := range []string{
+		`
+component App() {
+    <svg><set attributeName="width" to="10"/></svg>
+}`,
+		`
+component App() {
+    <svg><set attributeName="fill" to="red"/></svg>
+}`,
+	} {
+		if _, err := compileOne(src); err != nil {
+			t.Fatalf("compile: %v\n%s", err, src)
 		}
 	}
 }
