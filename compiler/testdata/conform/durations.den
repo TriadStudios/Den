@@ -1,0 +1,38 @@
+import "time"
+
+func ms(d time.Duration) string {
+	return itoa(int(d.Milliseconds()))
+}
+
+func yes(b bool) string {
+	if b {
+		return "y"
+	}
+	return "n"
+}
+
+func run() string {
+	out := ""
+	d := 1500 * time.Millisecond
+	out += ms(d) + " " + yes(d.Seconds() == 1.5) + " " + itoa(int(d)) + "\n"
+	out += itoa(int(time.Hour/time.Minute)) + " " + itoa(int(time.Minute.Seconds())) + " " + ms(time.Microsecond) + "\n"
+	// Milliseconds truncates toward zero, and so does division.
+	neg := -1999999 * time.Nanosecond
+	out += ms(neg) + " " + itoa(int(neg/time.Millisecond)) + " " + itoa(int(neg%time.Millisecond)) + " " + ms(-neg) + "\n"
+	var total time.Duration
+	for i := range 4 {
+		total += time.Duration(i) * 250 * time.Millisecond
+	}
+	out += ms(total) + " " + yes(total > time.Second) + " " + yes(total == 3*time.Second/2) + "\n"
+	// Seconds adds the whole seconds and the rest, as Go does: here that
+	// differs in the last bit from dividing by 1e9.
+	odd := 1009962103 * time.Nanosecond
+	out += yes(odd.Seconds() == 1.009962103) + " " + yes(odd.Seconds() == 1.0099621029999999) + " " + itoa(int(odd.Seconds()*1e6)) + "\n"
+	const minute = 60 * time.Second
+	big := 100 * 24 * time.Hour
+	out += ms(minute) + " " + ms(big) + " " + itoa(int(big/time.Hour)) + " " + itoa(int(big.Seconds())) + "\n"
+	n := 7
+	f := time.Duration(1.5 * float64(time.Second))
+	out += ms(time.Duration(n)*time.Millisecond) + " " + ms(f) + " " + ms(f-2*time.Second) + " " + itoa(int((f-2*time.Second).Seconds()*1000))
+	return out
+}

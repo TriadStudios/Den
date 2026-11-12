@@ -287,3 +287,69 @@ function $spring(f) {
   $cleanup(() => { if (id) cancelAnimationFrame(id); });
   return s;
 }
+// Lifecycle: a component that calls onMount, onCleanup, after or every
+// gets a record c = $life() first thing when it is built, kept in the
+// scope it is built in: s, the functions to run when the component goes
+// (its cleanups, and the stops of its timers), run newest first; and x,
+// set once it has gone; and p, the owner of the nodes the component makes
+// (see $scope). As the oldest entry the component puts in that scope, the
+// record goes after everything the component made, as a deferred call
+// would. Other stdlib code ties work to a component with $onCleanup(c, f).
+function $life() {
+  const c = { s: new Set(), x: 0, p: $owner?.p };
+  $cleanup(() => { c.x = 1; [...c.s].reverse().forEach((f) => $lifeTry(c, f)); c.s.clear(); });
+  return c;
+}
+// $lifeTry runs f, a callback of component c, as den runs an event
+// handler: untracked, and reporting a panic rather than passing it on.
+// It runs in a scope of its own that goes with c, so what f makes (a
+// computed, a spring) stops with the component, and has the component's
+// owner, so it never runs while the block that would take the component
+// away is due. A callback that makes nothing adds nothing to the record.
+function $lifeTry(c, f) {
+  const o = $owner;
+  $owner = c;
+  try { const h = $scope(f)[1]; h && $onCleanup(c, () => $free(h)); } catch (e) { reportError(e); } finally { $owner = o; }
+}
+// $onCleanup runs f when the component goes, or at once if it has gone.
+// It returns a function that takes f back, for work that ends first.
+function $onCleanup(c, f) {
+  const g = () => f();
+  c.x ? $lifeTry(c, g) : c.s.add(g);
+  return () => c.s.delete(g);
+}
+// $onMount runs f once the build that made the component, which puts it
+// in the document, is over, unless the component has gone by then.
+function $onMount(c, f) { queueMicrotask(() => c.x || $lifeTry(c, f)); }
+// $after runs f once after d ns, or with every set, every d ns, until the
+// stop it returns is called or the component goes. A timer that has fired
+// once and for all takes itself off the record. On a component that has
+// gone, the timer is stopped as it is made.
+function $after(c, d, f, every) {
+  if (every && !(d > 0)) $panic("non-positive interval for every");
+  if (d > 2147483647e6) $panic("duration too long");
+  const t = (every ? setInterval : setTimeout)(() => { every || stop(); $lifeTry(c, f); }, d / 1e6),
+    off = $onCleanup(c, () => clearTimeout(t)), stop = () => { clearTimeout(t); off(); };
+  return stop;
+}
+function $every(c, d, f) { return $after(c, d, f, 1); }
+// ref={r}: r holds the element from when it is made until the scope that
+// made it goes, unless another element has taken r over by then.
+function $setRef(e, r) { r.e = e; $cleanup(() => { if (r.e === e) r.e = null; }); }
+// time: a Time is {w, m}, the wall clock (ms since the epoch) and the
+// monotonic clock (performance.now(), when there is one), as Go keeps
+// both; the zero Time is null, Go's year 1 UTC. Sub uses the monotonic
+// readings of two Times that have them, and Hour and the like the wall
+// clock, which follows the system clock even after the computer sleeps.
+// A Duration is a number of ns, which Sub saturates as Go does.
+function $tnow() { return { w: Date.now(), m: globalThis.performance?.now() }; }
+function $tms(t) { return t ? t.w : -62135596800000; }
+function $tsub(t, u) {
+  const d = t?.m != null && u?.m != null ? t.m - u.m : $tms(t) - $tms(u);
+  return Math.min(Math.max(Math.round(d * 1e6), -9223372036854775808), 9223372036854775807);
+}
+function $tsince(t) { return $tsub($tnow(), t); }
+function $tclock(t, f) { return t ? new Date(t.w)[f]() : 0; }
+// $tsecs is Duration.Seconds as Go computes it: whole seconds plus the
+// rest over 1e9, which can differ in the last bit from d / 1e9.
+function $tsecs(d) { const n = d % 1e9; return (d - n) / 1e9 + n / 1e9; }

@@ -1,0 +1,146 @@
+// Lifecycle, refs and timers: a clock that ticks on the second, a
+// stopwatch that starts and stops its timer, and a search box that has
+// the focus as soon as it is on the page. Every timer stops with the
+// component that set it.
+
+import (
+	"strings"
+	"time"
+)
+
+component App() {
+	show := signal(true)
+	gone := signal(0)
+	<main class="app">
+		<header>
+			<h1>Clock</h1>
+			<p class="sub">onMount, onCleanup, refs and timers, in Go syntax.</p>
+		</header>
+		<div class="grid">
+			{if show.Get() {
+				<Clock gone={gone} />
+			} else {
+				<section class="card">
+					<h2>Clock</h2>
+					<p class="hint">Gone {gone.Get()} times, and its timer with it.</p>
+				</section>
+			}}
+			<Stopwatch />
+			<Search />
+		</div>
+		<footer>
+			<button class="ghost" onclick={show.Set(!show.Get())}>
+				{if show.Get() {Remove the clock} else {Bring it back}}
+			</button>
+		</footer>
+	</main>
+}
+
+// two writes n with at least two digits.
+func two(n int) string {
+	if n < 10 {
+		return "0" + itoa(n)
+	}
+	return itoa(n)
+}
+
+component Clock(gone *Signal[int]) {
+	now := signal(time.Now())
+	// Wait for the next second to start, then tick every second.
+	after(time.Duration(1000-time.Now().UnixMilli()%1000)*time.Millisecond, func() {
+		now.Set(time.Now())
+		every(time.Second, func() { now.Set(time.Now()) })
+	})
+	onCleanup(func() { gone.Set(gone.Get() + 1) })
+	<section class="card">
+		<h2>Clock</h2>
+		<p class="value">
+			{two(now.Get().Hour())}:{two(now.Get().Minute())}:{two(now.Get().Second())}
+		</p>
+		<p class="hint">time.Now, after and every.</p>
+	</section>
+}
+
+// lap writes d as minutes, seconds and hundredths: 1:02.35.
+func lap(d time.Duration) string {
+	cs := int(d / (10 * time.Millisecond))
+	return itoa(cs/6000) + ":" + two(cs/100%60) + "." + two(cs%100)
+}
+
+component Stopwatch() {
+	before := signal(time.Duration(0)) // the runs that have ended
+	shown := signal(time.Duration(0))
+	running := signal(false)
+	var since time.Time // when this run started
+	stop := func() {}   // stops this run's timer
+	start := func() {
+		since = time.Now()
+		running.Set(true)
+		stop = every(10*time.Millisecond, func() { shown.Set(before.Get() + time.Since(since)) })
+	}
+	pause := func() {
+		stop()
+		before.Set(before.Get() + time.Since(since))
+		shown.Set(before.Get())
+		running.Set(false)
+	}
+	<section class="card">
+		<h2>Stopwatch</h2>
+		<p class="value">{lap(shown.Get())}</p>
+		<div class="row">
+			{if running.Get() {
+				<button onclick={pause()}>Stop</button>
+			} else {
+				<button onclick={start()}>Start</button>
+			}}
+			<button
+				class="ghost"
+				onclick={
+					before.Set(0)
+					shown.Set(0)
+				}
+				disabled={running.Get() || shown.Get() == 0}>
+				Reset
+			</button>
+		</div>
+	</section>
+}
+
+func fruits() []string {
+	return []string{"Apple", "Banana", "Cherry", "Damson", "Elderberry", "Fig", "Grape", "Kiwi", "Lime", "Mango"}
+}
+
+component Search() {
+	box := ref()
+	q := signal("")
+	onMount(func() { box.Focus() })
+	<section class="card">
+		<h2>Search</h2>
+		<input
+			ref={box}
+			value={q.Get()}
+			oninput={q.Set(e.Value())}
+			onkeydown={
+				if e.Key() == "Escape" {
+					q.Set("")
+					box.Blur()
+				}
+			}
+			placeholder="Find a fruit" />
+		<ul>
+			{for _, f := range fruits() key f {
+				{if strings.Contains(strings.ToLower(f), strings.ToLower(q.Get())) {
+					<li>{f}</li>
+				}}
+			}}
+		</ul>
+		<button
+			class="ghost"
+			onclick={
+				q.Set("")
+				box.Focus()
+			}>
+			Clear
+		</button>
+	</section>
+}
