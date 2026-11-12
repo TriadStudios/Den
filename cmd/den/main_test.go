@@ -43,6 +43,9 @@ func TestDevFiles(t *testing.T) {
 		if w.Header().Get("Content-Security-Policy") != csp {
 			t.Errorf("%s %s: no CSP header", c.method, c.path)
 		}
+		if w.Header().Get("X-Frame-Options") != "DENY" {
+			t.Errorf("%s %s: X-Frame-Options %q", c.method, c.path, w.Header().Get("X-Frame-Options"))
+		}
 		if c.code == 200 && w.Header().Get("Cache-Control") != "no-store" {
 			t.Errorf("%s %s: no Cache-Control: no-store header", c.method, c.path)
 		}

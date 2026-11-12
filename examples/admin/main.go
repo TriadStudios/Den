@@ -28,7 +28,7 @@ import (
 // (cmd/den). It is copied here so this example does not import that main
 // package. A test checks the header against this string.
 const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-	"object-src 'none'; base-uri 'none'; form-action 'self'; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
 	"require-trusted-types-for 'script'; trusted-types 'none'"
 
 // demoPassword is the sign-in password. It is an example, not a secret.
@@ -121,6 +121,7 @@ func newHandler(dist string) http.Handler {
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", csp)
+	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	p := path.Clean("/" + r.URL.Path)

@@ -462,8 +462,12 @@ component User(user *Route[UserParams]) {
 
 A Go server can embed the `dist` directory from `den build` and serve it
 with the standard library. The handler below sends den's CSP,
-`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` on
-every response. `app.js`, `den.css`, `style.css` and `index.html` are
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
+`Referrer-Policy: no-referrer` on every response. `index.html` repeats
+the policy in a meta tag, but a meta tag cannot enforce
+`frame-ancestors`. `den dev`, the admin server and this handler send
+`frame-ancestors 'none'` on the CSP header as well as
+`X-Frame-Options: DENY`. `app.js`, `den.css`, `style.css` and `index.html` are
 `Cache-Control: no-cache`. A file whose base name is not one of those and
 contains a hyphen followed by at least eight hex digits (for example
 `logo-0123abcd.png`) is `public, max-age=31536000, immutable`. Anything
@@ -497,7 +501,7 @@ import (
 
 // csp matches the policy den writes into index.html and sends from den dev.
 const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-	"object-src 'none'; base-uri 'none'; form-action 'self'; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
 	"require-trusted-types-for 'script'; trusted-types 'none'"
 
 // Handler serves a den build. root is the dist directory (index.html and
@@ -506,6 +510,7 @@ func Handler(root fs.FS) http.Handler {
 	files := http.FileServerFS(root)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -627,6 +632,9 @@ func hashedBase(base string) bool {
 ```
 <!-- /den-embed-handler -->
 
+The example below listens on `localhost:8080`, so it is not reachable from
+other machines.
+
 <!-- den-embed-main -->
 ```go
 package main
@@ -648,7 +656,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Fatal(http.ListenAndServe(":8080", denpage.Handler(sub)))
+	log.Fatal(http.ListenAndServe("localhost:8080", denpage.Handler(sub)))
 }
 ```
 <!-- /den-embed-main -->

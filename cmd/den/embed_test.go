@@ -176,7 +176,7 @@ import (
 )
 
 const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-	"object-src 'none'; base-uri 'none'; form-action 'self'; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
 	"require-trusted-types-for 'script'; trusted-types 'none'"
 
 func TestHandler(t *testing.T) {
@@ -214,9 +214,12 @@ func TestHandler(t *testing.T) {
 	if w.Header().Get("Cache-Control") != "no-cache" {
 		t.Fatalf("app.js Cache-Control %q", w.Header().Get("Cache-Control"))
 	}
-	if w.Header().Get("Content-Security-Policy") != csp {
-		t.Fatalf("CSP %q", w.Header().Get("Content-Security-Policy"))
-	}
+		if w.Header().Get("Content-Security-Policy") != csp {
+			t.Fatalf("CSP %q", w.Header().Get("Content-Security-Policy"))
+		}
+		if w.Header().Get("X-Frame-Options") != "DENY" {
+			t.Fatalf("X-Frame-Options %q", w.Header().Get("X-Frame-Options"))
+		}
 	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("X-Content-Type-Options %q", w.Header().Get("X-Content-Type-Options"))
 	}

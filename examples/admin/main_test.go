@@ -285,6 +285,9 @@ func TestPages(t *testing.T) {
 	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("nosniff %q", rec.Header().Get("X-Content-Type-Options"))
 	}
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("X-Frame-Options %q", rec.Header().Get("X-Frame-Options"))
+	}
 
 	head := httptest.NewRecorder()
 	s.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/", nil))

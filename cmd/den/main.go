@@ -2,7 +2,7 @@
 //
 //	den build <dir> [-o dist] [-title "den app"]  compile <dir>/*.den into dist/app.js + index.html, copy <dir>/public
 //	den check <dir>             type-check only
-//	den dev   <dir> [-addr :8080] [-title "den app"]  build, serve and rebuild on save with live reload
+//	den dev   <dir> [-addr localhost:8080] [-title "den app"]  build, serve and rebuild on save with live reload
 //	den fmt [-l] [-w] [-d] [path ...]  format .den files, as gofmt formats Go
 package main
 
@@ -31,7 +31,7 @@ usage:
   den build <dir> [-o dist] [-title "den app"]
                                   compile <dir>/*.den
   den check <dir>                 type-check without writing files
-  den dev   <dir> [-addr :8080] [-title "den app"]
+  den dev   <dir> [-addr localhost:8080] [-title "den app"]
                                   serve with rebuild + live reload
   den fmt [-l] [-w] [-d] [path ...]
                                   format .den files (stdin without a path):
@@ -174,7 +174,7 @@ func compileDir(dir string) (*compiler.Result, error) {
 // csp is strict: same-origin scripts only, no eval, no inline code, Trusted
 // Types enforced with no policies allowed (the runtime never needs one).
 const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-	"object-src 'none'; base-uri 'none'; form-action 'self'; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
 	"require-trusted-types-for 'script'; trusted-types 'none'"
 
 // indexHTML is the page that loads the app, with the document title
@@ -494,6 +494,7 @@ func devFiles(out string) http.Handler {
 	files := http.FileServer(http.Dir(out))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Cache-Control", "no-store")
 		name := path.Clean("/" + r.URL.Path)
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(name, "/__den/") && !strings.Contains(path.Base(name), ".") {
