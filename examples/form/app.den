@@ -1,0 +1,168 @@
+// A signup form: inputs bound to fields with checks. A field's message
+// shows once the user has left it, or tried to submit; a summary follows.
+
+import (
+	"errors"
+	"strings"
+)
+
+type Plan struct {
+	ID    string
+	Label string
+}
+
+func required(what string) func(string) error {
+	return func(s string) error {
+		if strings.TrimSpace(s) == "" {
+			return errors.New("Enter your " + what)
+		}
+		return nil
+	}
+}
+
+func checkEmail(s string) error {
+	parts := strings.Split(s, "@")
+	if len(parts) != 2 || parts[0] == "" || !strings.Contains(parts[1], ".") || strings.Contains(s, " ") {
+		return errors.New("Enter an email address, like ada@example.com")
+	}
+	return nil
+}
+
+func checkAge(n int) error {
+	if n < 13 {
+		return errors.New("You must be 13 or older")
+	}
+	if n > 150 {
+		return errors.New("Enter your real age")
+	}
+	return nil
+}
+
+func checkTerms(ok bool) error {
+	if !ok {
+		return errors.New("Accept the terms to sign up")
+	}
+	return nil
+}
+
+// message is the text for err. A number that does not parse gets a
+// friendlier one than strconv's.
+func message(err error) string {
+	if strings.HasPrefix(err.Error(), "strconv.") {
+		return "Enter your age as a whole number"
+	}
+	return err.Error()
+}
+
+component App() {
+	name := field("", required("name"))
+	email := field("", checkEmail)
+	age := field(18, checkAge)
+	terms := field(false, checkTerms)
+	plan := signal("free")
+	updates := signal("monthly")
+	done := signal(false)
+	ok := computed(name.Error() == nil && email.Error() == nil && age.Error() == nil && terms.Error() == nil)
+	plans := []Plan{{"free", "Free"}, {"pro", "Pro, $8 a month"}, {"team", "Team, $20 a month"}}
+	<main class="app">
+		<h1>Sign up</h1>
+		{if done.Get() {
+			<section class="summary">
+				<h2>Welcome, {name.Get()}!</h2>
+				<p>{email.Get()}, {age.Get()}, plan {plan.Get()}, updates {updates.Get()}.</p>
+				<button
+					onclick={
+						name.Reset()
+						email.Reset()
+						age.Reset()
+						terms.Reset()
+						plan.Set("free")
+						updates.Set("monthly")
+						done.Set(false)
+					}>
+					Start over
+				</button>
+			</section>
+		} else {
+			<form
+				novalidate
+				onsubmit={
+					e.PreventDefault()
+					name.Touch()
+					email.Touch()
+					age.Touch()
+					terms.Touch()
+					done.Set(ok.Get())
+				}>
+				<label>
+					Name
+					<input
+						name="name"
+						autocomplete="name"
+						bind={name}
+						aria-invalid={name.Touched() && name.Error() != nil} />
+				</label>
+				{if name.Touched() && name.Error() != nil {
+					<p class="error">{message(name.Error())}</p>
+				}}
+				<label>
+					Email
+					<input
+						type="email"
+						name="email"
+						autocomplete="email"
+						bind={email}
+						aria-invalid={email.Touched() && email.Error() != nil} />
+				</label>
+				{if email.Touched() && email.Error() != nil {
+					<p class="error">{message(email.Error())}</p>
+				}}
+				<button
+					type="button"
+					onclick={email.SetError(errors.New("That email is already signed up"))}>
+					Simulate server error
+				</button>
+				<label>
+					Age
+					<input
+						type="number"
+						name="age"
+						min="13"
+						bind={age}
+						aria-invalid={age.Touched() && age.Error() != nil} />
+				</label>
+				{if age.Touched() && age.Error() != nil {
+					<p class="error">{message(age.Error())}</p>
+				}}
+				<label>
+					Plan
+					<select name="plan" bind={plan}>
+						{for _, p := range plans key p.ID {
+							<option value={p.ID}>{p.Label}</option>
+						}}
+					</select>
+				</label>
+				<fieldset>
+					<legend>Product updates</legend>
+					{for _, u := range []string{"weekly", "monthly", "never"} key u {
+						<label class="choice">
+							<input type="radio" name="updates" value={u} bind={updates} /> {u}
+						</label>
+					}}
+				</fieldset>
+				<label class="choice">
+					<input
+						type="checkbox"
+						name="terms"
+						bind={terms}
+						aria-invalid={terms.Touched() && terms.Error() != nil} />
+					I accept the terms
+				</label>
+				{if terms.Touched() && terms.Error() != nil {
+					<p class="error">{message(terms.Error())}</p>
+				}}
+				<button type="submit">Sign up</button>
+			</form>
+		}}
+	</main>
+}

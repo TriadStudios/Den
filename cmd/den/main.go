@@ -1,8 +1,8 @@
 // Command den builds, checks, serves and formats den apps.
 //
-//	den build <dir> [-o dist]   compile <dir>/*.den into dist/app.js + index.html
+//	den build <dir> [-o dist] [-title "den app"]  compile <dir>/*.den into dist/app.js + index.html, copy <dir>/public
 //	den check <dir>             type-check only
-//	den dev   <dir> [-addr :8080] build, serve and rebuild on save with live reload
+//	den dev   <dir> [-addr localhost:8080] [-title "den app"]  build, serve and rebuild on save with live reload
 //	den fmt [-l] [-w] [-d] [path ...]  format .den files, as gofmt formats Go
 package main
 
@@ -11,6 +11,8 @@ import (
 	"compress/gzip"
 	"flag"
 	"fmt"
+	"html"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -26,9 +28,11 @@ import (
 const usage = `Den: Go-syntax UI components compiled to small JavaScript.
 
 usage:
-  den build <dir> [-o dist]       compile <dir>/*.den
+  den build <dir> [-o dist] [-title "den app"]
+                                  compile <dir>/*.den
   den check <dir>                 type-check without writing files
-  den dev   <dir> [-addr :8080]   serve with rebuild + live reload
+  den dev   <dir> [-addr localhost:8080] [-title "den app"]
+                                  serve with rebuild + live reload
   den fmt [-l] [-w] [-d] [path ...]
                                   format .den files (stdin without a path):
                                   -l lists files that would change, -w
@@ -36,22 +40,52 @@ usage:
 `
 
 func main() {
-	if len(os.Args) < 2 {
+	os.Exit(run(os.Args[1:]))
+}
+
+// run executes one den command. args are the arguments after the program
+// name. Flags may come before or after the directory: flag.Parse would
+// stop at the first non-flag, so the directory is split out first and only
+// the flag tokens are parsed.
+func run(args []string) int {
+	if len(args) < 1 {
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
-	cmd, args := os.Args[1], os.Args[2:]
+	cmd, rest := args[0], args[1:]
 	if cmd == "fmt" {
-		os.Exit(runFmt(args, os.Stdin, os.Stdout, os.Stderr))
+		return runFmt(rest, os.Stdin, os.Stdout, os.Stderr)
 	}
-	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	out := fs.String("o", "", "output directory (default <dir>/dist)")
-	addr := fs.String("addr", "localhost:8080", "dev server address")
+	switch cmd {
+	case "build", "check", "dev":
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		return 2
+	}
+	flagArgs, dirs := splitCmdArgs(rest)
+	if len(dirs) > 1 {
+		fmt.Fprintf(os.Stderr, "den %s: one directory at most, got %s\n", cmd, strings.Join(dirs, " "))
+		return 2
+	}
 	dir := "."
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		dir, args = args[0], args[1:]
+	if len(dirs) == 1 {
+		dir = dirs[0]
 	}
-	fs.Parse(args)
+	flags := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	out := flags.String("o", "", "output directory (default <dir>/dist)")
+	addr := flags.String("addr", "localhost:8080", "dev server address")
+	title := flags.String("title", "den app", "document title")
+	if err := flags.Parse(flagArgs); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "den %s: unexpected argument %q\n", cmd, flags.Arg(0))
+		return 2
+	}
 	if *out == "" {
 		*out = filepath.Join(dir, "dist")
 	}
@@ -59,29 +93,54 @@ func main() {
 	case "build":
 		res, err := compileDir(dir)
 		if err != nil {
-			fail(err)
+			return fail(err)
 		}
-		if err := writeDist(dir, *out, res, false); err != nil {
-			fail(err)
+		if err := writeDist(dir, *out, res, false, *title); err != nil {
+			return fail(err)
 		}
 		report(*out, res)
 	case "check":
 		res, err := compileDir(dir)
 		if err != nil {
-			fail(err)
+			return fail(err)
 		}
 		fmt.Printf("ok: %d components (%s)\n", len(res.Components), strings.Join(res.Components, ", "))
 	case "dev":
-		dev(dir, *out, *addr)
+		return dev(dir, *out, *addr, *title)
 	default:
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
+	return 0
 }
 
-func fail(err error) {
+// splitCmdArgs separates flags from the directory. A token that starts
+// with '-' is a flag, except a lone "-". -title, -o and -addr take the
+// next token unless the value is written with '='.
+func splitCmdArgs(args []string) (flags, dirs []string) {
+	value := map[string]bool{"title": true, "o": true, "addr": true}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			dirs = append(dirs, a)
+			continue
+		}
+		flags = append(flags, a)
+		name, _, eq := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if eq || !value[name] {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return flags, dirs
+}
+
+func fail(err error) int {
 	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
+	return 1
 }
 
 func denFiles(dir string) ([]string, error) {
@@ -114,16 +173,34 @@ func compileDir(dir string) (*compiler.Result, error) {
 
 // csp is strict: same-origin scripts only, no eval, no inline code, Trusted
 // Types enforced with no policies allowed (the runtime never needs one).
-const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-	"object-src 'none'; base-uri 'none'; form-action 'self'; " +
-	"require-trusted-types-for 'script'; trusted-types 'none'"
+// The pieces are shared so the header and the page meta cannot drift.
+const (
+	cspBase = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
+		"object-src 'none'; base-uri 'none'; form-action 'self';"
+	cspFrameAncestors = " frame-ancestors 'none';"
+	cspTrustedTypes   = " require-trusted-types-for 'script'; trusted-types 'none'"
+)
 
-// indexHTML is the page that loads the app. An app that routes by path is
-// served at each of its paths (/users/7 as well as /), so it finds its
-// files from the site root; others keep relative URLs and can live in any
-// directory. den.css, the CSS of the components' style blocks, comes before
-// the app's own style.css, whose rules then win.
+// csp is the HTTP Content-Security-Policy header, including frame-ancestors.
+const csp = cspBase + cspFrameAncestors + cspTrustedTypes
+
+// cspMetaNoFrameAncestors is the meta-tag policy. frame-ancestors is
+// header-only and is dropped: a meta element cannot enforce it, and
+// Chromium reports that as a console error.
+const cspMetaNoFrameAncestors = cspBase + cspTrustedTypes
+
+// indexHTML is the page that loads the app, with the document title
+// "den app". An app that routes by path is served at each of its paths
+// (/users/7 as well as /), so it finds its files from the site root;
+// others keep relative URLs and can live in any directory. den.css, the
+// CSS of the components' style blocks, comes before the app's own
+// style.css, whose rules then win. indexPage is that page with another
+// title, HTML-escaped so the text cannot close the element.
 func indexHTML(denCSS, hasCSS, dev, router bool) string {
+	return indexPage(denCSS, hasCSS, dev, router, "den app")
+}
+
+func indexPage(denCSS, hasCSS, dev, router bool, title string) string {
 	root := ""
 	if router {
 		root = "/"
@@ -131,8 +208,8 @@ func indexHTML(denCSS, hasCSS, dev, router bool) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
-	fmt.Fprintf(&b, "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">\n", csp)
-	b.WriteString("<title>den app</title>\n")
+	fmt.Fprintf(&b, "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">\n", cspMetaNoFrameAncestors)
+	fmt.Fprintf(&b, "<title>%s</title>\n", html.EscapeString(title))
 	if denCSS {
 		fmt.Fprintf(&b, "<link rel=\"stylesheet\" href=\"%sden.css\">\n", root)
 	}
@@ -153,8 +230,13 @@ func indexHTML(denCSS, hasCSS, dev, router bool) string {
 // and can give the design tokens other values, and its style.css keeps
 // what only works at the start of a file, such as @import, @charset or a
 // byte order mark. The page's CSP allows no inline styles, so all CSS
-// goes in files.
-func writeDist(dir, out string, res *compiler.Result, dev bool) error {
+// goes in files. Last, it copies the files of the app's public directory,
+// if it has one, as they are (publicFiles).
+func writeDist(dir, out string, res *compiler.Result, dev bool, title string) error {
+	public, err := publicFiles(dir, out)
+	if err != nil {
+		return err // before writing anything
+	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
@@ -176,7 +258,101 @@ func writeDist(dir, out string, res *compiler.Result, dev bool) error {
 			return err
 		}
 	}
-	return os.WriteFile(filepath.Join(out, "index.html"), []byte(indexHTML(denCSS, hasCSS, dev, res.Router)), 0o644)
+	if err := os.WriteFile(filepath.Join(out, "index.html"), []byte(indexPage(denCSS, hasCSS, dev, res.Router, title)), 0o644); err != nil {
+		return err
+	}
+	for _, name := range public {
+		b, err := os.ReadFile(filepath.Join(dir, "public", name))
+		if err != nil {
+			return err
+		}
+		to := filepath.Join(out, name)
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(to, b, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// distNames are the names den writes at the top of dist, which no file
+// of the app's public directory may take: its own files, and the path
+// den dev serves its live reload from.
+var distNames = []string{"app.js", "index.html", "den.css", "style.css", "__den"}
+
+// publicFiles returns the files in dir/public, such as JSON an app
+// fetches or images, by their paths in it, which are their paths in dist
+// too. There are none when the app has no public directory. Everything
+// is decided here, before writeDist writes anything, so a failed build
+// leaves no dist half written. Names are compared ignoring case, as on the
+// file systems of Windows and macOS: a file that would replace one den
+// writes is an error. So is anything in public but plain files and
+// directories, symbolic links and Windows junctions included, which could
+// lead out of it, and an output directory inside public, which den would
+// copy into itself (and den dev, which watches public, rebuild forever).
+func publicFiles(dir, out string) ([]string, error) {
+	root := filepath.Join(dir, "public")
+	if st, err := os.Lstat(root); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	} else if !st.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory (den follows no links): den copies the files in an app's public directory into dist", root)
+	}
+	if within(out, root) {
+		return nil, fmt.Errorf("the output directory %s is inside %s, which den copies into it; write it elsewhere", out, root)
+	}
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&^fs.ModeDir != 0 {
+			return fmt.Errorf("%s is not a file or a directory (a symbolic link or a junction, say): den copies only those from public", path)
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+		for _, n := range distNames {
+			if strings.EqualFold(first, n) {
+				if n == "__den" {
+					return fmt.Errorf("%s: den dev serves its own files under /__den/; rename it", filepath.Join(root, first))
+				}
+				return fmt.Errorf("%s would replace the %s that den writes into dist; rename it", filepath.Join(root, first), n)
+			}
+		}
+		if !d.IsDir() {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	return files, err
+}
+
+// within reports whether path p is directory dir or inside it, by the
+// file system's own idea of which file is which (os.SameFile), so that
+// neither case (PUBLIC for public on Windows) nor links fool it. p need
+// not exist yet.
+func within(p, dir string) bool {
+	d, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	p, _ = filepath.Abs(p)
+	for {
+		if st, err := os.Stat(p); err == nil && os.SameFile(st, d) {
+			return true
+		}
+		up := filepath.Dir(p)
+		if up == p {
+			return false
+		}
+		p = up
+	}
 }
 
 func gzipSize(b []byte) int {
@@ -239,7 +415,7 @@ func (h *hub) broadcast(msg string) {
 	}
 }
 
-func dev(dir, out, addr string) {
+func dev(dir, out, addr, title string) int {
 	h := &hub{subs: map[chan string]bool{}}
 	lastErr := ""
 	var mu sync.Mutex
@@ -254,11 +430,13 @@ func dev(dir, out, addr string) {
 			h.broadcast("error\n" + lastErr)
 			return
 		}
-		lastErr = ""
-		if err := writeDist(dir, out, res, true); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		if err := writeDist(dir, out, res, true, title); err != nil {
+			lastErr = err.Error()
+			fmt.Fprintln(os.Stderr, lastErr)
+			h.broadcast("error\n" + lastErr)
 			return
 		}
+		lastErr = ""
 		fmt.Printf("rebuilt in %s\n", time.Since(start).Round(time.Millisecond))
 		h.broadcast("reload\n")
 	}
@@ -317,7 +495,7 @@ func dev(dir, out, addr string) {
 	})
 	mux.Handle("/", devFiles(out))
 	fmt.Printf("den dev: http://%s  (watching %s)\n", addr, dir)
-	fail(http.ListenAndServe(addr, mux))
+	return fail(http.ListenAndServe(addr, mux))
 }
 
 // devFiles serves the built app under the strict CSP. A GET for a path with
@@ -328,6 +506,7 @@ func devFiles(out string) http.Handler {
 	files := http.FileServer(http.Dir(out))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Cache-Control", "no-store")
 		name := path.Clean("/" + r.URL.Path)
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(name, "/__den/") && !strings.Contains(path.Base(name), ".") {
@@ -342,16 +521,29 @@ func devFiles(out string) http.Handler {
 	})
 }
 
+// snapshot sums up the files a build reads: the .den and .css files of
+// dir, and every file in dir/public.
 func snapshot(dir string) string {
 	var b strings.Builder
+	stamp := func(path string, st os.FileInfo) {
+		fmt.Fprintf(&b, "%s:%d:%d;", path, st.ModTime().UnixNano(), st.Size())
+	}
 	matches, _ := filepath.Glob(filepath.Join(dir, "*"))
 	for _, m := range matches {
 		if ext := filepath.Ext(m); ext != ".den" && ext != ".css" {
 			continue
 		}
 		if st, err := os.Stat(m); err == nil {
-			fmt.Fprintf(&b, "%s:%d:%d;", m, st.ModTime().UnixNano(), st.Size())
+			stamp(m, st)
 		}
 	}
+	filepath.WalkDir(filepath.Join(dir, "public"), func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if st, err := d.Info(); err == nil {
+				stamp(path, st)
+			}
+		}
+		return nil
+	})
 	return b.String()
 }

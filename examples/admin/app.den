@@ -1,0 +1,143 @@
+import (
+	"den/http"
+	"errors"
+)
+
+// A board for two services on this origin: a session cookie, an X-CSRF
+// header on writes, and a state/log event stream. The stream is opened
+// only after sign-in, from Board. The runtime retries a lost connection,
+// including a 403. When that error is set, the page returns to the
+// sign-in form, and leaving the board disposes the stream.
+
+type Service struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Running bool   `json:"running"`
+}
+
+type State struct {
+	Services []Service `json:"services"`
+	Error    string    `json:"error"`
+}
+
+type Log struct {
+	ID   int    `json:"id"`
+	Text string `json:"text"`
+}
+
+type Cred struct {
+	Password string `json:"password"`
+}
+
+type Session struct {
+	CSRF string `json:"csrf"`
+}
+
+func liveLabel(s *Stream, lost func()) string {
+	if s.Err() != nil {
+		lost()
+		return ""
+	}
+	if s.Connected() {
+		return "Connected"
+	}
+	return "Off"
+}
+
+component Board(token string, lost func()) {
+	_ = http.SetHeader("X-CSRF", token)
+	list := resource(fetchJSON[[]Service]("/api/services"))
+	startURL := signal("/api/services/web/start")
+	stopURL := signal("/api/services/web/stop")
+	start := action(sendJSON[struct{}, struct{}]("POST", startURL.Get()))
+	stop := action(sendJSON[struct{}, struct{}]("POST", stopURL.Get()))
+	start.Then(func(_ struct{}) { list.Reload() })
+	stop.Then(func(_ struct{}) { list.Reload() })
+	logs := signal([]Log{})
+	note := field("", nil)
+	live := events("/api/events")
+	on[State](live, "state", func(s State) {
+		if s.Error != "" {
+			note.SetError(errors.New(s.Error))
+		}
+	})
+	on[Log](live, "log", func(row Log) {
+		xs := append(logs.Get(), row)
+		if len(xs) > 20 {
+			xs = xs[len(xs)-20:]
+		}
+		logs.Set(xs)
+	})
+	<div>
+		<p>{liveLabel(live, lost)}</p>
+		{if list.Err() != nil && !list.Loading() {
+			<p>{http.Status(list.Err())} {http.Message(list.Err())}</p>
+		}}
+		<ul>
+			{for _, s := range list.Data() key s.ID {
+				<li>
+					{s.Name}
+					{if s.Running {running} else {stopped}}
+					<button
+						type="button"
+						onclick={startURL.Set("/api/services/" + s.ID + "/start"); start.Do()}>
+						Start
+					</button>
+					<button
+						type="button"
+						onclick={stopURL.Set("/api/services/" + s.ID + "/stop"); stop.Do()}>
+						Stop
+					</button>
+				</li>
+			}}
+		</ul>
+		{if start.Err() != nil {
+			<p>{http.Status(start.Err())} {http.Message(start.Err())}</p>
+		}}
+		{if stop.Err() != nil {
+			<p>{http.Status(stop.Err())} {http.Message(stop.Err())}</p>
+		}}
+		<input bind={note} placeholder="Note" />
+		{if note.Error() != nil {
+			<p>{note.Error().Error()}</p>
+		}}
+		<ul>
+			{for _, row := range logs.Get() key row.ID {
+				<li>{row.Text}</li>
+			}}
+		</ul>
+	</div>
+}
+
+component App() {
+	pass := field("", nil)
+	board := signal(false)
+	tok := signal("")
+	login := action(sendJSON[Cred, Session]("POST", "/api/login"))
+	login.Then(func(t Session) {
+		tok.Set(t.CSRF)
+		board.Set(true)
+	})
+	<main>
+		<h1>Admin</h1>
+		{if !board.Get() {
+			<div>
+				<input type="password" bind={pass} placeholder="Password" />
+				<button type="button" onclick={login.Do(Cred{Password: pass.Get()})}>
+					Sign in
+				</button>
+				{if login.Err() != nil {
+					<p>{http.Message(login.Err())}</p>
+				}}
+			</div>
+		} else {
+			<Board
+				token={tok.Get()}
+				lost={func() {
+					tok.Set("")
+					board.Set(false)
+					_ = http.DeleteHeader("X-CSRF")
+				}} />
+		}}
+	</main>
+}

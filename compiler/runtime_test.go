@@ -518,6 +518,35 @@ log(html());`)
 		`<a href="about:blank#blocked">x</a>`)
 }
 
+// A leading tab used to be eaten by the first alternative of $url's
+// regex, so the anchor then missed the spaces that followed it and a
+// javascript: URL survived. Each of these must be blocked, and a normal
+// https URL must still pass.
+func TestRunURLControlBypass(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    u := signal("https://go.dev")
+    <div>
+        <a href={u.Get()}>x</a>
+        <button onclick={u.Set("\t javascript:alert(1)")}>tab</button>
+        <button onclick={u.Set("\n\u0001javascript:alert(1)")}>lf</button>
+        <button onclick={u.Set("\r javascript:alert(1)")}>cr</button>
+    </div>
+}`, `
+log(find("a").getAttribute("href"));
+click(find("button", "tab")); await tick();
+log(find("a").getAttribute("href"));
+click(find("button", "lf")); await tick();
+log(find("a").getAttribute("href"));
+click(find("button", "cr")); await tick();
+log(find("a").getAttribute("href"));`)
+	expectLines(t, got,
+		`https://go.dev`,
+		`about:blank#blocked`,
+		`about:blank#blocked`,
+		`about:blank#blocked`)
+}
+
 const storedSrc = `
 type Item struct {
     Name string
@@ -2772,4 +2801,737 @@ for (let seed = 1; seed <= 500; seed++) {
 }
 log("trees:", trees, "batches:", batches, "runs:", runs > 100000, "bad runs:", bad, "mismatches:", mismatches, "errors:", errors);`)
 	expectLines(t, got, `trees: 500 batches: 10000 runs: true bad runs: 0 mismatches: 0 errors: 0`)
+}
+
+// onMount runs after the build that made the component, with its nodes
+// in the document and its refs set; parents before children, in the order
+// they were built; never for an instance that went before then.
+func TestRunOnMount(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    events := signal("")
+    show := signal(true)
+    late := signal(false)
+    box := ref()
+    onMount(func() {
+        box.Focus()
+        events.Set(events.Get() + "App ")
+    })
+    <div>
+        <p>{events.Get()}</p>
+        <input ref={box} />
+        <Child name="a" events={events} />
+        {if show.Get() { <Child name="b" events={events} /> }}
+        {if late.Get() { <Child name="c" events={events} /><Boom n={1} /> }}
+        <button onclick={show.Set(!show.Get())}>show</button>
+        <button onclick={late.Set(true)}>late</button>
+        <button onclick={onMount(func() { events.Set(events.Get() + "click ") })}>click</button>
+    </div>
+}
+
+component Child(name string, events *Signal[string]) {
+    onMount(func() { events.Set(events.Get() + name + " ") })
+    onCleanup(func() { events.Set(events.Get() + "-" + name + " ") })
+    <span>{name}</span>
+}
+
+// Boom panics as it is built, so the branch it is in, with the Child
+// built before it, goes in the same build.
+component Boom(n int) {
+    xs := []int{}
+    _ = xs[n]
+    <b>boom</b>
+}`, `
+const p = () => find("p").textContent;
+log("built:", JSON.stringify(p()));
+await settle();
+log("mounted:", p(), document.activeElement === find("input"), find("input").focusedInDoc);
+click(find("button", "show")); await settle();
+log("hidden:", p());
+click(find("button", "show")); await settle();
+log("shown:", p());
+click(find("button", "late")); await settle();
+log("late:", p(), findAll("span").map((s) => s.textContent).join(""));
+click(find("button", "click")); log("in the handler:", p()); await settle();
+log("after it:", p());`)
+	expectLines(t, got,
+		`built: ""`,
+		`mounted: App a b  true true`,
+		`hidden: App a b -b `,
+		`shown: App a b -b b `,
+		`reportError: den: index out of range`,
+		`late: App a b -b b -c  ab`,
+		`in the handler: App a b -b b -c `,
+		`after it: App a b -b b -c click`)
+}
+
+// onCleanup runs when the component goes: newest first, a child's before
+// its parent's, each untracked with its panic reported; and at once when
+// called after the component has gone.
+func TestRunOnCleanup(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    events := signal("")
+    show := signal(true)
+    later := signal[func()](nil)
+    <div>
+        <p>{events.Get()}</p>
+        {if show.Get() { <Parent events={events} later={later} /> }}
+        <button onclick={show.Set(!show.Get())}>show</button>
+        <button onclick={
+            f := later.Get()
+            f()
+        }>later</button>
+    </div>
+}
+
+component Parent(events *Signal[string], later *Signal[func()]) {
+    add := func(s string) { events.Set(events.Get() + s + " ") }
+    onCleanup(func() { add("parent1") })
+    onCleanup(func() {
+        add("parent2")
+        xs := []int{}
+        _ = xs[len(events.Get())]
+    })
+    onCleanup(func() { add("parent3:" + itoa(len(events.Get()))) })
+    later.Set(func() { onCleanup(func() { add("late") }) })
+    <section><Kid add={add} /></section>
+}
+
+component Kid(add func(string)) {
+    onCleanup(func() { add("kid") })
+    <i>kid</i>
+}`, `
+const p = () => find("p").textContent.trim();
+click(find("button", "show")); await settle();
+log(p());
+click(find("button", "later")); await settle();
+log(p());
+click(find("button", "later")); await settle();
+log(p());`)
+	expectLines(t, got,
+		`reportError: den: index out of range`,
+		`kid parent3:4 parent2 parent1`,
+		`kid parent3:4 parent2 parent1 late`,
+		`kid parent3:4 parent2 parent1 late late`)
+}
+
+// ref={r} sets r when the element is made and clears it when the element's
+// scope goes, unless another element has r by then; a *Ref can be a prop,
+// and its methods do nothing while it holds no element.
+func TestRunRefs(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    show := signal(true)
+    k := signal(0)
+    a := ref()
+    b := ref()
+    c := ref()
+    var none *Ref
+    <div>
+        {if show.Get() { <input class="a1" ref={a} /> } else { <textarea class="a2" ref={a} /> }}
+        {if show.Get() { <svg><circle ref={c} /></svg> }}
+        {key k.Get() { <input class={"k" + itoa(k.Get())} ref={b} /> }}
+        <Field box={b} show={show} />
+        <button onclick={a.Focus()}>fa</button>
+        <button onclick={a.Select()}>sa</button>
+        <button onclick={a.ScrollIntoView()}>va</button>
+        <button onclick={a.Blur()}>ba</button>
+        <button onclick={b.Focus()}>fb</button>
+        <button onclick={c.Focus()}>fc</button>
+        <button onclick={c.Select()}>sc</button>
+        <button onclick={none.Focus()}>nil</button>
+        <button onclick={show.Set(!show.Get())}>show</button>
+        <button onclick={k.Set(k.Get() + 1)}>key</button>
+    </div>
+}
+
+component Field(box *Ref, show *Signal[bool]) {
+    <label>{if !show.Get() { <input class="field" ref={box} /> }}</label>
+}`, `
+const act = (b) => { document.activeElement = null; click(find("button", b)); const e = document.activeElement; return e ? e.tagName + "." + (e.getAttribute("class") ?? "") : "none"; };
+log("a:", act("fa"), "b:", act("fb"), "c:", act("fc"));
+click(find("button", "sa")); click(find("button", "va")); click(find("button", "sc"));
+const a1 = find("input"), circle = find("circle");
+log("select:", a1.selects, "scroll:", a1.scrolls, "svg select:", circle.selects);
+document.activeElement = a1; click(find("button", "ba")); log("blurred:", document.activeElement === null);
+click(find("button", "show")); await settle();
+log("a:", act("fa"), "b:", act("fb"), "c:", act("fc"));
+click(find("button", "key")); await settle();
+log("b:", act("fb"));
+click(find("button", "show")); await settle();
+log("a:", act("fa"), "b:", act("fb"));
+click(find("button", "key")); await settle();
+log("b:", act("fb"));
+try { click(find("button", "nil")); log("no panic"); } catch (e) { log("nil *Ref:", e.constructor.name); }`)
+	expectLines(t, got,
+		`a: input.a1 b: input.k0 c: circle.`,
+		`select: 1 scroll: 1 svg select: undefined`,
+		`blurred: true`,
+		// The field's input took b from the key block's, then the key
+		// block's new input took it from the field's.
+		`a: textarea.a2 b: input.field c: none`,
+		`b: input.k1`,
+		// So the field's input, going, leaves b alone.
+		`a: input.a1 b: input.k1`,
+		`b: input.k2`,
+		`nil *Ref: TypeError`)
+}
+
+// after and every run their callbacks like event handlers, until stopped
+// or until the component goes: from an {if} branch, a {for} row or a
+// {key} block.
+func TestRunTimers(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    n := signal(0)
+    show := signal(true)
+    ids := signal([]int{1, 2})
+    k := signal(0)
+    stop := every(time.Second, func() { n.Set(n.Get() + 1000) })
+    once := after(1500*time.Millisecond, func() { n.Set(n.Get() + 100000) })
+    <div>
+        <p>{n.Get()}</p>
+        {if show.Get() { <Ticker n={n} by={1} /> }}
+        <ul>{for _, id := range ids.Get() key id { <li><Ticker n={n} by={10} /></li> }}</ul>
+        {key k.Get() { <Ticker n={n} by={100} /> }}
+        <button onclick={stop(); stop()}>stop</button>
+        <button onclick={once()}>once</button>
+        <button onclick={show.Set(false)}>hide</button>
+        <button onclick={ids.Set([]int{2})}>drop</button>
+        <button onclick={k.Set(k.Get() + 1)}>key</button>
+        <button onclick={after(50*time.Millisecond, func() { n.Set(n.Get() - 1) })}>later</button>
+    </div>
+}
+
+component Ticker(n *Signal[int], by int) {
+    every(100*time.Millisecond, func() { n.Set(n.Get() + by) })
+    <span>t</span>
+}`, `fakeTimers();`, `
+const p = () => find("p").textContent;
+log("timers:", pending(), p());
+await advance(250);
+log("250ms:", p());
+click(find("button", "hide")); click(find("button", "drop")); await settle();
+log("timers:", pending());
+await advance(100);
+log("350ms:", p());
+click(find("button", "key")); await settle();
+log("timers:", pending());
+await advance(100);
+log("450ms:", p());
+for (let i = 0; i < 3; i++) click(find("button", "later"));
+log("timers:", pending());
+await advance(50);
+log("500ms:", p(), "timers:", pending());
+click(find("button", "once")); click(find("button", "once"));
+await advance(500);
+log("1s:", p());
+click(find("button", "stop"));
+await advance(1000);
+log("2s:", p(), "timers:", pending());`)
+	expectLines(t, got,
+		// App's every and after, and four Tickers'.
+		`timers: 6 0`,
+		`250ms: 242`,
+		// The {if} branch's and the dropped row's Tickers have gone.
+		`timers: 4`,
+		`350ms: 352`,
+		// The {key} block's Ticker is a new one, from 350ms.
+		`timers: 4`,
+		`450ms: 462`,
+		`timers: 7`,
+		// The three afters fired and took themselves off.
+		`500ms: 469 timers: 4`,
+		// The stopped after never fires; every ticks at 1s.
+		`1s: 2019`,
+		`2s: 3119 timers: 2`)
+}
+
+// A panic in a timer's callback is reported and the timer keeps going;
+// every panics on an interval that is not positive and both on one that
+// setTimeout cannot take; after with no time left fires on the next task;
+// and on a component that has gone they do nothing.
+func TestRunTimerPanics(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    n := signal(0)
+    show := signal(true)
+    later := signal[func()](nil)
+    xs := []int{}
+    every(time.Second, func() {
+        n.Set(n.Get() + 1)
+        _ = xs[n.Get()]
+    })
+    <div>
+        <p>{n.Get()}</p>
+        {if show.Get() { <Kid later={later} /> }}
+        <button onclick={every(0, func() {})}>zero</button>
+        <button onclick={every(-time.Second, func() {})}>negative</button>
+        <button onclick={after(25*24*time.Hour, func() {})}>long</button>
+        <button onclick={after(-time.Second, func() { n.Set(n.Get() + 100) })}>now</button>
+        <button onclick={show.Set(false)}>hide</button>
+        <button onclick={
+            f := later.Get()
+            f()
+        }>late</button>
+    </div>
+}
+
+component Kid(later *Signal[func()]) {
+    later.Set(func() {
+        stop := every(time.Millisecond, func() {})
+        stop()
+        after(time.Millisecond, func() {})
+    })
+    <i>kid</i>
+}`, `fakeTimers();`, `
+const p = () => find("p").textContent;
+await advance(2000);
+log("2s:", p());
+for (const b of ["zero", "negative", "long"]) try { click(find("button", b)); log(b, "did not panic"); } catch (e) { log(b + ":", e.message); }
+log("timers:", pending());
+click(find("button", "now")); await advance(0);
+log("now:", p(), "timers:", pending());
+click(find("button", "hide")); await settle();
+click(find("button", "late")); await settle();
+log("late:", pending());`)
+	expectLines(t, got,
+		`reportError: den: index out of range`,
+		`reportError: den: index out of range`,
+		`2s: 2`,
+		`zero: den: non-positive interval for every`,
+		`negative: den: non-positive interval for every`,
+		`long: den: duration too long`,
+		`timers: 1`,
+		`now: 102 timers: 1`,
+		`late: 1`)
+}
+
+// The lifecycle record itself: a fired after takes itself off it, a stop
+// does too, $onCleanup's remover takes a cleanup back, and the record's
+// functions run untracked, so a block that frees one never comes to
+// depend on what they read.
+func TestLifeRecord(t *testing.T) {
+	got := runRuntime(t, "$signal $effect $scope $free $life $onCleanup $onMount $after $every", `
+fakeTimers();
+const [c, scope] = $scope(() => $life());
+const fired = [];
+for (let i = 0; i < 3; i++) $after(c, 1e6, () => fired.push(i));
+const stop = $every(c, 5e6, () => fired.push("tick"));
+const off = $onCleanup(c, () => fired.push("taken back"));
+$onCleanup(c, () => fired.push("cleanup"));
+log("entries:", c.s.size);
+$onMount(c, () => { throw new Error("mount panicked"); });
+$onMount(c, () => fired.push("mounted"));
+await advance(1);
+log("fired:", fired.join(" "), "entries:", c.s.size);
+off(); stop(); stop();
+log("entries:", c.s.size, "timers:", pending());
+
+// A block whose branch holds a record: freeing the branch runs the
+// record's cleanup, which reads s, inside the block's effect.
+const s = $signal(0), show = $signal(true);
+let runs = 0;
+$scope(() => $effect(() => {
+  runs++;
+  if (show.get()) { const [d, own] = $scope(() => { const d = $life(); $onCleanup(d, () => s.get()); return d; }); globalThis.own = own; }
+  else $free(globalThis.own);
+}));
+show.set(false); await settle();
+s.set(1); await settle();
+log("block ran", runs, "times");
+
+// What a callback makes belongs to the component: an effect made in a
+// timer's callback (one entry on the record), and one made in a cleanup
+// as the component goes (freed at once).
+let seen = [];
+$after(c, 1e6, () => $effect(() => seen.push("timer:" + s.get())));
+await advance(1);
+log("entries:", c.s.size, seen.join(" "));
+$onCleanup(c, () => $effect(() => seen.push("cleanup:" + s.get())));
+
+$free(scope);
+log("gone:", c.x, fired.join(" "), "timers:", pending());
+s.set(2); await settle();
+log("effects:", seen.join(" "));
+const late = $after(c, 1e6, () => fired.push("late"));
+$onCleanup(c, () => fired.push("at once"));
+$onMount(c, () => fired.push("mounted"));
+await advance(10); late();
+log("late:", fired.join(" "), "timers:", pending());`)
+	expectLines(t, got,
+		`entries: 6`,
+		`reportError: mount panicked`,
+		`fired: mounted 0 1 2 entries: 3`,
+		`entries: 1 timers: 0`,
+		`block ran 2 times`,
+		`entries: 2 timer:1`,
+		`gone: 1 mounted 0 1 2 cleanup timers: 0`,
+		`effects: timer:1 cleanup:1`,
+		`late: mounted 0 1 2 cleanup at once timers: 0`)
+}
+
+// A spring made in onMount, and a computed made in a timer's callback,
+// stop with their component: before, they had no owner, and the spring
+// kept asking for animation frames after its component went.
+func TestRunCallbackNodes(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    x := signal(0.0)
+    show := signal(true)
+    out := signal("")
+    <div>
+        <p>{out.Get()}</p>
+        {if show.Get() { <Kid x={x} out={out} /> }}
+        <button onclick={x.Set(x.Get() + 100)}>move</button>
+        <button onclick={show.Set(false)}>hide</button>
+    </div>
+}
+
+component Kid(x *Signal[float64], out *Signal[string]) {
+    onMount(func() {
+        s := spring(x.Get())
+        out.Set("spring " + itoa(int(s.Get())))
+    })
+    after(time.Second, func() {
+        doubled := computed(x.Get() * 2)
+        out.Set(out.Get() + ", doubled " + itoa(int(doubled.Get())))
+    })
+    <i>kid</i>
+}`, `fakeTimers();`, `
+await settle();
+click(find("button", "move")); await settle();
+log("frames asked for:", frames() > 0);
+await advance(1000);
+log(find("p").textContent);
+click(find("button", "hide")); await settle();
+click(find("button", "move")); await settle();
+log("after it went:", frames());`)
+	expectLines(t, got,
+		`frames asked for: true`,
+		`spring 0, doubled 200`,
+		`after it went: 0`)
+}
+
+// time.Now reads the wall clock and the monotonic clock: Hour, Minute,
+// Second and UnixMilli the first (in local time), Sub and Since the
+// second, as in Go. The zero Time is Go's, January 1, year 1, UTC.
+func TestRunTime(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    start := time.Now()
+    now := signal(start)
+    var zero time.Time
+    every(time.Second, func() { now.Set(time.Now()) })
+    <div>
+        <p>{now.Get().Hour()}:{now.Get().Minute()}:{now.Get().Second()} {now.Get().UnixMilli()} {now.Get().Sub(start).Milliseconds()} {now.Get().Sub(start).Seconds()} {time.Since(start) > 0}</p>
+        <p>{zero.Hour()} {zero.Minute()} {zero.Second()} {zero.UnixMilli()} {zero.Sub(zero)} {now.Get().Sub(zero) == 1<<63-1} {zero.Sub(now.Get()) < -1<<62} {time.Time{}.Hour()}</p>
+    </div>
+}`, `process.env.TZ = "UTC"; fakeTimers(Date.UTC(2026, 10, 4, 13, 14, 15, 678));`, `
+const p = () => findAll("p").map((p) => p.textContent).join(" | ");
+log(p());
+await advance(61500);
+log(p());
+Date.now = () => 1000; // the system clock goes back to 1970
+await advance(1000);
+log(p());`)
+	// time.Since(start) > 0 reads no signal, so it is shown once, when the
+	// clock has not moved: time.Now is not a signal.
+	expectLines(t, got,
+		`13:14:15 1793798055678 0 0 false | 0 0 0 -62135596800000 0 true true 0`,
+		`13:15:16 1793798116678 61000 61 false | 0 0 0 -62135596800000 0 true true 0`,
+		`0:0:1 1000 62000 62 false | 0 0 0 -62135596800000 0 true true 0`)
+}
+
+// examples/clock on the test DOM, with a fake clock that starts at
+// 13:14:15.600 UTC.
+func TestClockExample(t *testing.T) {
+	src, err := os.ReadFile("../examples/clock/app.den")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := runAppWith(t, string(src), `process.env.TZ = "UTC"; fakeTimers(Date.UTC(2026, 10, 4, 13, 14, 15, 600));`, `
+const values = () => findAll("p").filter((p) => p.getAttribute("class") === "value").map((p) => p.textContent.trim()).join(" ");
+const items = () => findAll("li").map((li) => li.textContent).join(",");
+const input = find("input");
+await settle();
+log(values(), "| focused:", document.activeElement === input, input.focusedInDoc, "| timers:", pending());
+await advance(400);
+log("400ms:", values(), "| timers:", pending());
+await advance(2000);
+log("2.4s:", values());
+click(find("button", "Start")); await settle();
+await advance(1234);
+log("running:", values(), "| reset:", find("button", "Reset").getAttribute("disabled"), "| timers:", pending());
+click(find("button", "Stop")); await advance(5000);
+log("stopped:", values(), "| reset:", find("button", "Reset").getAttribute("disabled"), "| timers:", pending());
+input.value = "an"; input.dispatch("input"); await settle();
+log("an:", items());
+input.dispatch("keydown", { key: "Escape" }); await settle();
+log("escape:", items().split(",").length, document.activeElement === null);
+click(find("button", "Remove the clock")); await settle();
+log("removed:", values(), "|", find("p", "Gone 1 times, and its timer with it.") !== null, "| timers:", pending());
+click(find("button", "Bring it back")); await settle();
+click(find("button", "Remove the clock")); await settle();
+log("again:", find("p", "Gone 2 times, and its timer with it.") !== null, "| timers:", pending());`)
+	expectLines(t, got,
+		`13:14:15 0:00.00 | focused: true true | timers: 1`,
+		`400ms: 13:14:16 0:00.00 | timers: 1`,
+		`2.4s: 13:14:18 0:00.00`,
+		`running: 13:14:19 0:01.23 | reset:  | timers: 2`,
+		`stopped: 13:14:24 0:01.23 | reset: null | timers: 1`,
+		`an: Banana,Mango`,
+		`escape: 10 true`,
+		`removed: 0:01.23 | true | timers: 0`,
+		`again: true | timers: 0`)
+}
+
+// Handlers in list rows, which den hoists out of the rows (and delegates
+// when a row is one element), and handlers in markup passed as children,
+// belong to the component that wrote them: their timers stop with it.
+func TestRunTimersInRows(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    n := signal(0)
+    show := signal(true)
+    <div>
+        <p>{n.Get()}</p>
+        {if show.Get() { <List n={n} /> }}
+        <button onclick={show.Set(false)}>hide</button>
+    </div>
+}
+
+component List(n *Signal[int]) {
+    ids := signal([]int{1, 2})
+    <section>
+        <ul>{for _, id := range ids.Get() key id {
+            <li onclick={after(time.Second, func() { n.Set(n.Get() + id) })}>{id}</li>
+        }}</ul>
+        <Box><b onclick={every(time.Second, func() { n.Set(n.Get() + 100) })}>slot</b></Box>
+    </section>
+}
+
+component Box(children den.Children) {
+    <div>{children}</div>
+}`, `fakeTimers();`, `
+const p = () => find("p").textContent;
+log(find("li", "2").getAttribute("den-click"));
+click(find("li", "1")); click(find("li", "2")); click(find("b"));
+log("timers:", pending());
+await advance(1000);
+log(p(), "timers:", pending());
+click(find("li", "2")); click(find("button", "hide")); await settle();
+log("timers:", pending());`)
+	expectLines(t, got,
+		`0`,
+		`timers: 3`,
+		`103 timers: 1`,
+		`timers: 0`)
+}
+
+// onMount, onCleanup, after, every, ref and Ref are the program's own when
+// it declares them, and keep their Go meaning; den's others still work.
+func TestRunOwnLifecycleNames(t *testing.T) {
+	got := runApp(t, `
+func after(a, b int) int { return a + b }
+
+func every(xs []int) int { return len(xs) }
+
+type Ref struct{ Name string }
+
+func onMount(r Ref) string { return r.Name }
+
+component App() {
+    n := signal(0)
+    onCleanup(func() {})
+    <p>{after(1, 2)} {every([]int{1, 2})} {onMount(Ref{Name: "mine"})} {n.Get()}</p>
+}`, `log(html());`)
+	expectLines(t, got, `<p>3 2 mine 0</p>`)
+}
+
+// A func literal that is a whole prop may call after: it belongs to the
+// component that wrote it, as a func among its statements would, so its
+// timers stop with that component, not with the one it was given to.
+func TestRunFuncPropTimers(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+component App() {
+    n := signal(0)
+    show := signal(true)
+    <div>
+        <p>{n.Get()}</p>
+        {if show.Get() { <Holder n={n} /> }}
+        <button onclick={show.Set(false)}>hide</button>
+    </div>
+}
+
+component Holder(n *Signal[int]) {
+    <section><Kid start={func() { after(time.Second, func() { n.Set(n.Get() + 1) }) }} /></section>
+}
+
+component Kid(start func()) {
+    <button onclick={start()}>start</button>
+}`, `fakeTimers();`, `
+click(find("button", "start"));
+await advance(1000);
+log(find("p").textContent, "timers:", pending());
+click(find("button", "start"));
+log("timers:", pending());
+click(find("button", "hide")); await settle();
+log("timers:", pending());`)
+	expectLines(t, got,
+		`1 timers: 0`,
+		`timers: 1`,
+		`timers: 0`)
+}
+
+// What a callback makes has its component's owner, so it never runs
+// while the block that is taking the component away is due: here the
+// spring would read xs[1] after xs shrank, before the {if} dropped Kid.
+func TestRunCallbackNodesOrder(t *testing.T) {
+	for _, call := range []string{
+		`onMount(func() { _ = spring(float64(y.Get() + xs.Get()[1])) })`,
+		`after(time.Millisecond, func() { _ = spring(float64(y.Get() + xs.Get()[1])) })`,
+	} {
+		got := runAppWith(t, `
+import "time"
+
+component App() {
+    xs := signal([]int{1, 2})
+    y := signal(0)
+    <div>
+        {if len(xs.Get()) > 1 { <Kid xs={xs} y={y} /> }}
+        <button onclick={
+            y.Set(1)
+            xs.Set([]int{1})
+        }>go</button>
+    </div>
+}
+
+component Kid(xs *Signal[[]int], y *Signal[int]) {
+    `+call+`
+    _ = time.Second
+    <i>kid</i>
+}`, `fakeTimers();`, `
+await advance(1);
+click(find("button")); await settle();
+log(html());`)
+		expectLines(t, got, `<div><button>go</button></div>`)
+	}
+}
+
+// A program may have its own denTime, which den's own import of package
+// time then makes way for.
+func TestRunOwnDenTime(t *testing.T) {
+	for _, c := range []struct{ src, want string }{{`
+import "time"
+
+func denTime() int { return 3 }
+
+component App() {
+    n := signal(0)
+    after(time.Millisecond, func() { n.Set(denTime()) })
+    <p>{n.Get()}</p>
+}`, `<p>3</p>`}, {`
+import denTime "time"
+
+component App() {
+    n := signal(0)
+    every(denTime.Second, func() { n.Set(n.Get() + 1) })
+    <p>{n.Get()}</p>
+}`, `<p>2</p>`}, {`
+type denTime int
+
+const denTime_ = 2
+
+component App() {
+    n := signal(denTime(denTime_))
+    every(1000000, func() { n.Set(n.Get() + 1) })
+    <p>{n.Get()}</p>
+}`, `<p>2002</p>`}} {
+		got := runAppWith(t, c.src, `fakeTimers();`, `await advance(2000); log(html());`)
+		expectLines(t, got, c.want)
+	}
+}
+
+// A program's own setInterval, setTimeout and Date are renamed in JS, as
+// den does with every Go name that is a global its JS uses: before, they
+// hid the browser's, and every never ticked.
+func TestRunOwnGlobalNames(t *testing.T) {
+	got := runAppWith(t, `
+import "time"
+
+func setInterval() int { return 1 }
+
+func setTimeout() int { return 2 }
+
+func Date() int { return 3 }
+
+component App() {
+    n := signal(0)
+    start := time.Now()
+    since := signal(time.Duration(0))
+    every(time.Second, func() {
+        n.Set(n.Get() + setInterval())
+        since.Set(time.Since(start))
+    })
+    after(time.Second/2, func() { n.Set(n.Get() + 10*setTimeout()) })
+    <p>{n.Get()} {Date()} {since.Get().Milliseconds()} {start.Hour()}</p>
+}`, `process.env.TZ = "UTC"; fakeTimers(Date.UTC(2026, 10, 4, 13, 0, 0));`, `
+await advance(2000);
+log(html());`)
+	expectLines(t, got, `<p>22 3 2000 13</p>`)
+}
+
+func TestRunHTTPMetadataHeaders(t *testing.T) {
+	got := runAppWith(t, `
+import "den/http"
+import "errors"
+component App() {
+    _ = http.SetHeader("X-CSRF-Token", "one")
+    r := resource(fetchJSON[int]("/value"))
+    <div>
+        <p>{http.Status(r.Err())}|{http.Code(r.Err())}|{http.Message(r.Err())}</p>
+        <b>{http.Status(nil)}|{http.Code(nil)}|{http.Message(nil)}|{http.Message(errors.New("plain"))}</b>
+        <button onclick={_ = http.SetHeader("x-csrf-token", "two"); r.Reload()}>change</button>
+        <button onclick={_ = http.DeleteHeader("X-CSRF-TOKEN"); r.Reload()}>clear</button>
+    </div>
+}`, ``, `
+await tick();
+log(find("b").textContent, fetches[0].opts.headers["x-csrf-token"]);
+reply(fetches[0], 422, '{"error":{"code":"invalid","message":"Try again"}}'); await tick();
+log(find("p").textContent);
+click(find("button", "change")); await tick();
+log(fetches[0].opts.headers["x-csrf-token"], fetches[1].opts.headers["x-csrf-token"]);
+reply(fetches[1], 500, 'broken'); await tick();
+log(find("p").textContent);
+click(find("button", "clear")); await tick();
+log(fetches[2].opts.headers["x-csrf-token"] === undefined);
+fetches[2].done = true;
+fetches[2].resolve({ok:false,status:403,statusText:"Forbidden",text:async()=>{throw Error("body failed");}}); await tick();
+log(find("p").textContent);`)
+	expectLines(t, got, `0|||plain one`, `422|invalid|Try again`, `one two`, `500||fetchJSON: GET /value: 500 Internal Server Error`, `true`, `403||fetchJSON: GET /value: 403 Forbidden`)
+}
+
+func TestHTTPHeaderValidation(t *testing.T) {
+	got := runRuntime(t, "$httpSetHeader $httpDeleteHeader $httpSnapshot", `
+const forbidden = ["Accept-Charset", "Accept-Encoding", "Access-Control-Request-Headers", "Access-Control-Request-Method", "Connection", "Content-Length", "Cookie", "Cookie2", "Date", "DNT", "Expect", "Host", "Keep-Alive", "Origin", "Referer", "Set-Cookie", "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Via", "Proxy-Anything", "Sec-Anything", "X-HTTP-Method", "X-HTTP-Method-Override", "X-Method-Override"];
+console.log(forbidden.every(n => $httpSetHeader(n,"x") && $httpDeleteHeader(n)));
+console.log(["", "bad name", "x:", "x\n", "\u00e9"].every(n => $httpSetHeader(n,"x")));
+console.log(["a\r", "a\n", "a\t", "a\0", "a\x7f", "a\u0100"].every(v => $httpSetHeader("X-Test",v)));
+console.log($httpSetHeader("X-Test", "  good \u00e9  ") === null, $httpSnapshot()["x-test"], $httpDeleteHeader("x-TEST") === null);
+`)
+	expectLines(t, got, `true`, `true`, `true`, "true good \u00e9 true")
 }

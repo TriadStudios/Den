@@ -122,7 +122,7 @@ function $scope(f) {
 // $url lets through only http, https, mailto, tel and relative URLs. The
 // compiler wraps every dynamic URL attribute (href, src, ...) in it.
 function $url(v) {
-  v = String(v).replace(/[\t\n\r]|^[\0- ]+/g, "");
+  v = String(v).replace(/^[\0- ]+|[\t\n\r]/g, "");
   return !/^[a-z][a-z0-9+.-]*:/i.test(v) || /^(https?|mailto|tel):/i.test(v) ? v : "about:blank#blocked";
 }
 function $h(t) { return document.createElement(t); }

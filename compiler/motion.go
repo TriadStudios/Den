@@ -97,15 +97,18 @@ func durationMS(v string) (float64, string) {
 	return f, ""
 }
 
-// isOpaque reports whether t is one of den's opaque values, a Transition
-// or a Layout, whose zero value is null.
+// isOpaque reports whether t is one of den's opaque values, a Transition,
+// a Layout, a Ref or a time.Time, whose zero value is null.
 func isOpaque(t types.Type) bool {
+	if isTime(t) {
+		return true
+	}
 	s, ok := t.Underlying().(*types.Struct)
 	if !ok || s.NumFields() != 1 {
 		return false
 	}
 	n, ok := s.Field(0).Type().(*types.Named)
-	return ok && n.Obj().Name() == "denOpaque" && n.Obj().Parent() == n.Obj().Pkg().Scope()
+	return ok && (n.Obj().Name() == "denOpaque" || n.Obj().Name() == "denOpaqueRef") && n.Obj().Parent() == n.Obj().Pkg().Scope()
 }
 
 // motionIn reports whether an element at the top level of nodes, or at the
@@ -223,6 +226,11 @@ func handlerTypes(ck *checked) string {
 		for a, pt := range cc.attrs {
 			if pt.kind == partHandler {
 				seen[a.Name[2:]] = true
+			}
+			if pt.kind == partBind {
+				for _, t := range bindEvents(pt.bind) {
+					seen[t] = true
+				}
 			}
 		}
 	}

@@ -1,0 +1,40 @@
+// Forms: bind={x} and field(initial, check), written loosely.
+
+import (
+	"errors"
+	"strings"
+)
+
+type Opt struct {
+	ID    int
+	Label string
+}
+
+component App() {
+	email := field("", func(s string) error {
+		if !strings.Contains(s, "@") {
+			return errors.New("enter an email address")
+		}
+		return nil
+	})
+	age := field(18, nil)
+	plan := signal("free")
+	n := signal(2)
+	agree := signal(false)
+	opts := signal([]Opt{{1, "one"}, {2, "two"}})
+	<form onsubmit={e.PreventDefault(); email.Touch()}>
+		<input type="email" bind={email} />
+		{if email.Touched() && email.Error() != nil {<p class="error">{email.Error().Error()}</p>}}
+		<input type="number" bind={age} />
+		<label><input type="checkbox" bind={agree} /> I agree</label>
+		{for _, o := range opts.Get() key o.ID {
+			<label><input type="radio" value={o.ID} bind={n} /> {o.Label}</label>
+		}}
+		<select bind={plan}>
+			<option value="free">Free</option>
+			<option value="pro">Pro</option>
+		</select>
+		<textarea bind={plan} />
+		<button onclick={age.Reset()}>reset</button>
+	</form>
+}

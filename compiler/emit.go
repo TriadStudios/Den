@@ -91,6 +91,7 @@ func Compile(sources []Source) (*Result, error) {
 	if len(e.errs) > 0 {
 		return nil, e.errs.sorted()
 	}
+	e.tplOut.WriteString(e.json.out())
 	body.WriteString("$mount(App, document.getElementById(\"app\"));\n")
 	code := e.tplOut.String() + body.String()
 	if e.motion {
@@ -164,6 +165,9 @@ type emitter struct {
 	scopes  map[*Component]string // the scope attribute of each component with a style block
 	motions map[string]string     // shared transitions: JS -> the name of the constant holding it
 	motion  bool                  // a block compiled to $ifm or $form, whose leaving elements need $evs
+	ctx     string                // the JS name of the context in effect, or "" in a program that provides nothing (context.go)
+	slots   int                   // the slot closures around the code being emitted, each with a context of its own
+	json    jsonTable             // the JSON descriptors of fetchJSON's types, $jt
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -186,6 +190,7 @@ type rowCtx struct {
 	rootEl   bool     // each row is a single element
 	handlers []string // the table of delegated handlers
 	types    []string // the events they handle
+	slots    int      // e.slots where the list is, and so its hoisted code
 }
 
 // delegate reports whether handler a can go in the row's handler table,
@@ -217,7 +222,7 @@ func (e *emitter) delegate(a *Attr) (int, bool) {
 // hoistable reports whether the code in nodes can be hoisted out of the
 // current row.
 func (e *emitter) hoistable(nodes ...ast.Node) bool {
-	if e.row == nil {
+	if e.row == nil || e.crossesContext(nodes...) {
 		return false
 	}
 	ok := true
@@ -276,19 +281,30 @@ func (e *emitter) name(prefix string) string {
 }
 
 func (e *emitter) component(cc *checkedComponent) {
-	e.cc, e.n, e.ind, e.results = cc, 0, "  ", nil
+	e.cc, e.n, e.ind, e.results, e.ctx = cc, 0, "  ", nil, ""
 	var params []string
 	for _, p := range cc.c.Params {
 		params = append(params, jsIdent(p.Name))
 	}
+	if e.ck.ctx.on {
+		e.ctx = "$x" // the caller's context, after the props
+		params = append(params, e.ctx)
+	}
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
+	if e.ck.usesLife(cc.decl) {
+		// The component's lifecycle record, which every onMount, onCleanup,
+		// after, every, resource, action, events and on in its Go uses: its
+		// statements, func literals and handlers, hoisted row handlers and
+		// slot markup included, all of which are written inside this function.
+		e.line("const $c = $life();")
+	}
 	e.stmts(cc.stmts)
 	e.line("return %s;", e.instantiate([]Node{cc.c.Root}, nsHTML))
 	e.w.WriteString("}\n")
 }
 
 func (e *emitter) funcDecl(fd *ast.FuncDecl) {
-	e.n, e.ind = 0, "  "
+	e.n, e.ind, e.ctx = 0, "  ", ""
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(fd.Name.Name), e.params(fd.Type.Params))
 	e.funcBody(fd.Type, fd.Body)
 	e.w.WriteString("}\n")
@@ -526,7 +542,7 @@ func (e *emitter) instantiate(nodes []Node, svg ns) string {
 			}
 		case *Interp:
 			if x := e.cc.parts[n].expr; isChildren(e.ck.info.TypeOf(x)) {
-				return e.expr(x) + "(" + svg.arg() + ")"
+				return e.expr(x) + "(" + e.ctxArgs(svg.arg(), true) + ")"
 			}
 		}
 	}
@@ -575,7 +591,7 @@ func (e *emitter) bind(ts []*tnode) {
 			if isChildren(e.ck.info.TypeOf(pt.expr)) {
 				// The markup is built here, in this place's namespace, so the
 				// nodes it makes belong to the scope rendering it.
-				e.line("%s.replaceWith(%s(%s));", t.v, e.expr(pt.expr), t.svg.arg())
+				e.line("%s.replaceWith(%s(%s));", t.v, e.expr(pt.expr), e.ctxArgs(t.svg.arg(), true))
 				continue
 			}
 			if e.ck.reactive(pt.expr) {
@@ -592,6 +608,9 @@ func (e *emitter) bind(ts []*tnode) {
 				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n))
 				continue
 			}
+			// A <select> is bound once its options are there.
+			var selects []*part
+			radio := e.boundRadio(n)
 			for _, a := range n.Attrs {
 				if a.Name == "autofocus" && a.Kind != AttrExpr {
 					// Browsers only autofocus on page load; den also focuses
@@ -606,6 +625,20 @@ func (e *emitter) bind(ts []*tnode) {
 					e.line("%s.%s = %s;", t.v, motionProps[a.Name], e.motionValue(pt.expr))
 					continue
 				}
+				if pt.kind == partRef {
+					e.line("$setRef(%s, %s);", t.v, e.expr(pt.expr))
+					continue
+				}
+				switch {
+				case pt.kind == partBind && pt.bind.kind == bindSelect:
+					selects = append(selects, pt)
+					continue
+				case pt.kind == partBind:
+					e.bindJS(t.v, pt)
+					continue
+				case radio && asciiLower(a.Name) == "value":
+					continue // bindJS writes it
+				}
 				if pt.kind == partHandler {
 					body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
 					switch {
@@ -617,7 +650,7 @@ func (e *emitter) bind(ts []*tnode) {
 					continue
 				}
 				x := e.expr(pt.expr)
-				if urlAttrs[strings.ToLower(a.Name)] {
+				if urlAttrs[strings.ToLower(a.Name)] || smilURLValue(n, a) {
 					x = "$url(" + x + ")"
 				}
 				if e.ck.reactive(pt.expr) {
@@ -631,6 +664,9 @@ func (e *emitter) bind(ts []*tnode) {
 				}
 			}
 			e.bind(t.children)
+			for _, pt := range selects {
+				e.bindJS(t.v, pt)
+			}
 		case *If:
 			e.ifNode(t, n)
 		case *For:
@@ -675,18 +711,33 @@ func (e *emitter) componentCall(el *Element) string {
 		case len(pt.slots[i]) == 0:
 			args = append(args, "$cm")
 		default:
+			// The markup sees the context of the component rendering it,
+			// which passes it as $x.
+			outer := e.ctx
+			if e.ctx != "" {
+				e.ctx = "$x"
+			}
+			e.slots++
 			body := e.capture(e.ind+"  ", func() { e.line("return %s;", e.instantiate(pt.slots[i], nsDyn)) })
+			e.ctx = outer
+			e.slots--
 			param := ""
-			if usesSVG.MatchString(body) {
+			switch {
+			case outer != "" && usesCtx.MatchString(body):
+				param = "$svg, $x"
+			case usesSVG.MatchString(body):
 				param = "$svg"
 			}
 			args = append(args, "("+param+") => {\n"+body+e.ind+"}")
 		}
 	}
-	return jsIdent(el.Tag) + "(" + strings.Join(args, ", ") + ")"
+	return jsIdent(el.Tag) + "(" + e.ctxArgs(strings.Join(args, ", "), false) + ")"
 }
 
-var usesSVG = regexp.MustCompile(`\$svg\b`)
+var (
+	usesSVG = regexp.MustCompile(`\$svg\b`)
+	usesCtx = regexp.MustCompile(`\$x\b`)
+)
 
 // block emits a function that builds nodes and returns them.
 func (e *emitter) block(params string, nodes []Node, svg ns) string {
@@ -802,9 +853,9 @@ func (e *emitter) forNode(t *tnode, n *For) {
 	outer := e.row
 	e.row = nil
 	if isInt && keyObj != nil {
-		e.row = &rowCtx{obj: keyObj, name: k}
+		e.row = &rowCtx{obj: keyObj, name: k, slots: e.slots}
 	} else if !isInt && valObj != nil {
-		e.row = &rowCtx{obj: valObj, name: v}
+		e.row = &rowCtx{obj: valObj, name: v, slots: e.slots}
 	}
 	if e.row != nil && len(n.Body) == 1 {
 		el, ok := n.Body[0].(*Element)
@@ -916,10 +967,18 @@ func (e *emitter) stmts(list []ast.Stmt) {
 func (e *emitter) stmt(s ast.Stmt) {
 	switch s := s.(type) {
 	case *ast.ExprStmt:
+		if call, ok := e.isProvide(s); ok {
+			e.provide(call)
+			return
+		}
 		e.line("%s;", e.expr(s.X))
 	case *ast.AssignStmt:
 		e.assign(s)
 	case *ast.IncDecStmt:
+		if name, ok := sizedIntName(e.ck.info.TypeOf(s.X)); ok {
+			e.errAt(s.X, "arithmetic on %s is not supported yet", name)
+			return
+		}
 		if id, ok := ast.Unparen(s.X).(*ast.Ident); ok {
 			e.line("%s%s;", jsIdent(id.Name), s.Tok)
 			return
@@ -1172,6 +1231,16 @@ func (e *emitter) assign(s *ast.AssignStmt) {
 			e.errAt(s, "%s is not supported yet", s.Tok)
 			return
 		}
+		// Identifiers do not go through binary for these, so the check is
+		// here too. A constant operand is not enough: the variable is not.
+		if bitOp(op) {
+			e.errAt(lhs, "operator %s is not supported yet", s.Tok)
+			return
+		}
+		if name, ok := sizedIntName(e.ck.info.TypeOf(lhs)); ok {
+			e.errAt(lhs, "arithmetic on %s is not supported yet", name)
+			return
+		}
 		if id, ok := lhs.(*ast.Ident); ok && op != token.QUO {
 			e.line("%s %s %s;", jsIdent(id.Name), s.Tok, e.expr(rhs))
 			return
@@ -1279,6 +1348,78 @@ func isInt(t types.Type) bool {
 	return ok && b.Info()&types.IsInteger != 0
 }
 
+// sizedIntName is the underlying basic name when t is an integer whose
+// arithmetic or a truncating conversion would not match Go: int8, uint8,
+// int16, uint16, int32, uint32, and named types and aliases with those
+// underlying types (byte is uint8, rune is int32). int, int64, uint,
+// uintptr and time.Duration are not in that set; they stay JS numbers.
+func sizedIntName(t types.Type) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	b, ok := t.Underlying().(*types.Basic)
+	if !ok {
+		return "", false
+	}
+	// Name() is "byte" or "rune" for those aliases. The message uses the
+	// underlying kind's name, uint8 and int32.
+	switch b.Kind() {
+	case types.Int8:
+		return "int8", true
+	case types.Int16:
+		return "int16", true
+	case types.Int32:
+		return "int32", true
+	case types.Uint8:
+		return "uint8", true
+	case types.Uint16:
+		return "uint16", true
+	case types.Uint32:
+		return "uint32", true
+	}
+	return "", false
+}
+
+func bitOp(op token.Token) bool {
+	switch op {
+	case token.AND, token.OR, token.XOR, token.SHL, token.SHR:
+		return true
+	}
+	return false
+}
+
+func arithOp(op token.Token) bool {
+	switch op {
+	case token.ADD, token.SUB, token.MUL, token.QUO, token.REM:
+		return true
+	}
+	return false
+}
+
+// preservesInt reports whether converting from to to keeps every value.
+// to is a sized integer. Identical underlying types are handled by the
+// caller. Widening signed to signed, widening unsigned to unsigned, and
+// unsigned to a wider signed type are kept. Narrowing, a sign change into
+// unsigned, unsigned into a same-width or narrower signed type, and a
+// float are not.
+func preservesInt(from, to types.Type) bool {
+	fb, ok := from.Underlying().(*types.Basic)
+	tb, ok2 := to.Underlying().(*types.Basic)
+	if !ok || !ok2 || fb.Info()&types.IsInteger == 0 || tb.Info()&types.IsInteger == 0 {
+		return false
+	}
+	fBits, tBits := jsonBits[fb.Kind()], jsonBits[tb.Kind()]
+	if fBits == 0 || tBits == 0 || tBits <= fBits {
+		return false
+	}
+	fUn := fb.Info()&types.IsUnsigned != 0
+	tUn := tb.Info()&types.IsUnsigned != 0
+	if fUn == tUn {
+		return true
+	}
+	return fUn && !tUn
+}
+
 var binOps = map[token.Token]string{
 	token.ADD: "+", token.SUB: "-", token.MUL: "*", token.QUO: "/", token.REM: "%",
 	token.EQL: "===", token.NEQ: "!==", token.LSS: "<", token.GTR: ">", token.LEQ: "<=", token.GEQ: ">=",
@@ -1292,6 +1433,19 @@ func (e *emitter) binary(op token.Token, x, y ast.Expr, ys string, result types.
 	if !ok {
 		e.errAt(x, "operator %s is not supported yet", op)
 		return "undefined"
+	}
+	// A constant expression never reaches here: expr folds it first.
+	// Shifts and bitwise ops are reported as the operator, including on a
+	// sized integer, rather than as arithmetic on that integer.
+	if bitOp(op) {
+		e.errAt(x, "operator %s is not supported yet", op)
+		return "undefined"
+	}
+	if arithOp(op) {
+		if name, ok := sizedIntName(result); ok {
+			e.errAt(x, "arithmetic on %s is not supported yet", name)
+			return "undefined"
+		}
 	}
 	xs := e.expr(x)
 	if y != nil {
@@ -1356,7 +1510,10 @@ func (e *emitter) expr(x ast.Expr) string {
 			}
 			return op + s
 		case token.XOR:
-			return "~" + e.expr(x.X)
+			// A constant ^ is folded in expr. A variable would be JS's
+			// 32-bit ~, which is not Go's complement.
+			e.errAt(x, "operator %s is not supported yet", x.Op)
+			return "undefined"
 		case token.AND:
 			e.errAt(x, "pointers are not supported yet")
 			return "undefined"
@@ -1467,26 +1624,30 @@ func (e *emitter) compositeLit(x *ast.CompositeLit) string {
 	return "undefined"
 }
 
-func (e *emitter) call(x *ast.CallExpr) string {
-	args := func() string {
-		var out []string
-		for _, a := range x.Args {
-			out = append(out, e.expr(a))
-		}
-		if len(x.Args) == 1 {
-			if tup, ok := e.ck.info.TypeOf(x.Args[0]).(*types.Tuple); ok && tup.Len() > 1 {
-				return "..." + out[0] // f(g()) where g returns several values
-			}
-		}
-		// A variadic function takes its extra arguments as one slice, as in Go.
-		if sig, ok := e.ck.info.TypeOf(x.Fun).(*types.Signature); ok && sig.Variadic() && !x.Ellipsis.IsValid() {
-			n := sig.Params().Len() - 1
-			if n <= len(out) {
-				out = append(out[:n:n], "$sl(["+strings.Join(out[n:], ", ")+"])")
-			}
-		}
-		return strings.Join(out, ", ")
+// callArgs returns the JS for the arguments of call x, separated by
+// commas.
+func (e *emitter) callArgs(x *ast.CallExpr) string {
+	var out []string
+	for _, a := range x.Args {
+		out = append(out, e.expr(a))
 	}
+	if len(x.Args) == 1 {
+		if tup, ok := e.ck.info.TypeOf(x.Args[0]).(*types.Tuple); ok && tup.Len() > 1 {
+			return "..." + out[0] // f(g()) where g returns several values
+		}
+	}
+	// A variadic function takes its extra arguments as one slice, as in Go.
+	if sig, ok := e.ck.info.TypeOf(x.Fun).(*types.Signature); ok && sig.Variadic() && !x.Ellipsis.IsValid() {
+		n := sig.Params().Len() - 1
+		if n <= len(out) {
+			out = append(out[:n:n], "$sl(["+strings.Join(out[n:], ", ")+"])")
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+func (e *emitter) call(x *ast.CallExpr) string {
+	args := func() string { return e.callArgs(x) }
 	// Type conversions: int(x), float64(x), string(x), named types...
 	if tv, ok := e.ck.info.Types[x.Fun]; ok && tv.IsType() {
 		if len(x.Args) != 1 {
@@ -1499,6 +1660,12 @@ func (e *emitter) call(x *ast.CallExpr) string {
 		from := e.ck.info.TypeOf(x.Args[0])
 		if types.Identical(tv.Type.Underlying(), from.Underlying()) {
 			return arg
+		}
+		// byte and uint8, and int64 and time.Duration, share an underlying
+		// type and already returned. int(duration) stays: the target is int.
+		if name, ok := sizedIntName(tv.Type); ok && !preservesInt(from, tv.Type) {
+			e.errAt(x, "conversion to %s is not supported yet", name)
+			return "undefined"
 		}
 		if b, ok := tv.Type.Underlying().(*types.Basic); ok {
 			switch {
@@ -1533,6 +1700,57 @@ func (e *emitter) call(x *ast.CallExpr) string {
 		}
 		recv := e.ck.recvName(fun)
 		obj := e.expr(fun.X)
+		if recv == "Action" {
+			if sel := e.ck.info.Selections[fun]; sel != nil && e.ck.isPrelude(sel.Obj()) {
+				switch fun.Sel.Name {
+				case "Data":
+					return obj + ".d.get()"
+				case "Err":
+					return obj + ".e.get()"
+				case "Pending":
+					return obj + ".p.get()"
+				case "Do":
+					if len(x.Args) == 0 {
+						return obj + ".go()"
+					}
+					return obj + ".go(" + e.expr(x.Args[0]) + ")"
+				case "Then":
+					return obj + ".n(" + args() + ")"
+				}
+			}
+		}
+		if recv == "Stream" {
+			if sel := e.ck.info.Selections[fun]; sel != nil && e.ck.isPrelude(sel.Obj()) {
+				switch fun.Sel.Name {
+				case "Connected":
+					return obj + ".c.get()"
+				case "Err":
+					return obj + ".e.get()"
+				}
+			}
+		}
+		if e.ck.isFieldMethod(fun) {
+			// A field is a signal, with its parse error pe, whether it
+			// was touched tc, its error er and its reset rs (stdlib.js).
+			switch fun.Sel.Name {
+			case "Get":
+				return obj + ".get()"
+			case "Set":
+				return obj + ".set(" + args() + ")"
+			case "Error":
+				return obj + ".er.get()"
+			case "SetError":
+				// pe is the same slot bind uses for a parse error: Set and
+				// the next edit clear it, and Error prefers it over check.
+				return "(" + obj + ".pe.set(" + args() + ")," + obj + ".tc.set(true))"
+			case "Touched":
+				return obj + ".tc.get()"
+			case "Touch":
+				return obj + ".tc.set(true)"
+			case "Reset":
+				return obj + ".rs()"
+			}
+		}
 		switch recv + "." + fun.Sel.Name {
 		case "Signal.Get", "Computed.Get":
 			return obj + ".get()"
@@ -1554,6 +1772,14 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return obj + ".p.get()"
 		case "Route.Link":
 			return "$linkTo(" + obj + ", " + args() + ")"
+		case "Resource.Data":
+			return obj + ".d.get()"
+		case "Resource.Err":
+			return obj + ".e.get()"
+		case "Resource.Loading":
+			return obj + ".l.get()"
+		case "Resource.Reload":
+			return obj + ".r()"
 		case "Transition.For":
 			ms := jsNumber(e.ck.durations[x])
 			if js, ok := e.transition(fun.X, ms); ok {
@@ -1564,6 +1790,30 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return "({ ..." + obj + ", d: " + ms + " })"
 		case "error.Error":
 			return obj + ".message"
+		case "Ref.Focus":
+			return obj + ".e?.focus()"
+		case "Ref.Blur":
+			return obj + ".e?.blur()"
+		case "Ref.Select":
+			return obj + ".e?.select?.()"
+		case "Ref.ScrollIntoView":
+			return obj + ".e?.scrollIntoView()"
+		case "Duration.Milliseconds":
+			// Exact while d is: a quotient of integers under 2^53 is never
+			// rounded onto the next whole number.
+			return "Math.trunc(" + obj + " / 1e6)"
+		case "Duration.Seconds":
+			return "$tsecs(" + obj + ")"
+		case "Time.Sub":
+			return "$tsub(" + obj + ", " + args() + ")"
+		case "Time.UnixMilli":
+			return "$tms(" + obj + ")"
+		case "Time.Hour":
+			return "$tclock(" + obj + `, "getHours")`
+		case "Time.Minute":
+			return "$tclock(" + obj + `, "getMinutes")`
+		case "Time.Second":
+			return "$tclock(" + obj + `, "getSeconds")`
 		}
 		if sel := e.ck.info.Selections[fun]; sel != nil && sel.Kind() == types.FieldVal {
 			return e.expr(fun) + "(" + args() + ")" // a func-typed field
@@ -1615,6 +1865,23 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "1"
 				case "spring":
 					return "$spring(() => " + args() + ")"
+				case "onMount", "onCleanup", "after", "every":
+					// check allows them only in components, which have $c.
+					return "$" + o.Name() + "($c, " + args() + ")"
+				case "ref":
+					return "({ e: null })"
+				case "use":
+					return e.use(x)
+				case "field":
+					return "$field(" + args() + ")"
+				case "resource":
+					return e.resourceCall(x)
+				case "action":
+					return e.actionCall(x)
+				case "events":
+					return e.eventsCall(x)
+				case "on":
+					return e.onCall(x)
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -1651,22 +1918,31 @@ func callee(info *types.Info, fun ast.Expr) ast.Expr {
 
 // stdCalls implements the functions of the importable packages.
 var stdCalls = map[string]func(a []string) string{
-	"strings.Contains":   func(a []string) string { return "(" + a[0] + ").includes(" + a[1] + ")" },
-	"strings.HasPrefix":  func(a []string) string { return "(" + a[0] + ").startsWith(" + a[1] + ")" },
-	"strings.HasSuffix":  func(a []string) string { return "(" + a[0] + ").endsWith(" + a[1] + ")" },
-	"strings.ToLower":    func(a []string) string { return "(" + a[0] + ").toLowerCase()" },
-	"strings.ToUpper":    func(a []string) string { return "(" + a[0] + ").toUpperCase()" },
-	"strings.Repeat":     func(a []string) string { return "(" + a[0] + ").repeat(" + a[1] + ")" },
-	"strings.Join":       func(a []string) string { return "$arr(" + a[0] + ").join(" + a[1] + ")" },
-	"strings.TrimSpace":  func(a []string) string { return "$trimSpace(" + a[0] + ")" },
-	"strings.TrimPrefix": func(a []string) string { return "$trimPrefix(" + a[0] + ", " + a[1] + ")" },
-	"strings.TrimSuffix": func(a []string) string { return "$trimSuffix(" + a[0] + ", " + a[1] + ")" },
-	"strings.Split":      func(a []string) string { return "$split(" + a[0] + ", " + a[1] + ")" },
-	"strings.ReplaceAll": func(a []string) string { return "$replaceAll(" + a[0] + ", " + a[1] + ", " + a[2] + ")" },
-	"strings.Fields":     func(a []string) string { return "$fields(" + a[0] + ")" },
-	"strconv.Itoa":       func(a []string) string { return "String(" + a[0] + ")" },
-	"strconv.FormatBool": func(a []string) string { return "String(" + a[0] + ")" },
-	"strconv.Atoi":       func(a []string) string { return "$atoi(" + a[0] + ")" },
+	"den/http.Status":       func(a []string) string { return "(" + a[0] + "?.$status ?? 0)" },
+	"den/http.Code":         func(a []string) string { return "(" + a[0] + "?.$code ?? \"\")" },
+	"den/http.Message":      func(a []string) string { return "$httpMessage(" + a[0] + ")" },
+	"den/http.SetHeader":    func(a []string) string { return "$httpSetHeader(" + a[0] + ", " + a[1] + ")" },
+	"den/http.DeleteHeader": func(a []string) string { return "$httpDeleteHeader(" + a[0] + ")" },
+	"strings.Contains":      func(a []string) string { return "(" + a[0] + ").includes(" + a[1] + ")" },
+	"strings.HasPrefix":     func(a []string) string { return "(" + a[0] + ").startsWith(" + a[1] + ")" },
+	"strings.HasSuffix":     func(a []string) string { return "(" + a[0] + ").endsWith(" + a[1] + ")" },
+	"strings.ToLower":       func(a []string) string { return "(" + a[0] + ").toLowerCase()" },
+	"strings.ToUpper":       func(a []string) string { return "(" + a[0] + ").toUpperCase()" },
+	"strings.Repeat":        func(a []string) string { return "(" + a[0] + ").repeat(" + a[1] + ")" },
+	"strings.Join":          func(a []string) string { return "$arr(" + a[0] + ").join(" + a[1] + ")" },
+	"strings.TrimSpace":     func(a []string) string { return "$trimSpace(" + a[0] + ")" },
+	"strings.TrimPrefix":    func(a []string) string { return "$trimPrefix(" + a[0] + ", " + a[1] + ")" },
+	"strings.TrimSuffix":    func(a []string) string { return "$trimSuffix(" + a[0] + ", " + a[1] + ")" },
+	"strings.Split":         func(a []string) string { return "$split(" + a[0] + ", " + a[1] + ")" },
+	"strings.ReplaceAll":    func(a []string) string { return "$replaceAll(" + a[0] + ", " + a[1] + ", " + a[2] + ")" },
+	"strings.Fields":        func(a []string) string { return "$fields(" + a[0] + ")" },
+	"strconv.Itoa":          func(a []string) string { return "String(" + a[0] + ")" },
+	"strconv.FormatBool":    func(a []string) string { return "String(" + a[0] + ")" },
+	"strconv.Atoi":          func(a []string) string { return "$atoi(" + a[0] + ")" },
+	"time.Now":              func(a []string) string { return "$tnow()" },
+	"time.Since":            func(a []string) string { return "$tsince(" + a[0] + ")" },
+	// A new JS Error each time: two are never ==, as in Go.
+	"errors.New": func(a []string) string { return "new Error(" + a[0] + ")" },
 }
 
 // decoder returns JS that turns the parsed JSON in x back into a den value
@@ -1882,6 +2158,17 @@ var jsReserved = map[string]bool{
 	// globals the runtime and generated code use
 	"Object": true, "String": true, "Number": true, "Boolean": true, "Array": true, "Math": true,
 	"Set": true, "Map": true, "JSON": true, "Error": true, "Symbol": true, "Promise": true,
+	// and the rest of those the runtime and stdlib use (TestReservedGlobals
+	// finds them): a Go name like setInterval would hide one inside the app.
+	"Date": true, "RegExp": true, "TextEncoder": true, "URL": true, "globalThis": true,
+	"decodeURIComponent": true, "encodeURIComponent": true, "reportError": true,
+	"setTimeout": true, "setInterval": true, "clearTimeout": true, "clearInterval": true,
+	"requestAnimationFrame": true, "cancelAnimationFrame": true,
+	"addEventListener": true, "removeEventListener": true,
+	"history": true, "location": true, "localStorage": true, "isFinite": true,
+	// and the ones resource, fetchJSON and events use
+	"fetch": true, "AbortController": true, "BigInt": true, "EventSource": true,
+	"atob": true, "btoa": true, "DataView": true, "ArrayBuffer": true,
 }
 
 // jsIdent renames Go identifiers that would clash with JS. Go identifiers

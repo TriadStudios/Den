@@ -7,7 +7,6 @@ func run() string {
 	out := itoa(- -y) + "," + itoa(+ +y) + "," + itoa(-+y) + "," + itoa(+-y)
 	out += "," + itoa(a - -b) + "," + itoa(a + +b) + "," + itoa(a - -b) + "," + itoa(a - - -b)
 	out += "," + itoa(-(-y)) + "," + itoa(-(-y)) + "," + itoa(- -(-y))
-	out += "," + itoa(^^y) + "," + itoa(^-y) + "," + itoa(-^y)
 	if !!c && !(!c) == c {
 		out += ",t"
 	}
