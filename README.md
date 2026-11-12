@@ -1411,9 +1411,9 @@ in `-dist`, answer with `index.html`, status 200, and no redirect.
 404. Page and file responses send the same `Content-Security-Policy` as
 `den dev`, and `X-Content-Type-Options: nosniff`.
 
-This example has no Playwright script. CI's browser job still installs
-Playwright 1.48.2, which is inside CVE-2025-59288, so the admin check is
-the Go tests above plus that manual list.
+This example has no Playwright script. CI's browser job installs
+Playwright 1.62.1, which is outside CVE-2025-59288 (patched in 1.55.1).
+The admin check stays the Go tests above plus that manual list.
 
 In Edge, against the server you started:
 
