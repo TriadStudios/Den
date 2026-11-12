@@ -445,10 +445,212 @@ component User(user *Route[UserParams]) {
   and the app must be served from the site root, since its `index.html`
   then loads `/app.js`, `/den.css` and `/style.css`. A base path is not
   supported yet.
+- `den build <dir> -title "Name"` and `den build -title "Name" <dir>` set
+  the document title. It is HTML-escaped. The default remains `den app`.
+- `app.js`, `den.css`, `style.css`, and `index.html` are stable names.
+  Cache them with revalidation (`no-cache`), never as immutable. A public
+  file whose base name contains a hyphen and at least eight hex digits
+  (for example `logo-0123abcd.png`) may be cached
+  `public, max-age=31536000, immutable`. Anything else is `no-cache`.
 - `route`, `Route` and `path` are ordinary names. A program that has its
   own at the top level, as a declaration, a component or an import, keeps
   it. `route` and `Route` go together: a program with either has neither
   of den's, and using the other says so.
+
+**Embedding the build**
+
+A Go server can embed the `dist` directory from `den build` and serve it
+with the standard library. The handler below sends den's CSP,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` on
+every response. `app.js`, `den.css`, `style.css` and `index.html` are
+`Cache-Control: no-cache`. A file whose base name is not one of those and
+contains a hyphen followed by at least eight hex digits (for example
+`logo-0123abcd.png`) is `public, max-age=31536000, immutable`. Anything
+else is `no-cache`.
+
+Paths under `/api/` are 404, including ones with no `.`. Only GET and
+HEAD are served; anything else is 405. A missing file whose last segment
+contains `.` is 404, not the app page. A path whose last segment has no
+`.` and is not an existing file or directory is answered with the
+embedded `index.html` and status 200. That response is the file's bytes,
+not a redirect and not a rewrite onto `FileServerFS` (which would 301 a
+URL ending in `/index.html`).
+
+The handler is package `denpage` at the module root. `cmd/server` is
+package `main` and builds as `./cmd/server` when the module path is
+`example.com/denpage`. `//go:embed all:dist` is relative to the file it
+is written in, so those bytes are `cmd/server/dist`.
+
+<!-- den-embed-handler -->
+```go
+package denpage
+
+import (
+	"bytes"
+	"io"
+	"io/fs"
+	"net/http"
+	"path"
+	"strings"
+)
+
+// csp matches the policy den writes into index.html and sends from den dev.
+const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
+	"object-src 'none'; base-uri 'none'; form-action 'self'; " +
+	"require-trusted-types-for 'script'; trusted-types 'none'"
+
+// Handler serves a den build. root is the dist directory (index.html and
+// app.js at its top), not a parent that contains dist.
+func Handler(root fs.FS) http.Handler {
+	files := http.FileServerFS(root)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		name := path.Clean("/" + r.URL.Path)
+		if name == "/api" || strings.HasPrefix(name, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		base := path.Base(name)
+		w.Header().Set("Cache-Control", cacheControl(base))
+		rel := strings.TrimPrefix(name, "/")
+		if strings.Contains(base, ".") {
+			// A missing asset is 404. FileServerFS would also 301 a URL
+			// ending in /index.html, so the bytes go through ServeContent.
+			if !serveFile(w, r, root, rel) {
+				http.NotFound(w, r)
+			}
+			return
+		}
+		if rel != "" {
+			if info, ok := statFile(root, rel); ok && !info.IsDir() {
+				if !serveFile(w, r, root, rel) {
+					http.NotFound(w, r)
+				}
+				return
+			} else if ok && info.IsDir() {
+				files.ServeHTTP(w, r)
+				return
+			}
+		}
+		// No "." in the last segment, and not an existing file or
+		// directory: the app page, with no redirect.
+		w.Header().Set("Cache-Control", "no-cache")
+		if !serveFile(w, r, root, "index.html") {
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func serveFile(w http.ResponseWriter, r *http.Request, root fs.FS, name string) bool {
+	f, err := root.Open(name)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	body, err := readSeeker(f)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return true
+	}
+	http.ServeContent(w, r, path.Base(name), info.ModTime(), body)
+	return true
+}
+
+func statFile(root fs.FS, name string) (fs.FileInfo, bool) {
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, false
+	}
+	return info, true
+}
+
+func readSeeker(f fs.File) (io.ReadSeeker, error) {
+	if rs, ok := f.(io.ReadSeeker); ok {
+		return rs, nil
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(b), nil
+}
+
+func cacheControl(base string) string {
+	switch base {
+	case "app.js", "den.css", "style.css", "index.html":
+		return "no-cache"
+	}
+	if hashedBase(base) {
+		return "public, max-age=31536000, immutable"
+	}
+	return "no-cache"
+}
+
+// hashedBase reports a hyphen followed by at least eight hex digits,
+// as in logo-0123abcd.png. The stable build names are handled above.
+func hashedBase(base string) bool {
+	for i := 0; i < len(base); i++ {
+		if base[i] != '-' {
+			continue
+		}
+		n := 0
+		for j := i + 1; j < len(base); j++ {
+			c := base[j]
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				break
+			}
+			n++
+		}
+		if n >= 8 {
+			return true
+		}
+	}
+	return false
+}
+```
+<!-- /den-embed-handler -->
+
+<!-- den-embed-main -->
+```go
+package main
+
+import (
+	"embed"
+	"io/fs"
+	"log"
+	"net/http"
+
+	"example.com/denpage"
+)
+
+//go:embed all:dist
+var dist embed.FS
+
+func main() {
+	sub, err := fs.Sub(dist, "dist")
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Fatal(http.ListenAndServe(":8080", denpage.Handler(sub)))
+}
+```
+<!-- /den-embed-main -->
 
 <a id="async-data"></a>**Async data**
 
