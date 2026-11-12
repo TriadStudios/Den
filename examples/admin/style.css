@@ -1,0 +1,49 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f4f3ef;
+  --ink: #1c1b19;
+  --line: #d8d4ca;
+  --card: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413;
+    --ink: #f3f1ea;
+    --line: #34332e;
+    --card: #1e1e1c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 2.5rem;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 1rem;
+}
+
+input, button {
+  color: inherit;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.6rem;
+}
+
+ul { padding-left: 1.1rem; }
+
+li { margin: 0.35rem 0; }
+
+p { color: var(--ink); }

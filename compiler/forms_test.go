@@ -609,10 +609,15 @@ component App() {
 			src.Write(b)
 			src.WriteString("\n")
 		}
+		ships := []string(nil)
+		if filepath.Base(dir) == "admin" {
+			// Two bound fields: the text path, not number, check, or radio.
+			ships = []string{"$field", "$bind", "$str", "$touch"}
+		}
 		cases = append(cases, struct {
 			name, src string
 			ships     []string
-		}{dir, src.String(), nil})
+		}{dir, src.String(), ships})
 	}
 	for _, c := range cases {
 		res, err := compileOne(c.src)

@@ -2879,10 +2879,16 @@ component App() {
 			src.Write(b)
 			src.WriteString("\n")
 		}
+		motionShips := []string(nil)
+		if filepath.Base(dir) == "admin" {
+			// events() flushes on requestAnimationFrame. The rest of the
+			// motion runtime stays out of this example.
+			motionShips = []string{"requestAnimationFrame"}
+		}
 		cases = append(cases, struct {
 			name, src string
 			ships     []string
-		}{dir, src.String(), nil})
+		}{dir, src.String(), motionShips})
 	}
 	for _, c := range cases {
 		res, err := compileOne(c.src)

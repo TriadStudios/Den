@@ -341,8 +341,9 @@ log(find("p").textContent);`)
 	expectLines(t, got, `2 2`)
 }
 
-// A counter-sized program, and every example, ships no event stream. A
-// program that follows one ships $events and $onEv.
+// A counter-sized program ships no event stream. examples/admin is the
+// example that follows one; every other example ships neither $events nor
+// $onEv. A program that follows a stream ships both.
 func TestEventsTreeShaking(t *testing.T) {
 	res, err := compileOne(`
 component App() {
@@ -375,9 +376,10 @@ component App() {
 		if err != nil {
 			t.Fatalf("%s: %v", dir, err)
 		}
+		want := filepath.Base(dir) == "admin"
 		for _, name := range []string{"$events", "$onEv"} {
-			if strings.Contains(res.JS, name) {
-				t.Errorf("%s ships %s", dir, name)
+			if got := strings.Contains(res.JS, name); got != want {
+				t.Errorf("%s: ships %s: %t, want %t", dir, name, got, want)
 			}
 		}
 	}

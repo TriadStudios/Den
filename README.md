@@ -47,6 +47,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
 | `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.3 KB |
 | `examples/fetch` (JSON pager, Reload, and a Save action that posts then reloads) | 8.5 KB |
+| `examples/admin` (sign in, a service list, start and stop, a live log) | 9.7 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -1322,6 +1323,68 @@ and den and require to print the same thing.
 interfaces (other than `error`), package-level variables, `switch`,
 `defer`, goroutines and channels, server functions, and server-side
 rendering. The larger ones are on the [roadmap](#roadmap).
+
+## Admin
+
+`examples/admin` is a board written in den and a Go server in the same
+directory. The server uses only the standard library. It does not embed
+`dist`, so `go test ./examples/admin` passes on a clean tree with no build
+of the page.
+
+```sh
+den build examples/admin
+go run ./examples/admin -dist examples/admin/dist
+```
+
+`-dist` is required: it is the directory `den build` wrote. `-addr`
+defaults to `localhost:8091`.
+
+`POST /api/login` with `{"password":"den"}` signs in. That password is an
+example constant, not a secret. Success sets two cookies to the same
+random token: `session` is HttpOnly, `csrf` is not, and both are
+`SameSite=Lax` with `Path=/`. The body is `{"csrf":"<token>"}`. A wrong
+password is 401 `{"error":{"code":"login","message":"..."}}`.
+
+`GET /api/services` needs the `session` cookie. Without it the status is
+403 and the code is `session`. The list is `web` and `worker`, each with
+a name and whether it is running.
+
+`POST /api/services/{id}/start` and `.../stop` need that cookie and an
+`X-CSRF` header equal to the `csrf` cookie. No session is 403 `session`.
+A session whose header is missing or not the cookie is 403 `csrf`. An
+unknown id is 404. Starting a service that is already running is 422
+`{"error":{"code":"running","message":"Already running"}}`. Success is
+200 `{"ok":true}`.
+
+`GET /api/events` is `text/event-stream` for a signed-in session. Events
+are named `state` and `log`, and each one has an `id:` line, a monotonic
+integer. `state` is the service list plus an `error` string, empty when
+the change succeeded. `log` is `{"id":N,"text":"..."}`. A start or a stop
+appends a log line and sends `state`, then `log`, including a start that
+was rejected with 422 (the error string is the message). The server keeps
+the last 50 of those events. A client that sends `Last-Event-ID` receives
+only events with a greater id, so a new subscriber sees at most 50. The
+page shows the latest 20 log lines.
+
+GET and HEAD for a path whose last segment has no `.`, and is not a file
+in `-dist`, answer with `index.html`, status 200, and no redirect.
+`/api/...` is never that page. A missing file, such as `/missing.js`, is
+404. Page and file responses send the same `Content-Security-Policy` as
+`den dev`, and `X-Content-Type-Options: nosniff`.
+
+This example has no Playwright script. CI's browser job still installs
+Playwright 1.48.2, which is inside CVE-2025-59288, so the admin check is
+the Go tests above plus that manual list.
+
+In Edge, against the server you started:
+
+- [ ] Sign in with `den` and see `web` and `worker`.
+- [ ] Start one and see a `state` event.
+- [ ] Start it again and see 422, the status, and the note's message.
+- [ ] Edit the note and see that message clear.
+- [ ] Stop the service.
+- [ ] Reload an extensionless path and land on the board, with no redirect.
+- [ ] Confirm the response `Content-Security-Policy` matches `den dev`, and that the network panel shows no other origin.
 
 ## Developing den
 
