@@ -2416,6 +2416,7 @@ func TestReservedGlobals(t *testing.T) {
 // jsKeywords are the JS keywords and literals that jsGlobals meets in
 // den's own JS; they are no names.
 var jsKeywords = map[string]bool{
+	"async": true,
 	"break": true, "case": true, "catch": true, "class": true, "const": true, "continue": true,
 	"default": true, "delete": true, "do": true, "else": true, "extends": true, "finally": true,
 	"for": true, "function": true, "if": true, "in": true, "instanceof": true, "let": true,
