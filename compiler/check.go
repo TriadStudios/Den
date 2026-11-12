@@ -120,6 +120,84 @@ const preludeSpring = `
 func spring(target float64) *Computed[float64] { return nil }
 `
 
+// preludeLife declares den's lifecycle functions and timers, each unless
+// the program has a name of its own for it. after and every take the
+// Duration of den's package time, which the prelude imports as denTime
+// when it declares either (as denTime_ and so on in a program that has a
+// denTime of its own, which check writes in their place).
+var preludeLife = [][2]string{
+	{"onMount", "\n// onMount runs f once the component's nodes are in the document.\nfunc onMount(f func()) {}\n"},
+	{"onCleanup", "\n// onCleanup runs f when the component goes away.\nfunc onCleanup(f func()) {}\n"},
+	{"after", "\n// after runs f once, d from now, unless stopped first.\nfunc after(d denTime.Duration, f func()) (stop func()) { return nil }\n"},
+	{"every", "\n// every runs f every d until stopped.\nfunc every(d denTime.Duration, f func()) (stop func()) { return nil }\n"},
+}
+
+// preludeRef declares element refs, unless the program declares its own
+// ref or Ref, which then go together, as route and Route do. A Ref is
+// used as a *Ref; its own field type makes comparing two Refs an error
+// den can word on its own.
+const preludeRef = `
+// Ref holds the element that ref={r} is on, while it exists.
+type Ref struct{ _ denOpaqueRef }
+
+type denOpaqueRef func()
+
+func (r *Ref) Focus()          {}
+func (r *Ref) Blur()           {}
+func (r *Ref) Select()         {}
+func (r *Ref) ScrollIntoView() {}
+
+// ref is a new *Ref, holding no element.
+func ref() *Ref { return nil }
+
+func denRef(r *Ref) {}
+`
+
+// lifeNames are den's functions that need the component instance calling
+// them: they exist only in components, never in top-level functions.
+var lifeNames = []string{"onMount", "onCleanup", "after", "every"}
+
+// Context: preludeProvide and preludeUse declare provide and use, each
+// unless the program has a name of its own for it. They are checked in
+// context.go once Go accepts the program.
+const (
+	preludeProvide = `
+// provide makes v what use[T] finds, for T the type of v, in the rest of
+// the component and in everything its markup builds.
+func provide[T any](v T) {}
+`
+	preludeUse = `
+// use returns the value of the nearest provide of a T among the
+// components that build this one, or the zero T if there is none.
+func use[T any]() (v T) { return }
+`
+)
+
+// preludeResource declares resource and Resource, unless the program
+// declares its own resource or Resource: resource returns a *Resource[T],
+// so the two come and go together.
+const preludeResource = `
+// Resource is data loaded asynchronously: resource(fetchJSON[T](url)).
+type Resource[T any] struct{ v T }
+
+func (r *Resource[T]) Data() T       { return r.v }
+func (r *Resource[T]) Err() error    { return nil }
+func (r *Resource[T]) Loading() bool { return false }
+func (r *Resource[T]) Reload()       {}
+
+// resource takes a call that returns (T, error), resource(f(args)), and
+// makes the request again whenever the signals args read change.
+func resource[T any](v T, err error) *Resource[T] { return nil }
+`
+
+// preludeFetchJSON declares fetchJSON, unless the program declares its own
+// or has neither resource nor Resource of den's, whose argument it is.
+const preludeFetchJSON = `
+// fetchJSON is a GET of url on the page's origin, decoding the JSON
+// response into a T; only as resource's argument.
+func fetchJSON[T any](url string) (T, error) { var v T; return v, nil }
+`
+
 // preludeDen ends the prelude of a program that imports the built-in
 // package den, which is every program that does not declare its own den.
 const preludeDen = `
@@ -233,16 +311,19 @@ const (
 	partFor
 	partMotion // enter=, exit= and animate=
 	partKey    // {key x { ... }}
+	partRef    // ref={r}
+	partBind   // bind={x}
 )
 
 // part links a markup node to the Go AST that the type checker produced for it.
 type part struct {
 	kind  partKind
-	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor and partKey (key)
+	expr  ast.Expr       // partText, partAttr, partIf (condition), partFor and partKey (key), partBind
 	stmts []ast.Stmt     // partHandler
 	args  []ast.Expr     // partComponent, in param order
 	slots [][]Node       // partComponent: markup for each den.Children param
 	rng   *ast.RangeStmt // partFor
+	bind  *bindInfo      // partBind
 }
 
 // checked is the result of type checking a whole program.
@@ -257,6 +338,7 @@ type checked struct {
 	nilTypes    map[*ast.Ident]types.Type
 	routes      map[*ast.CallExpr]string  // route[T](...) calls: the pattern to match
 	durations   map[*ast.CallExpr]float64 // Transition.For(d) calls: d in milliseconds
+	ctx         contextInfo               // provide and use (context.go)
 }
 
 type checkedComponent struct {
@@ -348,6 +430,24 @@ func check(files []*File) (*checked, error) {
 	if motionBy["Layout"] != "" {
 		motionBy["layout"] = "Layout"
 	}
+	// ref returns a *Ref, so the two come and go together, like route and
+	// Route; refBy names the program's name that took them, if any.
+	refBy := ""
+	for _, name := range []string{"Ref", "ref"} {
+		if own[name] != "" {
+			refBy = name
+		}
+	}
+	// timeName is what the prelude imports den's package time as, for after
+	// and every: a name the program does not have at the top level.
+	needTime := own["after"] == "" || own["every"] == ""
+	timeName := "denTime"
+	for own[timeName] != "" {
+		timeName += "_"
+	}
+	// field returns a *Field[T], so the two come and go together.
+	fieldTaken := own["field"] != "" || own["Field"] != ""
+	resourceBy := resourceNames(own)
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -363,6 +463,9 @@ func check(files []*File) (*checked, error) {
 	src.WriteString("package app\n\n")
 	if !denTaken {
 		src.WriteString("import /*line " + preludeFile + ":1:1*/\"den\"\n")
+	}
+	if needTime {
+		src.WriteString("import /*line " + preludeFile + ":1:1*/" + timeName + " \"time\"\n")
 	}
 	src.WriteString(importSrc.String())
 	// The import directives would otherwise carry on into the prelude.
@@ -384,12 +487,38 @@ func check(files []*File) (*checked, error) {
 			src.WriteString(d[1])
 		}
 	}
+	for _, d := range preludeLife {
+		if own[d[0]] == "" {
+			src.WriteString(strings.ReplaceAll(d[1], "denTime.", timeName+"."))
+		}
+	}
+	if refBy == "" {
+		src.WriteString(preludeRef)
+	}
+	// Context.
+	if own["provide"] == "" {
+		src.WriteString(preludeProvide)
+	}
+	if own["use"] == "" {
+		src.WriteString(preludeUse)
+	}
+	// Forms: field and Field, and bind={x}.
+	if !fieldTaken {
+		src.WriteString(preludeField)
+	}
+	src.WriteString(preludeBind)
+	if resourceBy["Resource"] == "" {
+		src.WriteString(preludeResource)
+	}
+	if resourceBy["fetchJSON"] == "" {
+		src.WriteString(preludeFetchJSON)
+	}
 	if denTaken {
 		src.WriteString(preludePlain)
 	} else {
 		src.WriteString(preludeDen)
 	}
-	g := &gen{src: &src, byName: byName, errs: &errs, own: own, motionBy: motionBy}
+	g := &gen{src: &src, byName: byName, errs: &errs, own: own, motionBy: motionBy, refBy: refBy}
 	for _, fr := range declFrags {
 		fr.start += src.Len()
 		fr.end += src.Len()
@@ -469,6 +598,29 @@ func check(files []*File) (*checked, error) {
 			return true
 		})
 	}
+	// The prelude's import of package time is in the same file as the
+	// program, but not the program's: Go would not know the name. Say so,
+	// instead of any error Go has about what the program selects from it.
+	timeUses := map[*ast.Ident]bool{}
+	for id, obj := range info.Uses {
+		if pn, ok := obj.(*types.PkgName); ok && pn.Name() == timeName && fset.Position(pn.Pos()).Filename == preludeFile && fset.Position(id.Pos()).Filename != preludeFile {
+			timeUses[id] = true
+			errAt(id.Pos(), "undefined: "+timeName)
+			replaced = append(replaced, [2]token.Pos{id.Pos(), id.End()})
+		}
+	}
+	if len(timeUses) > 0 {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok {
+				for id := range timeUses {
+					if sel.Pos() == id.Pos() {
+						replaced = append(replaced, [2]token.Pos{sel.Pos(), sel.End()})
+					}
+				}
+			}
+			return true
+		})
+	}
 next:
 	for _, te := range typeErrs {
 		for _, r := range replaced {
@@ -491,9 +643,32 @@ next:
 		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && motionBy[name] != "" {
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[motionBy[name]])
 		}
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && refBy != "" && (name == "ref" || name == "Ref") {
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[refBy])
+		}
+		// Forms: likewise for field and Field, and the value of bind=.
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && fieldTaken && (name == "field" || name == "Field") {
+			by := "field"
+			if own[by] == "" {
+				by = "Field"
+			}
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[by])
+		}
+		msg = strings.Replace(msg, " in call to denBind", " in bind=", 1)
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && resourceBy[name] != "" {
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[resourceBy[name]])
+		}
+		msg = preludeInfer(msg)
 		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
-		// The value of enter= is checked as an argument to denEnter.
-		for _, a := range motionAttrs {
+		msg = strings.Replace(msg, "struct containing denOpaqueRef cannot be compared", "a Ref cannot be compared", 1)
+		msg = strings.Replace(msg, "struct containing time.opaque cannot be compared", "den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0", 1)
+		// Go's message would point into den's prelude.
+		if own["use"] == "" && strings.HasPrefix(msg, "in call to use, cannot infer T") {
+			msg = "use needs the type of the value it finds, as in use[Theme]()"
+		}
+		// The value of enter= is checked as an argument to denEnter, and
+		// that of ref= as one to denRef.
+		for _, a := range append(motionAttrs[:len(motionAttrs):len(motionAttrs)], "ref") {
 			msg = strings.Replace(msg, " in argument to den"+strings.ToUpper(a[:1])+a[1:], " in "+a+"=", 1)
 		}
 		errAt(te.Pos, msg)
@@ -527,10 +702,14 @@ next:
 	// checked once Go accepts the program.
 	var routes map[*ast.CallExpr]string
 	var durations map[*ast.CallExpr]float64
+	var ctx contextInfo
 	if len(typeErrs) == 0 {
 		routes = checkRoutes(file, info, pkg, fset, errAt)
 		durations = checkMotion(file, info, fset, errAt)
+		checkLifecycle(file, info, fset, byName, errAt)
 		preludeValues(file, info, fset, byName, errAt)
+		ctx = checkContext(file, info, pkg, fset, byName, errAt)
+		checkResources(file, info, pkg, fset, byName, own, errAt)
 	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
@@ -548,7 +727,7 @@ next:
 		return nil, errs.sorted()
 	}
 
-	out := &checked{fset: fset, info: info, pkg: pkg, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes, durations: durations}
+	out := &checked{fset: fset, info: info, pkg: pkg, components: byName, readsSignal: map[types.Object]bool{}, nilTypes: nilTargets(file, info), routes: routes, durations: durations, ctx: ctx}
 	decls := map[string]*ast.FuncDecl{}
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
@@ -888,7 +1067,9 @@ type gen struct {
 	errs     *ErrorList
 	own      map[string]string // check's own: the names the program claims, and how
 	motionBy map[string]string // den's motion names the program's own names take away
+	refBy    string            // the program's own name that takes ref and Ref away, if any
 	chain    []Node            // the {if}, {for} and {key} blocks whose top level is being written
+	rows     int               // how many {for} rows the markup being written is in
 	frags    []fragment        // the program's Go that gen copied into src, in order
 	shapes   []shape           // what gen wrote around it, in order
 	funcs    []int             // the offsets of the components' funcs
@@ -1293,7 +1474,9 @@ func (g *gen) node(n Node) {
 			return nil
 		})
 		g.call(g.d(n.KeyPos), "denKey", n.KeyPos, n.Key, "this list key")
+		g.rows++
 		g.body(n, n.Body)
+		g.rows--
 		g.src.WriteString("\t")
 		rb = g.src.Len()
 		g.src.WriteString("}\n")
@@ -1333,6 +1516,18 @@ func (g *gen) node(n Node) {
 			}
 			if isMotionAttr(a.Name) {
 				if err := g.motionAttr(a); err != nil {
+					*g.errs = append(*g.errs, err)
+				}
+				continue
+			}
+			if a.Name == "ref" {
+				if err := g.refAttr(a); err != nil {
+					*g.errs = append(*g.errs, err)
+				}
+				continue
+			}
+			if asciiLower(a.Name) == "bind" { // Bind= too, to say why it is wrong
+				if err := g.bindAttr(n, a); err != nil {
 					*g.errs = append(*g.errs, err)
 				}
 				continue
@@ -1407,6 +1602,33 @@ func (g *gen) motionAttr(a *Attr) *Error {
 		err = bad("%s works only on an element directly inside an {if} branch, a {for} row or a {key} block, which add and remove it", a.Name)
 	}
 	fn := "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
+	if err != nil {
+		fn = "denAny"
+	}
+	g.call(g.d(a.ValuePos), fn, a.ValuePos, a.Value, "this {...}")
+	return err
+}
+
+// refAttr checks what can be checked of ref={r} before types: that its
+// value is Go, that den's Ref is there, and that the element is made once
+// per component, not once per {for} row. It writes denRef(r), which
+// checks that r is a *Ref, or denAny(r) when it reports an error, as
+// motionAttr does.
+func (g *gen) refAttr(a *Attr) *Error {
+	bad := func(format string, args ...any) *Error {
+		return &Error{File: g.file, Pos: a.Pos, Msg: fmt.Sprintf(format, args...)}
+	}
+	if a.Kind != AttrExpr {
+		return bad("ref takes a *Ref in braces, like ref={box} where box := ref()")
+	}
+	var err *Error
+	switch {
+	case g.refBy != "":
+		err = bad("ref is not available because this program %s; rename it", g.own[g.refBy])
+	case g.rows > 0:
+		err = bad("ref= inside a {for} row: every row would set the same ref")
+	}
+	fn := "denRef"
 	if err != nil {
 		fn = "denAny"
 	}
@@ -1666,6 +1888,10 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 				fn = "denHandler"
 			case isMotionAttr(a.Name):
 				fn = "den" + strings.ToUpper(a.Name[:1]) + a.Name[1:]
+			case a.Name == "ref":
+				fn = "denRef"
+			case a.Name == "bind":
+				fn = "denBind"
 			}
 			arg, rest, ok := pr.arg(a.Pos, stmts, fn)
 			if !ok {
@@ -1683,8 +1909,22 @@ func (pr *pairer) node(n Node, stmts []ast.Stmt) []ast.Stmt {
 			case isMotionAttr(a.Name):
 				pr.cc.attrs[a] = &part{kind: partMotion, expr: arg}
 				pr.motion(n, a, arg)
+			case a.Name == "ref":
+				pr.cc.attrs[a] = &part{kind: partRef, expr: arg}
+				if pr.ck.reactive(arg) {
+					pr.errAt(arg, "ref= cannot depend on a signal: den reads it once, when it makes the element")
+				}
+			case a.Name == "bind":
+				pr.cc.attrs[a] = &part{kind: partBind, expr: arg}
 			default:
 				pr.cc.attrs[a] = &part{kind: partAttr, expr: arg}
+			}
+		}
+		// bind is checked once the element's other attributes are paired:
+		// a radio's value too.
+		for _, a := range n.Attrs {
+			if pt := pr.cc.attrs[a]; pt != nil && pt.kind == partBind {
+				pt.bind = pr.bind(n, pt.expr)
 			}
 		}
 		return pr.inside(n.Children, stmts)
@@ -1775,12 +2015,20 @@ func (ck *checked) reactive(n ast.Node) bool {
 		}
 		switch fun := callee(ck.info, ast.Unparen(call.Fun)).(type) {
 		case *ast.SelectorExpr:
-			// A route's Matches and Params read the path signal.
+			// A route's Matches and Params read the path signal, and a
+			// resource's Data, Err and Loading read its state's signals.
 			switch recv := ck.recvName(fun); fun.Sel.Name {
 			case "Get":
 				found = recv == "Signal" || recv == "Computed"
 			case "Matches", "Params":
 				found = recv == "Route"
+			case "Data", "Err", "Loading":
+				found = recv == "Resource"
+			}
+			// A field's Get, Error and Touched read its signals.
+			switch fun.Sel.Name {
+			case "Get", "Error", "Touched":
+				found = found || ck.isFieldMethod(fun)
 			}
 		case *ast.Ident:
 			switch o := ck.info.Uses[fun].(type) {
@@ -1907,6 +2155,10 @@ func (g *gen) component(el *Element) *Error {
 		switch {
 		case !ok && isMotionAttr(a.Name):
 			return bad(a.Pos, "%s works on HTML and SVG elements, not on components: <%s> has no prop %q", a.Name, el.Tag, a.Name)
+		case !ok && a.Name == "ref":
+			return bad(a.Pos, "ref works on HTML and SVG elements, not on components: <%s> has no prop %q; pass the *Ref as a prop and put ref= on an element inside", el.Tag, a.Name)
+		case !ok && a.Name == "bind":
+			return bad(a.Pos, "bind works on <input>, <textarea> and <select>, not on components: <%s> has no prop \"bind\"", el.Tag)
 		case !ok:
 			return bad(a.Pos, "<%s> has no prop %q", el.Tag, a.Name)
 		case p.Children && p.Name == "children":

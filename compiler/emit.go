@@ -91,6 +91,7 @@ func Compile(sources []Source) (*Result, error) {
 	if len(e.errs) > 0 {
 		return nil, e.errs.sorted()
 	}
+	e.tplOut.WriteString(e.json.out())
 	body.WriteString("$mount(App, document.getElementById(\"app\"));\n")
 	code := e.tplOut.String() + body.String()
 	if e.motion {
@@ -164,6 +165,9 @@ type emitter struct {
 	scopes  map[*Component]string // the scope attribute of each component with a style block
 	motions map[string]string     // shared transitions: JS -> the name of the constant holding it
 	motion  bool                  // a block compiled to $ifm or $form, whose leaving elements need $evs
+	ctx     string                // the JS name of the context in effect, or "" in a program that provides nothing (context.go)
+	slots   int                   // the slot closures around the code being emitted, each with a context of its own
+	json    jsonTable             // the JSON descriptors of fetchJSON's types, $jt
 
 	loopVars  map[types.Object]bool // variables of the markup loops being emitted
 	row       *rowCtx               // the innermost keyed list row, if any
@@ -186,6 +190,7 @@ type rowCtx struct {
 	rootEl   bool     // each row is a single element
 	handlers []string // the table of delegated handlers
 	types    []string // the events they handle
+	slots    int      // e.slots where the list is, and so its hoisted code
 }
 
 // delegate reports whether handler a can go in the row's handler table,
@@ -217,7 +222,7 @@ func (e *emitter) delegate(a *Attr) (int, bool) {
 // hoistable reports whether the code in nodes can be hoisted out of the
 // current row.
 func (e *emitter) hoistable(nodes ...ast.Node) bool {
-	if e.row == nil {
+	if e.row == nil || e.crossesContext(nodes...) {
 		return false
 	}
 	ok := true
@@ -276,19 +281,30 @@ func (e *emitter) name(prefix string) string {
 }
 
 func (e *emitter) component(cc *checkedComponent) {
-	e.cc, e.n, e.ind, e.results = cc, 0, "  ", nil
+	e.cc, e.n, e.ind, e.results, e.ctx = cc, 0, "  ", nil, ""
 	var params []string
 	for _, p := range cc.c.Params {
 		params = append(params, jsIdent(p.Name))
 	}
+	if e.ck.ctx.on {
+		e.ctx = "$x" // the caller's context, after the props
+		params = append(params, e.ctx)
+	}
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
+	if e.ck.usesLife(cc.decl) {
+		// The component's lifecycle record, which every onMount, onCleanup,
+		// after, every and resource in its Go uses: its statements, func
+		// literals and handlers, hoisted row handlers and slot markup
+		// included, all of which are written inside this function.
+		e.line("const $c = $life();")
+	}
 	e.stmts(cc.stmts)
 	e.line("return %s;", e.instantiate([]Node{cc.c.Root}, nsHTML))
 	e.w.WriteString("}\n")
 }
 
 func (e *emitter) funcDecl(fd *ast.FuncDecl) {
-	e.n, e.ind = 0, "  "
+	e.n, e.ind, e.ctx = 0, "  ", ""
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(fd.Name.Name), e.params(fd.Type.Params))
 	e.funcBody(fd.Type, fd.Body)
 	e.w.WriteString("}\n")
@@ -526,7 +542,7 @@ func (e *emitter) instantiate(nodes []Node, svg ns) string {
 			}
 		case *Interp:
 			if x := e.cc.parts[n].expr; isChildren(e.ck.info.TypeOf(x)) {
-				return e.expr(x) + "(" + svg.arg() + ")"
+				return e.expr(x) + "(" + e.ctxArgs(svg.arg(), true) + ")"
 			}
 		}
 	}
@@ -575,7 +591,7 @@ func (e *emitter) bind(ts []*tnode) {
 			if isChildren(e.ck.info.TypeOf(pt.expr)) {
 				// The markup is built here, in this place's namespace, so the
 				// nodes it makes belong to the scope rendering it.
-				e.line("%s.replaceWith(%s(%s));", t.v, e.expr(pt.expr), t.svg.arg())
+				e.line("%s.replaceWith(%s(%s));", t.v, e.expr(pt.expr), e.ctxArgs(t.svg.arg(), true))
 				continue
 			}
 			if e.ck.reactive(pt.expr) {
@@ -592,6 +608,9 @@ func (e *emitter) bind(ts []*tnode) {
 				e.line("%s.replaceWith(%s);", t.v, e.componentCall(n))
 				continue
 			}
+			// A <select> is bound once its options are there.
+			var selects []*part
+			radio := e.boundRadio(n)
 			for _, a := range n.Attrs {
 				if a.Name == "autofocus" && a.Kind != AttrExpr {
 					// Browsers only autofocus on page load; den also focuses
@@ -605,6 +624,20 @@ func (e *emitter) bind(ts []*tnode) {
 				if pt.kind == partMotion {
 					e.line("%s.%s = %s;", t.v, motionProps[a.Name], e.motionValue(pt.expr))
 					continue
+				}
+				if pt.kind == partRef {
+					e.line("$setRef(%s, %s);", t.v, e.expr(pt.expr))
+					continue
+				}
+				switch {
+				case pt.kind == partBind && pt.bind.kind == bindSelect:
+					selects = append(selects, pt)
+					continue
+				case pt.kind == partBind:
+					e.bindJS(t.v, pt)
+					continue
+				case radio && asciiLower(a.Name) == "value":
+					continue // bindJS writes it
 				}
 				if pt.kind == partHandler {
 					body := e.capture(e.ind+"  ", func() { e.stmts(pt.stmts) })
@@ -631,6 +664,9 @@ func (e *emitter) bind(ts []*tnode) {
 				}
 			}
 			e.bind(t.children)
+			for _, pt := range selects {
+				e.bindJS(t.v, pt)
+			}
 		case *If:
 			e.ifNode(t, n)
 		case *For:
@@ -675,18 +711,33 @@ func (e *emitter) componentCall(el *Element) string {
 		case len(pt.slots[i]) == 0:
 			args = append(args, "$cm")
 		default:
+			// The markup sees the context of the component rendering it,
+			// which passes it as $x.
+			outer := e.ctx
+			if e.ctx != "" {
+				e.ctx = "$x"
+			}
+			e.slots++
 			body := e.capture(e.ind+"  ", func() { e.line("return %s;", e.instantiate(pt.slots[i], nsDyn)) })
+			e.ctx = outer
+			e.slots--
 			param := ""
-			if usesSVG.MatchString(body) {
+			switch {
+			case outer != "" && usesCtx.MatchString(body):
+				param = "$svg, $x"
+			case usesSVG.MatchString(body):
 				param = "$svg"
 			}
 			args = append(args, "("+param+") => {\n"+body+e.ind+"}")
 		}
 	}
-	return jsIdent(el.Tag) + "(" + strings.Join(args, ", ") + ")"
+	return jsIdent(el.Tag) + "(" + e.ctxArgs(strings.Join(args, ", "), false) + ")"
 }
 
-var usesSVG = regexp.MustCompile(`\$svg\b`)
+var (
+	usesSVG = regexp.MustCompile(`\$svg\b`)
+	usesCtx = regexp.MustCompile(`\$x\b`)
+)
 
 // block emits a function that builds nodes and returns them.
 func (e *emitter) block(params string, nodes []Node, svg ns) string {
@@ -802,9 +853,9 @@ func (e *emitter) forNode(t *tnode, n *For) {
 	outer := e.row
 	e.row = nil
 	if isInt && keyObj != nil {
-		e.row = &rowCtx{obj: keyObj, name: k}
+		e.row = &rowCtx{obj: keyObj, name: k, slots: e.slots}
 	} else if !isInt && valObj != nil {
-		e.row = &rowCtx{obj: valObj, name: v}
+		e.row = &rowCtx{obj: valObj, name: v, slots: e.slots}
 	}
 	if e.row != nil && len(n.Body) == 1 {
 		el, ok := n.Body[0].(*Element)
@@ -916,6 +967,10 @@ func (e *emitter) stmts(list []ast.Stmt) {
 func (e *emitter) stmt(s ast.Stmt) {
 	switch s := s.(type) {
 	case *ast.ExprStmt:
+		if call, ok := e.isProvide(s); ok {
+			e.provide(call)
+			return
+		}
 		e.line("%s;", e.expr(s.X))
 	case *ast.AssignStmt:
 		e.assign(s)
@@ -1467,26 +1522,30 @@ func (e *emitter) compositeLit(x *ast.CompositeLit) string {
 	return "undefined"
 }
 
-func (e *emitter) call(x *ast.CallExpr) string {
-	args := func() string {
-		var out []string
-		for _, a := range x.Args {
-			out = append(out, e.expr(a))
-		}
-		if len(x.Args) == 1 {
-			if tup, ok := e.ck.info.TypeOf(x.Args[0]).(*types.Tuple); ok && tup.Len() > 1 {
-				return "..." + out[0] // f(g()) where g returns several values
-			}
-		}
-		// A variadic function takes its extra arguments as one slice, as in Go.
-		if sig, ok := e.ck.info.TypeOf(x.Fun).(*types.Signature); ok && sig.Variadic() && !x.Ellipsis.IsValid() {
-			n := sig.Params().Len() - 1
-			if n <= len(out) {
-				out = append(out[:n:n], "$sl(["+strings.Join(out[n:], ", ")+"])")
-			}
-		}
-		return strings.Join(out, ", ")
+// callArgs returns the JS for the arguments of call x, separated by
+// commas.
+func (e *emitter) callArgs(x *ast.CallExpr) string {
+	var out []string
+	for _, a := range x.Args {
+		out = append(out, e.expr(a))
 	}
+	if len(x.Args) == 1 {
+		if tup, ok := e.ck.info.TypeOf(x.Args[0]).(*types.Tuple); ok && tup.Len() > 1 {
+			return "..." + out[0] // f(g()) where g returns several values
+		}
+	}
+	// A variadic function takes its extra arguments as one slice, as in Go.
+	if sig, ok := e.ck.info.TypeOf(x.Fun).(*types.Signature); ok && sig.Variadic() && !x.Ellipsis.IsValid() {
+		n := sig.Params().Len() - 1
+		if n <= len(out) {
+			out = append(out[:n:n], "$sl(["+strings.Join(out[n:], ", ")+"])")
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+func (e *emitter) call(x *ast.CallExpr) string {
+	args := func() string { return e.callArgs(x) }
 	// Type conversions: int(x), float64(x), string(x), named types...
 	if tv, ok := e.ck.info.Types[x.Fun]; ok && tv.IsType() {
 		if len(x.Args) != 1 {
@@ -1533,6 +1592,24 @@ func (e *emitter) call(x *ast.CallExpr) string {
 		}
 		recv := e.ck.recvName(fun)
 		obj := e.expr(fun.X)
+		if e.ck.isFieldMethod(fun) {
+			// A field is a signal, with its parse error pe, whether it
+			// was touched tc, its error er and its reset rs (stdlib.js).
+			switch fun.Sel.Name {
+			case "Get":
+				return obj + ".get()"
+			case "Set":
+				return obj + ".set(" + args() + ")"
+			case "Error":
+				return obj + ".er.get()"
+			case "Touched":
+				return obj + ".tc.get()"
+			case "Touch":
+				return obj + ".tc.set(true)"
+			case "Reset":
+				return obj + ".rs()"
+			}
+		}
 		switch recv + "." + fun.Sel.Name {
 		case "Signal.Get", "Computed.Get":
 			return obj + ".get()"
@@ -1554,6 +1631,14 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return obj + ".p.get()"
 		case "Route.Link":
 			return "$linkTo(" + obj + ", " + args() + ")"
+		case "Resource.Data":
+			return obj + ".d.get()"
+		case "Resource.Err":
+			return obj + ".e.get()"
+		case "Resource.Loading":
+			return obj + ".l.get()"
+		case "Resource.Reload":
+			return obj + ".r()"
 		case "Transition.For":
 			ms := jsNumber(e.ck.durations[x])
 			if js, ok := e.transition(fun.X, ms); ok {
@@ -1564,6 +1649,30 @@ func (e *emitter) call(x *ast.CallExpr) string {
 			return "({ ..." + obj + ", d: " + ms + " })"
 		case "error.Error":
 			return obj + ".message"
+		case "Ref.Focus":
+			return obj + ".e?.focus()"
+		case "Ref.Blur":
+			return obj + ".e?.blur()"
+		case "Ref.Select":
+			return obj + ".e?.select?.()"
+		case "Ref.ScrollIntoView":
+			return obj + ".e?.scrollIntoView()"
+		case "Duration.Milliseconds":
+			// Exact while d is: a quotient of integers under 2^53 is never
+			// rounded onto the next whole number.
+			return "Math.trunc(" + obj + " / 1e6)"
+		case "Duration.Seconds":
+			return "$tsecs(" + obj + ")"
+		case "Time.Sub":
+			return "$tsub(" + obj + ", " + args() + ")"
+		case "Time.UnixMilli":
+			return "$tms(" + obj + ")"
+		case "Time.Hour":
+			return "$tclock(" + obj + `, "getHours")`
+		case "Time.Minute":
+			return "$tclock(" + obj + `, "getMinutes")`
+		case "Time.Second":
+			return "$tclock(" + obj + `, "getSeconds")`
 		}
 		if sel := e.ck.info.Selections[fun]; sel != nil && sel.Kind() == types.FieldVal {
 			return e.expr(fun) + "(" + args() + ")" // a func-typed field
@@ -1615,6 +1724,17 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "1"
 				case "spring":
 					return "$spring(() => " + args() + ")"
+				case "onMount", "onCleanup", "after", "every":
+					// check allows them only in components, which have $c.
+					return "$" + o.Name() + "($c, " + args() + ")"
+				case "ref":
+					return "({ e: null })"
+				case "use":
+					return e.use(x)
+				case "field":
+					return "$field(" + args() + ")"
+				case "resource":
+					return e.resourceCall(x)
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -1651,22 +1771,31 @@ func callee(info *types.Info, fun ast.Expr) ast.Expr {
 
 // stdCalls implements the functions of the importable packages.
 var stdCalls = map[string]func(a []string) string{
-	"strings.Contains":   func(a []string) string { return "(" + a[0] + ").includes(" + a[1] + ")" },
-	"strings.HasPrefix":  func(a []string) string { return "(" + a[0] + ").startsWith(" + a[1] + ")" },
-	"strings.HasSuffix":  func(a []string) string { return "(" + a[0] + ").endsWith(" + a[1] + ")" },
-	"strings.ToLower":    func(a []string) string { return "(" + a[0] + ").toLowerCase()" },
-	"strings.ToUpper":    func(a []string) string { return "(" + a[0] + ").toUpperCase()" },
-	"strings.Repeat":     func(a []string) string { return "(" + a[0] + ").repeat(" + a[1] + ")" },
-	"strings.Join":       func(a []string) string { return "$arr(" + a[0] + ").join(" + a[1] + ")" },
-	"strings.TrimSpace":  func(a []string) string { return "$trimSpace(" + a[0] + ")" },
-	"strings.TrimPrefix": func(a []string) string { return "$trimPrefix(" + a[0] + ", " + a[1] + ")" },
-	"strings.TrimSuffix": func(a []string) string { return "$trimSuffix(" + a[0] + ", " + a[1] + ")" },
-	"strings.Split":      func(a []string) string { return "$split(" + a[0] + ", " + a[1] + ")" },
-	"strings.ReplaceAll": func(a []string) string { return "$replaceAll(" + a[0] + ", " + a[1] + ", " + a[2] + ")" },
-	"strings.Fields":     func(a []string) string { return "$fields(" + a[0] + ")" },
-	"strconv.Itoa":       func(a []string) string { return "String(" + a[0] + ")" },
-	"strconv.FormatBool": func(a []string) string { return "String(" + a[0] + ")" },
-	"strconv.Atoi":       func(a []string) string { return "$atoi(" + a[0] + ")" },
+	"den/http.Status":       func(a []string) string { return "(" + a[0] + "?.$status ?? 0)" },
+	"den/http.Code":         func(a []string) string { return "(" + a[0] + "?.$code ?? \"\")" },
+	"den/http.Message":      func(a []string) string { return "$httpMessage(" + a[0] + ")" },
+	"den/http.SetHeader":    func(a []string) string { return "$httpSetHeader(" + a[0] + ", " + a[1] + ")" },
+	"den/http.DeleteHeader": func(a []string) string { return "$httpDeleteHeader(" + a[0] + ")" },
+	"strings.Contains":      func(a []string) string { return "(" + a[0] + ").includes(" + a[1] + ")" },
+	"strings.HasPrefix":     func(a []string) string { return "(" + a[0] + ").startsWith(" + a[1] + ")" },
+	"strings.HasSuffix":     func(a []string) string { return "(" + a[0] + ").endsWith(" + a[1] + ")" },
+	"strings.ToLower":       func(a []string) string { return "(" + a[0] + ").toLowerCase()" },
+	"strings.ToUpper":       func(a []string) string { return "(" + a[0] + ").toUpperCase()" },
+	"strings.Repeat":        func(a []string) string { return "(" + a[0] + ").repeat(" + a[1] + ")" },
+	"strings.Join":          func(a []string) string { return "$arr(" + a[0] + ").join(" + a[1] + ")" },
+	"strings.TrimSpace":     func(a []string) string { return "$trimSpace(" + a[0] + ")" },
+	"strings.TrimPrefix":    func(a []string) string { return "$trimPrefix(" + a[0] + ", " + a[1] + ")" },
+	"strings.TrimSuffix":    func(a []string) string { return "$trimSuffix(" + a[0] + ", " + a[1] + ")" },
+	"strings.Split":         func(a []string) string { return "$split(" + a[0] + ", " + a[1] + ")" },
+	"strings.ReplaceAll":    func(a []string) string { return "$replaceAll(" + a[0] + ", " + a[1] + ", " + a[2] + ")" },
+	"strings.Fields":        func(a []string) string { return "$fields(" + a[0] + ")" },
+	"strconv.Itoa":          func(a []string) string { return "String(" + a[0] + ")" },
+	"strconv.FormatBool":    func(a []string) string { return "String(" + a[0] + ")" },
+	"strconv.Atoi":          func(a []string) string { return "$atoi(" + a[0] + ")" },
+	"time.Now":              func(a []string) string { return "$tnow()" },
+	"time.Since":            func(a []string) string { return "$tsince(" + a[0] + ")" },
+	// A new JS Error each time: two are never ==, as in Go.
+	"errors.New": func(a []string) string { return "new Error(" + a[0] + ")" },
 }
 
 // decoder returns JS that turns the parsed JSON in x back into a den value
@@ -1882,6 +2011,17 @@ var jsReserved = map[string]bool{
 	// globals the runtime and generated code use
 	"Object": true, "String": true, "Number": true, "Boolean": true, "Array": true, "Math": true,
 	"Set": true, "Map": true, "JSON": true, "Error": true, "Symbol": true, "Promise": true,
+	// and the rest of those the runtime and stdlib use (TestReservedGlobals
+	// finds them): a Go name like setInterval would hide one inside the app.
+	"Date": true, "RegExp": true, "TextEncoder": true, "URL": true, "globalThis": true,
+	"decodeURIComponent": true, "encodeURIComponent": true, "reportError": true,
+	"setTimeout": true, "setInterval": true, "clearTimeout": true, "clearInterval": true,
+	"requestAnimationFrame": true, "cancelAnimationFrame": true,
+	"addEventListener": true, "removeEventListener": true,
+	"history": true, "location": true, "localStorage": true, "isFinite": true,
+	// and the ones resource and fetchJSON use
+	"fetch": true, "AbortController": true, "BigInt": true,
+	"atob": true, "DataView": true, "ArrayBuffer": true,
 }
 
 // jsIdent renames Go identifiers that would clash with JS. Go identifiers

@@ -1,0 +1,25 @@
+// onMount, onCleanup, after, every, ref() and ref= are Go calls and an
+// attribute, formatted like any others.
+import "time"
+
+component App() {
+	box := ref()
+	n := signal(0)
+	onMount(func() { box.Focus() })
+	stop := every(time.Second, func() { n.Set(n.Get() + 1) })
+	onCleanup(func() {
+		stop()
+	})
+	<div>
+		<input ref={box} placeholder="Search" />
+		<Field box={box} />
+		<p>{n.Get()}</p>
+		<button onclick={stop()}>Stop</button>
+		<button onclick={after(2*time.Second, func() { n.Set(0) })}>Reset soon</button>
+		<button onclick={box.Select(); box.ScrollIntoView()}>Select</button>
+	</div>
+}
+
+component Field(box *Ref) {
+	<label>Name <input ref={box} /></label>
+}

@@ -287,3 +287,378 @@ function $spring(f) {
   $cleanup(() => { if (id) cancelAnimationFrame(id); });
   return s;
 }
+// Lifecycle: a component that calls onMount, onCleanup, after or every
+// gets a record c = $life() first thing when it is built, kept in the
+// scope it is built in: s, the functions to run when the component goes
+// (its cleanups, and the stops of its timers), run newest first; and x,
+// set once it has gone; and p, the owner of the nodes the component makes
+// (see $scope). As the oldest entry the component puts in that scope, the
+// record goes after everything the component made, as a deferred call
+// would. Other stdlib code ties work to a component with $onCleanup(c, f).
+function $life() {
+  const c = { s: new Set(), x: 0, p: $owner?.p };
+  $cleanup(() => { c.x = 1; [...c.s].reverse().forEach((f) => $lifeTry(c, f)); c.s.clear(); });
+  return c;
+}
+// $lifeTry runs f, a callback of component c, as den runs an event
+// handler: untracked, and reporting a panic rather than passing it on.
+// It runs in a scope of its own that goes with c, so what f makes (a
+// computed, a spring) stops with the component, and has the component's
+// owner, so it never runs while the block that would take the component
+// away is due. A callback that makes nothing adds nothing to the record.
+function $lifeTry(c, f) {
+  const o = $owner;
+  $owner = c;
+  try { const h = $scope(f)[1]; h && $onCleanup(c, () => $free(h)); } catch (e) { reportError(e); } finally { $owner = o; }
+}
+// $onCleanup runs f when the component goes, or at once if it has gone.
+// It returns a function that takes f back, for work that ends first.
+function $onCleanup(c, f) {
+  const g = () => f();
+  c.x ? $lifeTry(c, g) : c.s.add(g);
+  return () => c.s.delete(g);
+}
+// $onMount runs f once the build that made the component, which puts it
+// in the document, is over, unless the component has gone by then.
+function $onMount(c, f) { queueMicrotask(() => c.x || $lifeTry(c, f)); }
+// $after runs f once after d ns, or with every set, every d ns, until the
+// stop it returns is called or the component goes. A timer that has fired
+// once and for all takes itself off the record. On a component that has
+// gone, the timer is stopped as it is made.
+function $after(c, d, f, every) {
+  if (every && !(d > 0)) $panic("non-positive interval for every");
+  if (d > 2147483647e6) $panic("duration too long");
+  const t = (every ? setInterval : setTimeout)(() => { every || stop(); $lifeTry(c, f); }, d / 1e6),
+    off = $onCleanup(c, () => clearTimeout(t)), stop = () => { clearTimeout(t); off(); };
+  return stop;
+}
+function $every(c, d, f) { return $after(c, d, f, 1); }
+// ref={r}: r holds the element from when it is made until the scope that
+// made it goes, unless another element has taken r over by then.
+function $setRef(e, r) { r.e = e; $cleanup(() => { if (r.e === e) r.e = null; }); }
+// time: a Time is {w, m}, the wall clock (ms since the epoch) and the
+// monotonic clock (performance.now(), when there is one), as Go keeps
+// both; the zero Time is null, Go's year 1 UTC. Sub uses the monotonic
+// readings of two Times that have them, and Hour and the like the wall
+// clock, which follows the system clock even after the computer sleeps.
+// A Duration is a number of ns, which Sub saturates as Go does.
+function $tnow() { return { w: Date.now(), m: globalThis.performance?.now() }; }
+function $tms(t) { return t ? t.w : -62135596800000; }
+function $tsub(t, u) {
+  const d = t?.m != null && u?.m != null ? t.m - u.m : $tms(t) - $tms(u);
+  return Math.min(Math.max(Math.round(d * 1e6), -9223372036854775808), 9223372036854775807);
+}
+function $tsince(t) { return $tsub($tnow(), t); }
+function $tclock(t, f) { return t ? new Date(t.w)[f]() : 0; }
+// $tsecs is Duration.Seconds as Go computes it: whole seconds plus the
+// rest over 1e9, which can differ in the last bit from d / 1e9.
+function $tsecs(d) { const n = d % 1e9; return (d - n) / 1e9 + n / 1e9; }
+// Forms: field(initial, check) and bind={x}. A field is a signal with pe,
+// a signal of the parse error of its element's text (null when it parses);
+// tc, a signal of whether it was touched; er, a computed of its error (pe,
+// else check(value), check being null or a func); and rs, which resets it.
+// Its set clears pe, as the element then shows the value set.
+function $field(v, check) {
+  const s = $signal(v), set = s.set, pe = (s.pe = $signal(null)), tc = (s.tc = $signal(false));
+  s.set = (x) => { pe.set(null); set.call(s, x); };
+  s.er = $computed(() => pe.get() ?? (check ? check(s.get()) : null));
+  s.rs = () => { s.set(v); tc.set(false); };
+  return s;
+}
+// $bind binds the value of element el to x, a signal or a field: event t
+// sets x to the text read by p ($str, $atoi, $int(lo, hi) or $float, each
+// returning [value, error]). Text that does not read leaves x as it is,
+// and is a field's parse error until it reads. An effect writes x to the
+// element when x changes, or a field's parse error goes, unless the text
+// there already reads as x, as "1." and "01" do while they are typed. Each
+// bind helper returns x.
+function $bind(el, x, t, p) {
+  el.addEventListener(t, () => { const [v, err] = p(el.value); err ? x.pe?.set(err) : x.set(v); });
+  $effect(() => { const v = x.get(), [w, err] = p(el.value); if (!x.pe?.get() && (err || w !== v)) el.value = String(v); });
+  return x;
+}
+function $str(s) { return [s]; }
+// $int(lo, hi) reads an int as $atoi does, between lo and hi. (Not
+// "return (s) =>": the minifier would make that "returns=>".)
+function $int(lo, hi) {
+  return function (s) { const r = $atoi(s); return r[1] || (r[0] >= lo && r[0] <= hi) ? r : [0, new Error("strconv.Atoi: parsing " + JSON.stringify(s) + ": value out of range")]; };
+}
+// $float reads a decimal number, as strconv.ParseFloat does.
+function $float(s) {
+  const n = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(s) ? +s : NaN;
+  return isFinite(n) ? [n] : [0, new Error("strconv.ParseFloat: parsing " + JSON.stringify(s) + (n ? ": value out of range" : ": invalid syntax"))];
+}
+// $check binds a checkbox to a bool.
+function $check(el, x) {
+  el.addEventListener("change", () => x.set(el.checked));
+  $effect(() => { el.checked = x.get(); });
+  return x;
+}
+// $radio binds a radio to x == v, its value: a value, or a computed one
+// when it reads signals. Checking it sets x to v.
+function $radio(el, x, v) {
+  const f = () => (v?.get ? v.get() : v);
+  el.addEventListener("change", () => el.checked && x.set(f()));
+  $effect(() => { el.checked = x.get() === f(); });
+  return x;
+}
+// $touch marks field x touched when its element loses focus, but only
+// while the block that made the element is there: when den takes the
+// element away it frees that block first, and the focusout that follows
+// (browsers fire one at a focused element that is removed, and $exit
+// blurs focus inside a leaving one) is not the user leaving the field.
+function $touch(el, x) {
+  let on = 1;
+  $cleanup(() => { on = 0; });
+  el.addEventListener("focusout", () => on && x.tc.set(true));
+}
+// Async data: resource(fetchJSON[T](url)). $resource holds a resource's
+// state and makes its requests; $fetchJSON is fetchJSON's requester; and
+// $jparse, $jdec and the helpers after them decode JSON as Go's
+// encoding/json does, reading the descriptors the compiler writes as $jt.
+//
+// $resource is resource(f(args)): a returns the values of f's arguments,
+// read in an effect, so a change to a signal they read starts a new
+// request, and so does r (Reload), which changes n; q, f's requester,
+// makes the request for them with an AbortSignal and returns a promise of
+// the result; z is the zero value. A new request aborts the one in flight
+// (stop), once the arguments are read: if reading them panics, the one in
+// flight goes on. Only the latest request's outcome lands, written by its
+// promise's callbacks: d the data, kept until a request succeeds; e the
+// error of the latest request to finish, null after a success; l whether
+// a request is in flight. k is the AbortController of the request in
+// flight. When the component that made the resource goes (c is its
+// lifecycle record), the request in flight is aborted, and nothing lands
+// after.
+function $resource(c, a, q, z) {
+  const r = { d: $signal(z), e: $signal(null), l: $signal(false), n: $signal(0) };
+  let k = null;
+  const stop = () => { k?.abort(); k = null; };
+  r.r = () => r.n.set(r.n.v + 1);
+  $effect(() => {
+    r.n.get();
+    const v = a(), m = new AbortController();
+    stop();
+    k = m;
+    r.l.set(true);
+    q(v, m.signal).then(
+      (x) => { if (k === m) { r.d.set(x); r.e.set(null); r.l.set(false); } },
+      (x) => { if (k === m) { r.e.set(x); r.l.set(false); } },
+    );
+  });
+  $onCleanup(c, stop);
+  return r;
+}
+// $fetchJSON(J, i) is the requester of fetchJSON[T], where J[i] describes
+// T: a GET of url, which must be on the page's origin (mode same-origin
+// has the browser refuse others, after redirects too), and whose response
+// must have a 2xx status and JSON that fits T.
+const $httpHeaders = new Map();
+function $httpHeaderName(n) {
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(n)) return Error("http: invalid header name");
+  n = n.toLowerCase();
+  if (/^(proxy-|sec-)/.test(n) || ["accept-charset", "accept-encoding", "access-control-request-headers", "access-control-request-method", "connection", "content-length", "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive", "origin", "referer", "set-cookie", "te", "trailer", "transfer-encoding", "upgrade", "via", "x-http-method", "x-http-method-override", "x-method-override"].includes(n)) return Error("http: forbidden header name");
+  return null;
+}
+function $httpSetHeader(n, v) {
+  const e = $httpHeaderName(n);
+  if (e) return e;
+  if (/[^\x20-\x7e\x80-\xff]/.test(v)) return Error("http: invalid header value");
+  $httpHeaders.set(n.toLowerCase(), v.replace(/^ +| +$/g, ""));
+  return null;
+}
+function $httpDeleteHeader(n) {
+  const e = $httpHeaderName(n);
+  if (!e) $httpHeaders.delete(n.toLowerCase());
+  return e;
+}
+function $httpSnapshot() { return { accept: "application/json", ...Object.fromEntries($httpHeaders) }; }
+function $httpMessage(e) { return e?.$message ?? e?.message ?? ""; }
+function $httpError(t, p) {
+  return (async () => {
+  const e = Error(p + t.status + (t.statusText && " " + t.statusText));
+  e.$status = t.status;
+  try {
+    const b = JSON.parse(await t.text());
+    if (b && typeof b === "object" && b.error && typeof b.error === "object") {
+      if (typeof b.error.code === "string") e.$code = b.error.code;
+      if (typeof b.error.message === "string") e.$message = b.error.message;
+    }
+  } catch {}
+  return e;
+  })();
+}
+function $fetchJSON(J, i) {
+  return async ([u], signal) => {
+    let p = "fetchJSON: ", t, s;
+    try { t = new URL(u, location.href); } catch {}
+    if (t?.origin !== location.origin || !/^https?:$/.test(t.protocol) || t.username || t.password) throw Error(p + u + " is not on this origin");
+    p += "GET " + u + ": ";
+    try {
+      t = await fetch(t.href, { mode: "same-origin", credentials: "same-origin", headers: $httpSnapshot(), signal });
+      s = t.ok && (await t.text());
+    } catch (x) { throw signal.aborted ? x : Error(p + x.message); }
+    if (!t.ok) throw await $httpError(t, p);
+    try { s = $jparse(s); } catch (x) { throw Error(p + "invalid JSON: " + x.message); }
+    return $jdec(J, i, s, $jzero(J, i));
+  };
+}
+// $jparse reads JSON text s as encoding/json reads it. JSON.parse checks
+// that s is JSON; then its tokens are read again, in order: an object
+// becomes {o: [[key, value], ...]}, repeated keys included, which Go
+// decodes one after another, and a number {n: text}, whose text says
+// whether it fits an int (1.0 does not). Lone surrogates in strings become
+// U+FFFD, as in Go, where the browser has toWellFormed. The containers
+// being read are kept on a stack, not in recursive calls, so JSON nested
+// as deep as Go reads it (10,000 levels) never runs out of stack, and
+// deeper is Go's error.
+function $jparse(s) {
+  JSON.parse(s);
+  const t = s.match(/"(?:[^"\\]|\\.)*"|[^\s,:[\]{}"]+|[[\]{}]/g), str = (x) => (x = JSON.parse(x)).toWellFormed?.() ?? x, st = [];
+  let out;
+  for (const x of t) {
+    if (x === "]" || x === "}") { st.pop(); continue; }
+    const v = x === "[" ? [] : x === "{" ? { o: [] } : x[0] === '"' ? str(x) : x === "null" ? null : x === "true" ? true : x === "false" ? false : { n: x }, p = st.at(-1);
+    // In an object, a key waits in p.k for its value.
+    if (!p) out = v;
+    else if (!p.o) p.push(v);
+    else if (p.k === undefined) p.k = v;
+    else { p.o.push([p.k, v]); p.k = undefined; }
+    if ((x === "[" || x === "{") && st.push(v) > 1e4) throw Error("exceeded max depth");
+  }
+  return out;
+}
+// $jdec decodes j, JSON as $jparse reads it, into the type J[i]
+// describes, starting from v: like encoding/json, it decodes into the
+// value that is there, the zero value or what a repeated key decoded
+// before, so a repeated object merges into it. It throws Go's error for
+// the first value that does not fit. $jone decodes one value, and for an
+// object or array pushes a frame onto a stack, st, which hands out its
+// elements (next) and takes their values (put) until it is done (end):
+// a stack, not recursion, so the deepest JSON Go reads decodes.
+function $jdec(J, i, j, v, c) {
+  const st = [];
+  let r = $jone(st, J, i, j, v, c);
+  while (st.length) {
+    const f = st.at(-1);
+    if (r !== st) f.put(r); // r is the value of f's last element; st, a new frame
+    const n = f.next();
+    if (n) r = $jone(st, J, ...n);
+    else { st.pop(); r = f.end(); }
+  }
+  return r;
+}
+// $jone decodes j into J[i] as $jdec does, or for an object or array,
+// pushes its frame onto st and returns st. c, for errors, is [struct,
+// path of keys], which Go names once inside a struct.
+function $jone(st, J, i, j, v, c) {
+  const d = J[i], k = d.k;
+  if (j === null) return k === "l" ? null : k === "m" ? new Map() : v;
+  const w = typeof j === "string" ? "string" : typeof j === "boolean" ? "bool" : Array.isArray(j) ? "array" : j.o ? "object" : "number";
+  const bad = (x = w, t = d.t) => { throw Error("json: cannot unmarshal " + x + " into Go " + (c ? "struct field " + c[0] + "." + c[1] : "value") + " of type " + t); };
+  if (k === "s" || k === "b") return w === (k === "s" ? "string" : "bool") ? j : bad();
+  if (k === "l" && w === "string" && J[d.e].k === "u" && J[d.e].b === 8) return $jbytes(j);
+  if (k !== "o" && k !== "m" && k !== "a" && k !== "l") {
+    if (w !== "number") bad();
+    const n = $jnum(d, j.n);
+    return n === undefined ? bad("number " + j.n) : n;
+  }
+  if (w !== (k === "o" || k === "m" ? "object" : "array")) bad();
+  let x = 0, f, n;
+  if (k === "o") {
+    const o = { ...v };
+    st.push({
+      next() {
+        while (x < j.o.length) {
+          let [n, y] = j.o[x++];
+          f = d.f.find((f) => f[0] === n) ?? ((n = $jfold(n, d.F)), d.f.find((f) => f[1] === n));
+          if (f) return [f[3], y, f[2].reduce((o, p) => o[p], o), [d.s, (c ? c[1] + "." : "") + (f[4] ?? f[0])]];
+        }
+      },
+      put(r) { const [p, ...q] = f[2]; o[p] = q.length ? $jin(o[p], q, () => r) : r; },
+      end: () => o,
+    });
+  } else if (k === "m") {
+    // Go decodes each value from zero, and then the key.
+    const m = new Map(v), K = J[d.K];
+    st.push({
+      next() { if (x < j.o.length) { let y; [n, y] = j.o[x++]; return [d.e, y, $jzero(J, d.e), c]; } },
+      put(r) { const key = K.k === "s" ? n : $jnum(K, n); if (key === undefined) bad("number " + n, K.t); m.set(key, r); },
+      end: () => m,
+    });
+  } else {
+    // Elements decode into what is there: an array's own, or a slice's
+    // backing array's as far as its capacity (Go reuses it, so elements
+    // past its length that a repeated key left count), then zero values.
+    // An array takes as many as it holds.
+    const a = k === "a" ? [...v] : v ? v.a.slice(v.o, v.o + v.c) : [];
+    st.push({
+      next() { if (x < j.length && (k === "l" || x < d.n)) { n = x++; return [d.e, j[n], n < a.length ? a[n] : $jzero(J, d.e), c]; } },
+      put(r) { a[n] = r; },
+      end: () => (k === "a" ? a.fill($jzero(J, d.e), j.length) : j.length ? new $Slice(a, 0, j.length, a.length) : $sl([])),
+    });
+  }
+  return st;
+}
+// $jnum is number text s as a value of the number type d, or undefined
+// when it does not fit: Go reads an integer kind with strconv.ParseInt or
+// ParseUint (so 1.0 and 1e2 are no ints, nor -0 a uint) and checks the
+// kind's range, and reads a float with strconv.ParseFloat for its size,
+// which does not take what rounds to an infinity. Integers beyond 2^53
+// lose precision, as all of den's do.
+function $jnum(d, s) {
+  if (d.k === "f") { const f = d.b < 64 ? $jf32(s) : +s; return isFinite(f) ? f : undefined; }
+  if (!(d.k === "i" ? /^[+-]?\d+$/ : /^\d+$/).test(s)) return;
+  const n = BigInt(s), m = 2n ** BigInt(d.k === "i" ? d.b - 1 : d.b);
+  return n < m && (d.k === "u" || n >= -m) ? Number(n) : undefined;
+}
+// $jf32 is number text s rounded once to the nearest float32, as Go's
+// strconv.ParseFloat(s, 32) does. Number(s) rounds to a float64 first;
+// only where that lands exactly halfway between two float32s (o and g,
+// infinities standing for 2^128) can rounding again go the wrong way, and
+// there an exact comparison of s with it says which way s lies.
+function $jf32(s) {
+  const f = +s, g = Math.fround(f), b = new DataView(new ArrayBuffer(4)), big = (x) => (isFinite(x) ? x : Math.sign(x) * 2 ** 128);
+  if (g === f || !isFinite(f)) return g;
+  b.setFloat32(0, g);
+  b.setUint32(0, b.getUint32(0) + (Math.abs(f) > Math.abs(g) ? 1 : -1));
+  const o = b.getFloat32(0);
+  if (f - big(o) !== big(g) - f) return g;
+  const c = $jcmp(s, f), far = Math.abs(big(o)) > Math.abs(big(g));
+  return c > 0 ? (far ? o : g) : c < 0 ? (far ? g : o) : g;
+}
+// $jcmp compares the magnitude of number text s with that of float64 f,
+// exactly, in BigInts: -1, 0 or 1.
+function $jcmp(s, f) {
+  const [, n, m = "", e = 0] = /^-?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(s), b = new DataView(new ArrayBuffer(8));
+  b.setFloat64(0, f);
+  const w = b.getBigUint64(0), x = Number((w >> 52n) & 2047n), y = (x ? x : 1) - 1075, z = e - m.length;
+  let p = BigInt(n + m), q = (w & (2n ** 52n - 1n)) | (x ? 2n ** 52n : 0n);
+  if (z > 0) p *= 10n ** BigInt(z); else q *= 10n ** BigInt(-z);
+  if (y > 0) q <<= BigInt(y); else p <<= BigInt(-y);
+  return p > q ? 1 : p < q ? -1 : 0;
+}
+// $jbytes decodes the base64 text s that encoding/json takes for a
+// []byte: the standard encoding, with padding; line breaks are ignored.
+function $jbytes(s) {
+  s = s.replace(/[\r\n]/g, "");
+  if (!/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/.test(s)) throw Error("illegal base64 data at input byte " + s.match(/^(?:[A-Za-z\d+/]{4})*/)[0].length);
+  return $sl([...atob(s)].map((c) => c.charCodeAt(0)));
+}
+// $jzero is the zero value of the type J[i] describes.
+function $jzero(J, i) {
+  const d = J[i];
+  return d.z ? d.z() : d.k === "s" ? "" : d.k === "b" ? false : d.k === "l" ? null : d.k === "m" ? new Map() : d.k === "a" ? Array(d.n).fill($jzero(J, d.e)) : 0;
+}
+// $jin is struct o with the field at path p, through embedded structs,
+// set to g(its value).
+function $jin(o, p, g) { const [n, ...r] = p; return { ...o, [n]: r.length ? $jin(o[n], r, g) : g(o[n]) }; }
+// $jfold folds key k as encoding/json folds names to match them ignoring
+// case: ASCII letters, and U+017F (long s) and U+212A (Kelvin sign), as
+// Go's simple folding does (to S and K), and other letters by F, the
+// compiler's table for the letters of the struct's field names. A letter
+// outside every orbit F covers matches no field however it folds, so it
+// stays as it is.
+function $jfold(k, F) {
+  return [...k].map((c) => { const r = c.codePointAt(0); return r < 128 ? c.toUpperCase() : r === 383 ? "S" : r === 8490 ? "K" : F?.[c] ?? c; }).join("");
+}

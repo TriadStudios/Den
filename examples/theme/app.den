@@ -1,0 +1,121 @@
+// Context: values that reach a whole subtree without props. App provides
+// a theme store, which any component under it uses. Tabs is a compound
+// component: it provides its own state, and the Tab and Panel elements
+// that its caller writes inside it use that state, because markup passed
+// as children sees the context of the component that renders it.
+
+// Theme is the app's theme store. It holds signals, so every component
+// that uses it follows its changes.
+type Theme struct {
+	Dark   *Signal[bool]
+	Accent *Signal[string]
+}
+
+// TabState is what a Tabs provides to the Tab and Panel elements inside
+// it: which tab is open.
+type TabState struct {
+	Active *Signal[string]
+}
+
+func themeClass(dark bool, accent string) string {
+	c := "app accent-" + accent
+	if dark {
+		c += " dark"
+	}
+	return c
+}
+
+component App() {
+	theme := Theme{Dark: stored("theme-dark", false), Accent: stored("theme-accent", "teal")}
+	provide(theme)
+	<main class={themeClass(theme.Dark.Get(), theme.Accent.Get())}>
+		<div class="page">
+			<header class="top">
+				<div>
+					<h1>Context</h1>
+					<p class="sub">provide(v) in a component, use[T]() anywhere below it.</p>
+				</div>
+				<DarkToggle />
+			</header>
+			<Tabs first="look">
+				<div class="bar" role="tablist">
+					<Tab name="look">Look</Tab>
+					<Tab name="nested">Nested</Tab>
+					<Tab name="how">How it works</Tab>
+				</div>
+				<Panel name="look">
+					<p>Pick an accent. Each swatch uses the theme it finds above it.</p>
+					<div class="swatches">
+						{for _, c := range []string{"teal", "violet", "amber", "rose"} key c {
+							<Swatch color={c} />
+						}}
+					</div>
+				</Panel>
+				<Panel name="nested">
+					<p>
+						A Tabs inside a Tabs: each Tab finds the nearest one, so the two keep their own state.
+					</p>
+					<Tabs first="one">
+						<div class="bar small" role="tablist">
+							<Tab name="one">One</Tab>
+							<Tab name="two">Two</Tab>
+						</div>
+						<Panel name="one"><p>The inner tabs are on one.</p></Panel>
+						<Panel name="two"><p>The inner tabs are on two.</p></Panel>
+					</Tabs>
+				</Panel>
+				<Panel name="how">
+					<p>
+						App calls provide(theme) once. DarkToggle and Swatch call use[Theme]() and
+						get that store, without a prop in between.
+					</p>
+					<p>
+						Tabs provides a TabState. The Tab and Panel elements above are written by App,
+						but Tabs renders them, so they find its state.
+					</p>
+				</Panel>
+			</Tabs>
+		</div>
+	</main>
+}
+
+component DarkToggle() {
+	theme := use[Theme]()
+	<button
+		class="ghost"
+		aria-pressed={theme.Dark.Get()}
+		onclick={theme.Dark.Set(!theme.Dark.Get())}>
+		{if theme.Dark.Get() {Light} else {Dark}}
+	</button>
+}
+
+component Swatch(color string) {
+	theme := use[Theme]()
+	<button
+		class={"swatch swatch-" + color}
+		aria-pressed={theme.Accent.Get() == color}
+		onclick={theme.Accent.Set(color)}>
+		{color}
+	</button>
+}
+
+component Tabs(first string, children den.Children) {
+	provide(TabState{Active: signal(first)})
+	<div class="tabs">{children}</div>
+}
+
+component Tab(name string, children den.Children) {
+	tabs := use[TabState]()
+	<button
+		class="tab"
+		role="tab"
+		aria-selected={tabs.Active.Get() == name}
+		onclick={tabs.Active.Set(name)}>
+		{children}
+	</button>
+}
+
+component Panel(name string, children den.Children) {
+	tabs := use[TabState]()
+	<section class="panel" role="tabpanel">{if tabs.Active.Get() == name {{children}}}</section>
+}
