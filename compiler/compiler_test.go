@@ -312,7 +312,7 @@ component App() {
 import "fmt"
 component App() {
     <p>x</p>
-}`, `app.den:2:8: package "fmt" is not available in den; you can import errors, strconv, strings, time`},
+}`, `app.den:2:8: package "fmt" is not available in den; you can import den/http, errors, strconv, strings, time`},
 		{"unused import", `
 import (
     "strings"
@@ -641,6 +641,17 @@ component App() {
     f := path
     <p>{f().Get()}</p>
 }`, `app.den:3:10: path can only be called, not used as a value`},
+		{"http status type", `
+import "den/http"
+component App() {
+    <p>{http.Status(1)}</p>
+}`, `app.den:4:21: cannot use 1 (constant of type int) as error value in argument to http.Status: int does not implement error (missing method Error)`},
+		{"http header type", `
+import "den/http"
+component App() {
+    _ = http.SetHeader("X-CSRF-Token", 1)
+    <p>x</p>
+}`, `app.den:4:40: cannot use 1 (untyped int constant) as string value in argument to http.SetHeader`},
 		{"fetchJSON outside resource", `
 component App() {
     n, err := fetchJSON[int]("/n.json")

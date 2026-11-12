@@ -453,17 +453,52 @@ function $resource(c, a, q, z) {
 // T: a GET of url, which must be on the page's origin (mode same-origin
 // has the browser refuse others, after redirects too), and whose response
 // must have a 2xx status and JSON that fits T.
+const $httpHeaders = new Map();
+function $httpHeaderName(n) {
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(n)) return Error("http: invalid header name");
+  n = n.toLowerCase();
+  if (/^(proxy-|sec-)/.test(n) || ["accept-charset", "accept-encoding", "access-control-request-headers", "access-control-request-method", "connection", "content-length", "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive", "origin", "referer", "set-cookie", "te", "trailer", "transfer-encoding", "upgrade", "via", "x-http-method", "x-http-method-override", "x-method-override"].includes(n)) return Error("http: forbidden header name");
+  return null;
+}
+function $httpSetHeader(n, v) {
+  const e = $httpHeaderName(n);
+  if (e) return e;
+  if (/[^\x20-\x7e\x80-\xff]/.test(v)) return Error("http: invalid header value");
+  $httpHeaders.set(n.toLowerCase(), v.replace(/^ +| +$/g, ""));
+  return null;
+}
+function $httpDeleteHeader(n) {
+  const e = $httpHeaderName(n);
+  if (!e) $httpHeaders.delete(n.toLowerCase());
+  return e;
+}
+function $httpSnapshot() { return { accept: "application/json", ...Object.fromEntries($httpHeaders) }; }
+function $httpMessage(e) { return e?.$message ?? e?.message ?? ""; }
+function $httpError(t, p) {
+  return (async () => {
+  const e = Error(p + t.status + (t.statusText && " " + t.statusText));
+  e.$status = t.status;
+  try {
+    const b = JSON.parse(await t.text());
+    if (b && typeof b === "object" && b.error && typeof b.error === "object") {
+      if (typeof b.error.code === "string") e.$code = b.error.code;
+      if (typeof b.error.message === "string") e.$message = b.error.message;
+    }
+  } catch {}
+  return e;
+  })();
+}
 function $fetchJSON(J, i) {
   return async ([u], signal) => {
     let p = "fetchJSON: ", t, s;
     try { t = new URL(u, location.href); } catch {}
-    if (t?.origin !== location.origin) throw Error(p + u + " is not on this origin");
+    if (t?.origin !== location.origin || !/^https?:$/.test(t.protocol) || t.username || t.password) throw Error(p + u + " is not on this origin");
     p += "GET " + u + ": ";
     try {
-      t = await fetch(t.href, { mode: "same-origin", credentials: "same-origin", headers: { Accept: "application/json" }, signal });
+      t = await fetch(t.href, { mode: "same-origin", credentials: "same-origin", headers: $httpSnapshot(), signal });
       s = t.ok && (await t.text());
     } catch (x) { throw signal.aborted ? x : Error(p + x.message); }
-    if (!t.ok) throw Error(p + t.status + (t.statusText && " " + t.statusText));
+    if (!t.ok) throw await $httpError(t, p);
     try { s = $jparse(s); } catch (x) { throw Error(p + "invalid JSON: " + x.message); }
     return $jdec(J, i, s, $jzero(J, i));
   };

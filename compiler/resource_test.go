@@ -425,7 +425,7 @@ func TestRunResource(t *testing.T) {
 	got := runApp(t, usersSrc, usersShow+`
 show();
 const o = fetches[0].opts;
-log(o.mode, o.credentials, o.headers.Accept, o.signal === fetches[0].signal && !o.signal.aborted);
+log(o.mode, o.credentials, o.headers.accept, o.signal === fetches[0].signal && !o.signal.aborted);
 reply(fetches[0], 200, '[{"id": 1, "name": "Ann"}, {"id": 2, "name": "Bob", "extra": true}]'); await tick();
 show();
 click(find("button", "next")); await tick();
@@ -780,8 +780,8 @@ log(fetches.map((f) => f.url.slice("http://localhost".length)).join(" "));`)
 		`Each page is JSON, fetched and decoded into Go types. | Marsrocky, 2 moons, Jupitergas giant, 95 moons, Saturngas giant, 146 moons`,
 		`Each page is JSON, fetched and decoded into Go types. / That is every planet. Next asks for a page that is not there. | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
 		`Each page is JSON, fetched and decoded into Go types. / Loading page 4… / That is every planet. Next asks for a page that is not there. | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
-		`Each page is JSON, fetched and decoded into Go types. / fetchJSON: GET pages/4.json: 404 Not Found | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
-		`Each page is JSON, fetched and decoded into Go types. / fetchJSON: GET pages/4.json: 404 Not Found | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
+		`Each page is JSON, fetched and decoded into Go types. / 404: fetchJSON: GET pages/4.json: 404 Not Found  | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
+		`Each page is JSON, fetched and decoded into Go types. / 404: fetchJSON: GET pages/4.json: 404 Not Found  | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
 		`Each page is JSON, fetched and decoded into Go types. / That is every planet. Next asks for a page that is not there. | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
 		`/pages/1.json /pages/2.json /pages/3.json /pages/4.json /pages/4.json /pages/3.json`)
 }

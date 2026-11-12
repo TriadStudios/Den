@@ -13,6 +13,13 @@ import (
 // package is declared here as Go (for the type checker) and implemented in
 // stdlib.js or inline (see stdCalls in emit.go).
 var stdPackages = map[string]string{
+	"den/http": `package http
+func Status(err error) int { return 0 }
+func Code(err error) string { return "" }
+func Message(err error) string { return "" }
+func SetHeader(name, value string) error { return nil }
+func DeleteHeader(name string) error { return nil }
+`,
 	"strings": `package strings
 
 func Contains(s, substr string) bool         { return false }

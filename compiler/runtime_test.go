@@ -3465,3 +3465,44 @@ await advance(2000);
 log(html());`)
 	expectLines(t, got, `<p>22 3 2000 13</p>`)
 }
+
+func TestRunHTTPMetadataHeaders(t *testing.T) {
+	got := runAppWith(t, `
+import "den/http"
+import "errors"
+component App() {
+    _ = http.SetHeader("X-CSRF-Token", "one")
+    r := resource(fetchJSON[int]("/value"))
+    <div>
+        <p>{http.Status(r.Err())}|{http.Code(r.Err())}|{http.Message(r.Err())}</p>
+        <b>{http.Status(nil)}|{http.Code(nil)}|{http.Message(nil)}|{http.Message(errors.New("plain"))}</b>
+        <button onclick={_ = http.SetHeader("x-csrf-token", "two"); r.Reload()}>change</button>
+        <button onclick={_ = http.DeleteHeader("X-CSRF-TOKEN"); r.Reload()}>clear</button>
+    </div>
+}`, ``, `
+await tick();
+log(find("b").textContent, fetches[0].opts.headers["x-csrf-token"]);
+reply(fetches[0], 422, '{"error":{"code":"invalid","message":"Try again"}}'); await tick();
+log(find("p").textContent);
+click(find("button", "change")); await tick();
+log(fetches[0].opts.headers["x-csrf-token"], fetches[1].opts.headers["x-csrf-token"]);
+reply(fetches[1], 500, 'broken'); await tick();
+log(find("p").textContent);
+click(find("button", "clear")); await tick();
+log(fetches[2].opts.headers["x-csrf-token"] === undefined);
+fetches[2].done = true;
+fetches[2].resolve({ok:false,status:403,statusText:"Forbidden",text:async()=>{throw Error("body failed");}}); await tick();
+log(find("p").textContent);`)
+	expectLines(t, got, `0|||plain one`, `422|invalid|Try again`, `one two`, `500||fetchJSON: GET /value: 500 Internal Server Error`, `true`, `403||fetchJSON: GET /value: 403 Forbidden`)
+}
+
+func TestHTTPHeaderValidation(t *testing.T) {
+	got := runRuntime(t, "$httpSetHeader $httpDeleteHeader $httpSnapshot", `
+const forbidden = ["Accept-Charset", "Accept-Encoding", "Access-Control-Request-Headers", "Access-Control-Request-Method", "Connection", "Content-Length", "Cookie", "Cookie2", "Date", "DNT", "Expect", "Host", "Keep-Alive", "Origin", "Referer", "Set-Cookie", "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Via", "Proxy-Anything", "Sec-Anything", "X-HTTP-Method", "X-HTTP-Method-Override", "X-Method-Override"];
+console.log(forbidden.every(n => $httpSetHeader(n,"x") && $httpDeleteHeader(n)));
+console.log(["", "bad name", "x:", "x\n", "\u00e9"].every(n => $httpSetHeader(n,"x")));
+console.log(["a\r", "a\n", "a\t", "a\0", "a\x7f", "a\u0100"].every(v => $httpSetHeader("X-Test",v)));
+console.log($httpSetHeader("X-Test", "  good \u00e9  ") === null, $httpSnapshot()["x-test"], $httpDeleteHeader("x-TEST") === null);
+`)
+	expectLines(t, got, `true`, `true`, `true`, "true good \u00e9 true")
+}

@@ -111,7 +111,7 @@ app.den:5:36: cannot use "hi" (untyped string constant) as int value in argument
 app.den:6:13: cannot render struct{A int}: only strings, numbers and bools can be shown in markup
 app.den:7:15: <Card> has no prop "titel"
 app.den:4:10: for in markup needs a key so rows can move instead of being rebuilt: {for _, x := range xs key x.ID { ... }}
-app.den:2:8: package "fmt" is not available in den; you can import errors, strconv, strings, time
+app.den:2:8: package "fmt" is not available in den; you can import den/http, errors, strconv, strings, time
 ```
 
 Other checks: missing props, wrong prop types, unknown names, unused
@@ -1022,3 +1022,24 @@ rebuild of 100 components under 50 ms.
 ## License
 
 Den is licensed under the [Apache License 2.0](LICENSE).
+
+### HTTP errors and headers
+
+Import `"den/http"` (package `http`) for browser request controls. These are
+Den operations, distinct from Go's `net/http`. `http.Status(err) int` and
+`http.Code(err) string` return zero and empty for ordinary errors and nil.
+`http.Message(err) string` returns the server's message, falling back to
+`err.Error()` (empty for nil). Non-2xx errors keep their existing error text
+and status even when reading or parsing the response fails. A JSON response
+`{"error":{"code":"invalid","message":"Check your input"}}` adds its string
+code and message.
+
+`http.SetHeader(name, value string) error` replaces a shared request header;
+`http.DeleteHeader(name string) error` removes it, ignoring case. Check the
+returned error. Each request takes a snapshot, so changes affect subsequent
+requests. For example, set `X-CSRF-Token` after login, and delete it at logout;
+never put tokens in URLs. Headers apply only to same-origin requests; the
+browser also refuses cross-origin redirects. Invalid names, control characters,
+non-byte values and Fetch-forbidden names are rejected. `Proxy-` and `Sec-`
+prefixes and all three method-override headers are rejected, even for safe
+method values. Deleting a forbidden or invalid name also returns an error.
