@@ -237,8 +237,12 @@ function fail(f, message) { if (!f.done) { f.done = true; f.reject(new TypeError
 // inFlight lists the URLs of the requests not settled yet.
 function inFlight() { return fetches.filter((f) => !f.done).map((f) => f.url); }
 // EventSource, as events() constructs it. Each one is recorded in
-// eventSources; nothing here reconnects. sseOpen, sseError and sseEvent
-// are what tests use to drive it.
+// eventSources. The fake does not reconnect; the app does. sseOpen,
+// sseError, sseFail and sseEvent are what tests use to drive it.
+// readyState is 0 connecting, 1 open, 2 closed. sseError is a network
+// error: it leaves readyState 0 and does not set closed. sseFail is an
+// HTTP failure: it sets readyState 2 and calls onerror. close() sets
+// closed and readyState 2, and does not call onerror.
 const eventSources = [];
 class EventSource {
   constructor(url, opts = {}) {
@@ -247,19 +251,31 @@ class EventSource {
     this.listeners = {};
     this.closed = false;
     this.opened = false;
+    this.readyState = 0;
     this.onopen = null;
     this.onerror = null;
     eventSources.push(this);
   }
   addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }
-  close() { this.closed = true; }
+  removeEventListener(type, fn) {
+    const xs = this.listeners[type];
+    if (!xs) return;
+    const i = xs.indexOf(fn);
+    if (i >= 0) xs.splice(i, 1);
+  }
+  close() { this.closed = true; this.readyState = 2; }
 }
 globalThis.EventSource = EventSource;
-function sseOpen(es) { es.opened = true; es.onopen?.(); }
-function sseError(es) { es.onerror?.(); }
+function sseOpen(es) { es.opened = true; es.readyState = 1; es.onopen?.(); }
+function sseError(es) {
+  es.onerror?.();
+  const ev = { type: "error", data: "nope", target: es, currentTarget: es };
+  for (const fn of [...(es.listeners.error ?? [])]) fn(ev);
+}
+function sseFail(es) { es.readyState = 2; es.onerror?.(); }
 function sseEvent(es, type, data, id) {
-  const ev = { type, data, lastEventId: id };
-  for (const fn of es.listeners[type] ?? []) fn(ev);
+  const ev = { type, data, lastEventId: id, target: es, currentTarget: es };
+  for (const fn of [...(es.listeners[type] ?? [])]) fn(ev);
 }
 
 // reportError is how the runtime reports an error it caught (an effect

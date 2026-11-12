@@ -676,6 +676,7 @@ function $action(c, a, q, z) {
   let k = null, f = null;
   const stop = () => { if (k) k.abort(); k = null; };
   r.go = (v) => {
+    if (c.x) return;
     if (r.p.v) { r.e.set(Error("action: Do called while a request is pending")); return; }
     let m, u;
     try { [m, u] = $scope(a)[0]; } catch (e) { reportError(e); return; }
@@ -921,11 +922,16 @@ function $jkey(a, b) {
 // hidden tab cannot grow the queue for hours. A URL change or the
 // component going away bumps the generation, drops the queue, closes
 // the source and sets Connected false. Err stays as it was until the
-// next open, or until a rejected URL replaces it. A native error leaves
-// the source open so the browser can reconnect; the next open clears Err.
+// next open, or until a rejected URL replaces it. A network error leaves
+// the source open so the browser can reconnect and Last-Event-ID survives.
+// A non-200 leaves readyState CLOSED and the browser does not retry; den
+// closes it and opens a new EventSource with backoff. That new source does
+// not send the previous Last-Event-ID. on() handlers live on the component
+// that called on, and detach removes them so a reconnect does not bring
+// them back.
 function $events(c, urlFn) {
   const r = { c: $signal(false), e: $signal(null), hs: [] };
-  let es = null, g = 0, q = [], arm = 0, raf = 0, tid = 0;
+  let es = null, g = 0, q = [], arm = 0, raf = 0, tid = 0, rid = 0, wait = 1000, href = "";
   const cancel = () => {
     if (!arm) return;
     arm = 0;
@@ -940,6 +946,8 @@ function $events(c, urlFn) {
     if (old) old.close();
     q = [];
     cancel();
+    clearTimeout(rid);
+    rid = 0;
   };
   const flush = () => {
     const batch = q;
@@ -967,16 +975,38 @@ function $events(c, urlFn) {
     tid = setTimeout(go, 50);
   };
   const attach = (src, h) => {
-    src.addEventListener(h.name, (ev) => {
-      if (es !== src) return;
-      q.push({ g, J: h.J, i: h.i, fn: h.fn, data: ev.data });
-      schedule();
-    });
+    if (!h.l) {
+      h.l = (ev) => {
+        if (es !== ev.currentTarget) return;
+        q.push({ g, J: h.J, i: h.i, fn: h.fn, data: ev.data });
+        schedule();
+      };
+    }
+    src.addEventListener(h.name, h.l);
   };
   r.listen = (h) => { if (es) attach(es, h); };
+  r.detach = (h) => { if (es && h.l) es.removeEventListener(h.name, h.l); };
+  const connect = () => {
+    const src = new EventSource(href, { withCredentials: true });
+    es = src;
+    src.onopen = () => { if (es !== src) return; wait = 1000; r.c.set(true); r.e.set(null); };
+    src.onerror = () => {
+      if (es !== src) return;
+      r.c.set(false);
+      r.e.set(Error("events: connection lost"));
+      if (src.readyState !== 2 || c.x) return;
+      src.close();
+      const delay = wait;
+      wait = Math.min(wait * 2, 30000);
+      clearTimeout(rid);
+      rid = setTimeout(() => { if (c.x || es !== src) return; connect(); }, delay);
+    };
+    for (const h of r.hs) attach(src, h);
+  };
   $effect(() => {
     const u = urlFn();
     drop();
+    wait = 1000;
     let parsed = null;
     try { parsed = new URL(u, location.href); } catch { parsed = null; }
     if (!parsed || parsed.origin !== location.origin || !/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) {
@@ -984,22 +1014,29 @@ function $events(c, urlFn) {
       r.e.set(Error("events: " + u + " is not on this origin"));
       return;
     }
-    const src = new EventSource(parsed.href, { withCredentials: true });
-    es = src;
-    src.onopen = () => { if (es !== src) return; r.c.set(true); r.e.set(null); };
-    src.onerror = () => { if (es !== src) return; r.c.set(false); r.e.set(Error("events: connection lost")); };
-    for (const h of r.hs) attach(src, h);
+    href = parsed.href;
+    connect();
   });
   $onCleanup(c, () => { drop(); r.c.set(false); });
   return r;
 }
-// $onEv is on[T](stream, name, fn). name was read once, untracked. An
-// empty name is reported and not listened for. The handler is recorded
-// and, when a source is already open, attached immediately: events()
-// connects in an effect that runs before a later on() in the same body.
-function $onEv(s, name, J, i, fn) {
+// $onEv is on[T](stream, name, fn). c is the lifecycle record of the
+// component that called on, which may be a child of the one that called
+// events. name was read once, untracked. An empty name, or the reserved
+// names error and open, is reported and not listened for. The handler is
+// recorded and, when a source is already open, attached immediately:
+// events() connects in an effect that runs before a later on() in the
+// same body. h.l is the one listener function, so it can be removed.
+// Cleanup splices it out of hs, so a later reconnect does not bring it back.
+function $onEv(c, s, name, J, i, fn) {
   if (name === "") { reportError("events: empty event name"); return; }
+  if (name === "error" || name === "open") { reportError("events: reserved event name"); return; }
   const h = { name, J, i, fn };
   s.hs.push(h);
   s.listen(h);
+  $onCleanup(c, () => {
+    const at = s.hs.indexOf(h);
+    if (at >= 0) s.hs.splice(at, 1);
+    s.detach(h);
+  });
 }

@@ -1,7 +1,9 @@
 package compiler
 
 import (
+	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"strconv"
@@ -105,6 +107,14 @@ func checkEvents(file *ast.File, info *types.Info, pkg *types.Package, fset *tok
 				errAt(id.Pos(), "events can only be called in a component's statements")
 			}
 		case obj == onFn:
+			if len(call.Args) >= 2 {
+				if v := info.Types[call.Args[1]].Value; v != nil && v.Kind() == constant.String {
+					switch name := constant.StringVal(v); name {
+					case "error", "open":
+						errAt(call.Args[1].Pos(), fmt.Sprintf("event name %q is reserved", name))
+					}
+				}
+			}
 			if !allowed[call] {
 				errAt(id.Pos(), "on can only be called in a component's statements")
 				break
@@ -141,11 +151,13 @@ func (e *emitter) eventsCall(x *ast.CallExpr) string {
 	return "$events($c, () => " + e.expr(x.Args[0]) + ")"
 }
 
-// onCall emits on[T](s, name, fn) as $onEv(s, nameOnce, $jt, desc, fn).
+// onCall emits on[T](s, name, fn) as $onEv($c, s, nameOnce, $jt, desc, fn).
+// $c is the caller's lifecycle record, so the registration goes away with
+// the component that called on, which may not be the one that called events.
 // nameOnce reads the name once, untracked. desc is T's JSON descriptor,
 // the same table fetchJSON uses.
 func (e *emitter) onCall(x *ast.CallExpr) string {
 	t, _ := onType(e.ck.info, x)
-	return "$onEv(" + e.expr(x.Args[0]) + ", $scope(() => " + e.expr(x.Args[1]) + ")[0], $jt, " +
+	return "$onEv($c, " + e.expr(x.Args[0]) + ", $scope(() => " + e.expr(x.Args[1]) + ")[0], $jt, " +
 		strconv.Itoa(e.jsonDesc(t)) + ", " + e.expr(x.Args[2]) + ")"
 }

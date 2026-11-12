@@ -341,6 +341,158 @@ log(find("p").textContent);`)
 	expectLines(t, got, `2 2`)
 }
 
+func TestRunEventsHTTPFail(t *testing.T) {
+	got := runApp(t, `
+import "strconv"
+
+func line(s *Stream) string {
+	e := "-"
+	if s.Err() != nil {
+		e = s.Err().Error()
+	}
+	return strconv.FormatBool(s.Connected()) + " " + e
+}
+
+component App() {
+	s := events("/feed")
+	<p>{line(s)}</p>
+}`, `
+fakeTimers();
+const es = eventSources[0];
+sseOpen(es);
+await tick();
+sseFail(es);
+await tick();
+log("fail", find("p").textContent, es.closed, eventSources.length);
+await advance(999);
+log("early", eventSources.length);
+await advance(1);
+const es2 = eventSources[1];
+log("retry", eventSources.length, es2.url, es2.withCredentials);
+sseOpen(es2);
+await tick();
+log("open", find("p").textContent);`)
+	expectLines(t, got,
+		`fail false events: connection lost true 1`,
+		`early 1`,
+		`retry 2 http://localhost/feed true`,
+		`open true -`)
+}
+
+func TestRunEventsNetworkStays(t *testing.T) {
+	got := runApp(t, `
+component App() {
+	events("/feed")
+	<p>x</p>
+}`, `
+fakeTimers();
+const es = eventSources[0];
+sseError(es);
+await tick();
+await advance(30000);
+log(eventSources.length, es.closed, es.readyState);`)
+	expectLines(t, got, `1 false 0`)
+}
+
+func TestRunEventsFailDispose(t *testing.T) {
+	got := runApp(t, `
+component App() {
+	show := signal(true)
+	<div>
+		<button onclick={show.Set(false)}>hide</button>
+		{if show.Get() { <Pane/> }}
+	</div>
+}
+
+component Pane() {
+	events("/live")
+	<p>pane</p>
+}`, `
+fakeTimers();
+const es = eventSources[0];
+sseFail(es);
+await tick();
+click(find("button"));
+await tick();
+log("down", eventSources.length, es.closed);
+await advance(60000);
+log("later", eventSources.length);`)
+	expectLines(t, got,
+		`down 1 true`,
+		`later 1`)
+}
+
+func TestRunEventsHandlerGone(t *testing.T) {
+	got := runApp(t, `
+type Tick struct {
+	N int "json:\"n\""
+}
+
+component Child(s *Stream, n *Signal[int]) {
+	on[Tick](s, "tick", func(v Tick) { n.Set(n.Get() + v.N) })
+	<span>c</span>
+}
+
+component App() {
+	s := events("/feed")
+	n := signal(0)
+	show := signal(true)
+	<div>
+		{if show.Get() { <Child s={s} n={n}/> }}
+		<button onclick={show.Set(!show.Get())}>flip</button>
+		<p>{itoa(n.Get())}</p>
+	</div>
+}`, `
+const es = eventSources[0];
+const flip = find("button", "flip");
+click(flip); await tick();
+click(flip); await tick();
+click(flip); await tick();
+click(flip); await tick();
+click(flip); await tick();
+click(flip); await tick();
+sseEvent(es, "tick", '{"n":1}', "1");
+frame();
+await tick();
+log(find("p").textContent);`)
+	expectLines(t, got, `1`)
+}
+
+func TestRunEventsReservedName(t *testing.T) {
+	got := runApp(t, `
+import "strconv"
+
+func line(s *Stream) string {
+	e := "-"
+	if s.Err() != nil {
+		e = s.Err().Error()
+	}
+	return strconv.FormatBool(s.Connected()) + " " + e
+}
+
+component App() {
+	s := events("/feed")
+	name := signal("error")
+	n := signal(0)
+	on[int](s, name.Get(), func(v int) { n.Set(n.Get() + v) })
+	<p>{itoa(n.Get())} {line(s)}</p>
+}`, `
+log("up", find("p").textContent);
+const es = eventSources[0];
+sseError(es);
+await tick();
+log("lost", find("p").textContent);
+sseEvent(es, "error", "1", "1");
+frame();
+await tick();
+log("still", find("p").textContent);`)
+	expectLines(t, got,
+		`reportError: events: reserved event name`,
+		`up 0 false -`,
+		`lost 0 false events: connection lost`,
+		`still 0 false events: connection lost`)
+}
+
 // A counter-sized program ships no event stream. examples/admin is the
 // example that follows one; every other example ships neither $events nor
 // $onEv. A program that follows a stream ships both.

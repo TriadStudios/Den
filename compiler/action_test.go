@@ -251,6 +251,37 @@ log(find("p").textContent);`)
 		`true 0`)
 }
 
+func TestRunActionDoAfterDispose(t *testing.T) {
+	got := runApp(t, `
+component Box(held *Signal[*Action[struct{}, int]]) {
+	a := action(sendJSON[struct{}, int]("POST", "/n"))
+	<span>
+		<button onclick={held.Set(a)}>hold</button>
+	</span>
+}
+
+component App() {
+	open := signal(true)
+	held := signal[*Action[struct{}, int]](nil)
+	<div>
+		{if open.Get() {
+			<Box held={held} />
+		}}
+		<button onclick={open.Set(false)}>hide</button>
+		<button onclick={held.Get().Do()}>send</button>
+	</div>
+}`, `
+log(fetches.length);
+click(find("button", "hold"));
+await tick();
+click(find("button", "hide"));
+await tick();
+click(find("button", "send"));
+await tick();
+log(fetches.length);`)
+	expectLines(t, got, `0`, `0`)
+}
+
 // A failed status keeps the server's code and message, invalid JSON is an
 // error, Then does not run, and a value encoding/json refuses is not sent.
 func TestRunActionErrors(t *testing.T) {

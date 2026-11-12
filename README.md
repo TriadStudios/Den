@@ -817,6 +817,7 @@ component Editor(notes *Resource[[]Note]) {
   are compile errors at `In` or `Out`, worded like `fetchJSON`'s.
 - When the component that made the action goes away, the request in
   flight is aborted and nothing lands afterwards, including `Then`.
+  A `Do` after that component is gone does not send.
 - These are compile errors: `sendJSON` anywhere but as `action`'s whole
   argument; `action` outside a component's statements; a non-constant or
   other method; `Do` with the wrong arity for `In`; types den cannot
@@ -859,10 +860,20 @@ component Feed() {
   it was. Registrations stay, and are attached to the new source. The
   event name is read once, when `on` is called, not again when the URL
   changes.
-- A native error means the browser is reconnecting. `Connected` becomes
-  false and `Err` becomes `events: connection lost`, and the source is
-  left open so `Last-Event-ID` survives. The next open clears `Err`.
-  `EventSource` does not report an HTTP status.
+- A network error leaves the source open, so the browser reconnects and
+  `Last-Event-ID` survives. `Connected` becomes false and `Err` becomes
+  `events: connection lost` until the next open. A response that is not
+  200 leaves `readyState` CLOSED, and the browser does not retry. Den
+  then closes that source and opens a new `EventSource` to the same URL,
+  waiting 1s, then 2s, 4s and so on, up to 30s. `Connected` stays false
+  and `Err` stays `events: connection lost` until that source opens. The
+  new source does not send the previous `Last-Event-ID`; the API cannot
+  set it. `EventSource` still does not report the status.
+- An `on` registration is removed when the component that called `on`
+  goes away, even if a parent still holds the stream. The names `error`
+  and `open` are rejected: a constant is a compile error (`event name
+  "error" is reserved`), and any other value is reported and not
+  listened for.
 - JSON that does not fit `T` sets `Err` to `events: invalid JSON: …`,
   skips that event, and leaves the source open. A later event still runs
   the handler. An empty event name is reported and not listened for.

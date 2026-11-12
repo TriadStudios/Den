@@ -2417,6 +2417,19 @@ component App() {
     on(s, "e", nil)
     <p>x</p>
 }`, `app.den:4:5: on needs the type of the event: write on[T](s, name, func(T))`},
+		{"on event name error", `
+component App() {
+    s := events("/a")
+    on[int](s, "error", func(n int) {})
+    <p>x</p>
+}`, `app.den:4:16: event name "error" is reserved`},
+		{"on event name open", `
+const Open string = "open"
+component App() {
+    s := events("/a")
+    on[int](s, Open, func(n int) {})
+    <p>x</p>
+}`, `app.den:5:16: event name "open" is reserved`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)
