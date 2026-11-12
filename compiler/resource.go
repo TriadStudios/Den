@@ -57,6 +57,8 @@ func preludeInfer(msg string) string {
 		return "fetchJSON needs the type to decode the JSON into: fetchJSON[T](url)"
 	case m[1] == "sendJSON":
 		return "sendJSON needs the types to encode and to decode: sendJSON[In, Out](method, url)"
+	case m[1] == "on":
+		return "on needs the type of the event: write on[T](s, name, func(T))"
 	}
 	return fmt.Sprintf("in call to %s, cannot infer %s: write it, as in %s[%s](...)", m[1], m[2], m[1], m[2])
 }
@@ -527,8 +529,8 @@ func (e *emitter) requester(f *ast.CallExpr, t types.Type) string {
 }
 
 // jsonTable holds the program's JSON descriptors, which emit writes as
-// the JS array $jt: one for each type that fetchJSON decodes into, that
-// sendJSON encodes, or that such a type holds. $jdec decodes JSON into
+// the JS array $jt: one for each type that fetchJSON or on decodes into,
+// that sendJSON encodes, or that such a type holds. $jdec decodes JSON into
 // the type that $jt[i] describes, and $jenc encodes a value of it.
 // A descriptor is an object with k, its kind: "s" string, "b"
 // bool, "i" signed and "u" unsigned integer and "f" float of b bits; "l"

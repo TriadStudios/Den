@@ -293,9 +293,9 @@ func (e *emitter) component(cc *checkedComponent) {
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
 	if e.ck.usesLife(cc.decl) {
 		// The component's lifecycle record, which every onMount, onCleanup,
-		// after, every, resource and action in its Go uses: its statements, func
-		// literals and handlers, hoisted row handlers and slot markup
-		// included, all of which are written inside this function.
+		// after, every, resource, action, events and on in its Go uses: its
+		// statements, func literals and handlers, hoisted row handlers and
+		// slot markup included, all of which are written inside this function.
 		e.line("const $c = $life();")
 	}
 	e.stmts(cc.stmts)
@@ -1611,6 +1611,16 @@ func (e *emitter) call(x *ast.CallExpr) string {
 				}
 			}
 		}
+		if recv == "Stream" {
+			if sel := e.ck.info.Selections[fun]; sel != nil && e.ck.isPrelude(sel.Obj()) {
+				switch fun.Sel.Name {
+				case "Connected":
+					return obj + ".c.get()"
+				case "Err":
+					return obj + ".e.get()"
+				}
+			}
+		}
 		if e.ck.isFieldMethod(fun) {
 			// A field is a signal, with its parse error pe, whether it
 			// was touched tc, its error er and its reset rs (stdlib.js).
@@ -1760,6 +1770,10 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return e.resourceCall(x)
 				case "action":
 					return e.actionCall(x)
+				case "events":
+					return e.eventsCall(x)
+				case "on":
+					return e.onCall(x)
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -2044,8 +2058,8 @@ var jsReserved = map[string]bool{
 	"requestAnimationFrame": true, "cancelAnimationFrame": true,
 	"addEventListener": true, "removeEventListener": true,
 	"history": true, "location": true, "localStorage": true, "isFinite": true,
-	// and the ones resource and fetchJSON use
-	"fetch": true, "AbortController": true, "BigInt": true,
+	// and the ones resource, fetchJSON and events use
+	"fetch": true, "AbortController": true, "BigInt": true, "EventSource": true,
 	"atob": true, "btoa": true, "DataView": true, "ArrayBuffer": true,
 }
 

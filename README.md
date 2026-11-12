@@ -621,6 +621,67 @@ component Editor(notes *Resource[[]Note]) {
   `action`, `Action` and `sendJSON` are ordinary names and give way
   together when the program declares its own.
 
+<a id="events"></a>**Events (server-sent)**
+
+```go
+type Note struct {
+    N int `json:"n"`
+}
+
+component Feed() {
+    s := events("/notes")
+    on[Note](s, "note", func(n Note) { /* append, then drop the oldest */ })
+    <p>
+        {if s.Connected() { <span>live</span> }}
+        {if s.Err() != nil { <span>{s.Err().Error()}</span> }}
+    </p>
+}
+```
+
+- `events(url)` returns a `*Stream`. `on[T](s, name, func(T))` calls `fn`
+  with each event of that name, decoded from JSON into a `T` the same way
+  `fetchJSON` decodes a response. `s.Connected()` and `s.Err()` are
+  reactive. `events` and `Stream` are ordinary names and give way
+  together; `on` goes with them, and also on its own when the program
+  declares `on`.
+- The URL is read in an effect, so a signal in it reconnects. It must be
+  `http` or `https` on this page's origin, with no username or password.
+  Anything else sets `Err` to `events: … is not on this origin` and does
+  not open a source. The source is an `EventSource` with
+  `withCredentials: true`: the browser sends cookies and keeps
+  `Last-Event-ID` across its own reconnects. Headers set for `fetch` do
+  not apply, and there is no token-in-URL fallback.
+- A new URL replaces the source and drops events still queued for the old
+  one. Registrations stay, and are attached to the new source. The event
+  name is read once, when `on` is called, not again when the URL changes.
+- A native error means the browser is reconnecting. `Connected` becomes
+  false and `Err` becomes `events: connection lost`, and the source is
+  left open so `Last-Event-ID` survives. The next open clears `Err`.
+  `EventSource` does not report an HTTP status.
+- JSON that does not fit `T` sets `Err` to `events: invalid JSON: …`,
+  skips that event, and leaves the source open. A later event still runs
+  the handler. An empty event name is reported and not listened for.
+- The handler runs untracked, like an event handler: a panic is reported,
+  and what it creates is owned by the component and disposed with it.
+  When the component that called `events` goes away, the source is closed
+  and anything still queued is dropped.
+- Keep a live log bounded. Append the event, then slice off the oldest
+  once the slice is longer than N, and key each row by a monotonic id:
+
+```go
+xs := append(rows.Get(), row)
+if len(xs) > 50 {
+    xs = xs[len(xs)-50:]
+}
+rows.Set(xs)
+```
+
+  Feeding 2,000 events and keeping 50 rows is what the test checks. It is
+  not a timing gate.
+- There is no formatter for an uptime or a byte size. Print an integer
+  with `strconv.Itoa`. Den does not add `FormatInt`, `FormatFloat`, or any
+  approximate formatting.
+
 ### HTTP errors and headers
 
 Import `"den/http"` (package `http`) for browser request controls. These are

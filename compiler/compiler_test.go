@@ -2363,6 +2363,38 @@ component App() {
     a.Do()
     <p>{a.Pending()}</p>
 }`, `app.den:5:7: Do takes the value to send, as in a.Do(v)`},
+		{"events in a handler", `
+component App() {
+    <button onclick={events("/a")}>x</button>
+}`, `app.den:3:22: events can only be called in a component's statements`},
+		{"on in a handler", `
+component App() {
+    s := events("/a")
+    <button onclick={on[int](s, "e", func(n int) {})}>x</button>
+}`, `app.den:4:22: on can only be called in a component's statements`},
+		{"events used as a value", `
+component App() {
+    f := events
+    <p>{f == nil}</p>
+}`, `app.den:3:10: events can only be called, not used as a value`},
+		{"on of a func", `
+component App() {
+    s := events("/a")
+    on[func()](s, "e", func(f func()) {})
+    <p>x</p>
+}`, `app.den:4:8: on cannot decode JSON into func(): den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them`},
+		{"on of a chan", `
+component App() {
+    s := events("/a")
+    on[chan int](s, "e", func(c chan int) {})
+    <p>x</p>
+}`, `app.den:4:8: on cannot decode JSON into chan int: den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them`},
+		{"on without its type", `
+component App() {
+    s := events("/a")
+    on(s, "e", nil)
+    <p>x</p>
+}`, `app.den:4:5: on needs the type of the event: write on[T](s, name, func(T))`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)

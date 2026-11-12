@@ -228,6 +228,28 @@ const preludeSendJSON = `
 func sendJSON[In, Out any](method, url string) (hint In, v Out, err error) { return }
 `
 
+// preludeEvents declares events and Stream, unless the program declares
+// its own events or Stream: events returns a *Stream, so the two come and
+// go together.
+const preludeEvents = `
+// Stream is a server-sent event source: events(url).
+type Stream struct{}
+
+func (s *Stream) Connected() bool { return false }
+func (s *Stream) Err() error      { return nil }
+
+// events follows url on this page's origin, and follows it again when a
+// signal the URL reads changes.
+func events(url string) *Stream { return &Stream{} }
+`
+
+// preludeOn declares on, unless the program declares its own, or has
+// neither events nor Stream of den's, which on's argument is.
+const preludeOn = `
+// on calls fn with each event named name, decoded from JSON into a T.
+func on[T any](s *Stream, name string, fn func(T)) {}
+`
+
 // preludeDen ends the prelude of a program that imports the built-in
 // package den, which is every program that does not declare its own den.
 const preludeDen = `
@@ -479,6 +501,7 @@ func check(files []*File) (*checked, error) {
 	fieldTaken := own["field"] != "" || own["Field"] != ""
 	resourceBy := resourceNames(own)
 	actionBy := actionNames(own)
+	eventBy := eventNames(own)
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -549,6 +572,12 @@ func check(files []*File) (*checked, error) {
 	}
 	if actionBy["sendJSON"] == "" {
 		src.WriteString(preludeSendJSON)
+	}
+	if eventBy["Stream"] == "" {
+		src.WriteString(preludeEvents)
+	}
+	if eventBy["on"] == "" {
+		src.WriteString(preludeOn)
 	}
 	if denTaken {
 		src.WriteString(preludePlain)
@@ -698,6 +727,9 @@ next:
 		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && actionBy[name] != "" {
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[actionBy[name]])
 		}
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && eventBy[name] != "" {
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[eventBy[name]])
+		}
 		msg = preludeInfer(msg)
 		// A sendJSON whose types cannot be inferred is not a three-result
 		// call, so Go also says action got one argument. The line above
@@ -757,6 +789,7 @@ next:
 		ctx = checkContext(file, info, pkg, fset, byName, errAt)
 		checkResources(file, info, pkg, fset, byName, own, errAt)
 		checkActions(file, info, pkg, fset, byName, own, errAt)
+		checkEvents(file, info, pkg, fset, byName, errAt)
 	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
@@ -2063,19 +2096,24 @@ func (ck *checked) reactive(n ast.Node) bool {
 		switch fun := callee(ck.info, ast.Unparen(call.Fun)).(type) {
 		case *ast.SelectorExpr:
 			// A route's Matches and Params read the path signal, and a
-			// resource's Data, Err and Loading, and an action's Data,
-			// Err and Pending, read its state's signals.
+			// resource's Data, Err and Loading, an action's Data, Err
+			// and Pending, and a stream's Connected and Err, read its
+			// state's signals.
 			switch recv := ck.recvName(fun); fun.Sel.Name {
 			case "Get":
 				found = recv == "Signal" || recv == "Computed"
 			case "Matches", "Params":
 				found = recv == "Route"
-			case "Data", "Err":
+			case "Data":
 				found = recv == "Resource" || recv == "Action"
+			case "Err":
+				found = recv == "Resource" || recv == "Action" || recv == "Stream"
 			case "Loading":
 				found = recv == "Resource"
 			case "Pending":
 				found = recv == "Action"
+			case "Connected":
+				found = recv == "Stream"
 			}
 			// A field's Get, Error and Touched read its signals.
 			switch fun.Sel.Name {

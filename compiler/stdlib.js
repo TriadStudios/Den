@@ -910,3 +910,94 @@ function $jkey(a, b) {
   }
   return x.length - y.length;
 }
+// $events is events(url). urlFn is read in an effect, so a signal in the
+// URL closes the current source and opens another; registrations in hs
+// stay and are attached to the new one. c is Connected and e is Err.
+// A URL that is not http(s) on this origin, or that carries a username or
+// password, sets Err and does not construct an EventSource. The browser
+// sends cookies (withCredentials) and remembers Last-Event-ID; den adds
+// no headers and no token. Deliveries sit in one queue and flush once,
+// on the next animation frame or after 50ms, whichever comes first, so a
+// hidden tab cannot grow the queue for hours. A URL change or the
+// component going away bumps the generation, drops the queue and closes
+// the source. A native error leaves the source open so the browser can
+// reconnect; the next open clears Err.
+function $events(c, urlFn) {
+  const r = { c: $signal(false), e: $signal(null), hs: [] };
+  let es = null, g = 0, q = [], arm = 0, raf = 0, tid = 0;
+  const cancel = () => {
+    if (!arm) return;
+    arm = 0;
+    cancelAnimationFrame(raf);
+    clearTimeout(tid);
+  };
+  const drop = () => {
+    g++;
+    const old = es;
+    es = null;
+    if (old) old.close();
+    q = [];
+    cancel();
+  };
+  const flush = () => {
+    const batch = q;
+    q = [];
+    for (const item of batch) {
+      if (item.g !== g) continue;
+      let v;
+      try { v = $jdec(item.J, item.i, $jparse(item.data), $jzero(item.J, item.i)); }
+      catch (err) { r.e.set(Error("events: invalid JSON: " + err.message)); continue; }
+      $lifeTry(c, () => item.fn(v));
+    }
+  };
+  const go = () => {
+    if (!arm) return;
+    const frame = raf, timer = tid;
+    arm = 0;
+    cancelAnimationFrame(frame);
+    clearTimeout(timer);
+    flush();
+  };
+  const schedule = () => {
+    if (arm) return;
+    arm = 1;
+    raf = requestAnimationFrame(go);
+    tid = setTimeout(go, 50);
+  };
+  const attach = (src, h) => {
+    src.addEventListener(h.name, (ev) => {
+      if (es !== src) return;
+      q.push({ g, J: h.J, i: h.i, fn: h.fn, data: ev.data });
+      schedule();
+    });
+  };
+  r.listen = (h) => { if (es) attach(es, h); };
+  $effect(() => {
+    const u = urlFn();
+    drop();
+    let parsed = null;
+    try { parsed = new URL(u, location.href); } catch { parsed = null; }
+    if (!parsed || parsed.origin !== location.origin || !/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) {
+      r.c.set(false);
+      r.e.set(Error("events: " + u + " is not on this origin"));
+      return;
+    }
+    const src = new EventSource(parsed.href, { withCredentials: true });
+    es = src;
+    src.onopen = () => { if (es !== src) return; r.c.set(true); r.e.set(null); };
+    src.onerror = () => { if (es !== src) return; r.c.set(false); r.e.set(Error("events: connection lost")); };
+    for (const h of r.hs) attach(src, h);
+  });
+  $onCleanup(c, () => { drop(); r.c.set(false); });
+  return r;
+}
+// $onEv is on[T](stream, name, fn). name was read once, untracked. An
+// empty name is reported and not listened for. The handler is recorded
+// and, when a source is already open, attached immediately: events()
+// connects in an effect that runs before a later on() in the same body.
+function $onEv(s, name, J, i, fn) {
+  if (name === "") { reportError("events: empty event name"); return; }
+  const h = { name, J, i, fn };
+  s.hs.push(h);
+  s.listen(h);
+}

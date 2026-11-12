@@ -236,6 +236,31 @@ function reply(f, status, body = "") {
 function fail(f, message) { if (!f.done) { f.done = true; f.reject(new TypeError(message)); } }
 // inFlight lists the URLs of the requests not settled yet.
 function inFlight() { return fetches.filter((f) => !f.done).map((f) => f.url); }
+// EventSource, as events() constructs it. Each one is recorded in
+// eventSources; nothing here reconnects. sseOpen, sseError and sseEvent
+// are what tests use to drive it.
+const eventSources = [];
+class EventSource {
+  constructor(url, opts = {}) {
+    this.url = String(url);
+    this.withCredentials = opts.withCredentials;
+    this.listeners = {};
+    this.closed = false;
+    this.opened = false;
+    this.onopen = null;
+    this.onerror = null;
+    eventSources.push(this);
+  }
+  addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }
+  close() { this.closed = true; }
+}
+globalThis.EventSource = EventSource;
+function sseOpen(es) { es.opened = true; es.onopen?.(); }
+function sseError(es) { es.onerror?.(); }
+function sseEvent(es, type, data, id) {
+  const ev = { type, data, lastEventId: id };
+  for (const fn of es.listeners[type] ?? []) fn(ev);
+}
 
 // reportError is how the runtime reports an error it caught (an effect
 // that threw); here it logs the message, so tests see it.
