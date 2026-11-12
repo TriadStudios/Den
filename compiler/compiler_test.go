@@ -1716,6 +1716,10 @@ component App() {
     d := denTime
     <p>{d}</p>
 }`, `app.den:3:10: undefined: denTime`},
+		{"the prelude's time through chained selectors", `
+component App() {
+    <p>{denTime.Now().Nope}</p>
+}`, `app.den:3:9: undefined: denTime`},
 		{"the prelude's time when the program has a denTime", `
 func denTime() int { return 1 }
 component App() {

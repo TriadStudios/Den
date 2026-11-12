@@ -547,8 +547,10 @@ func check(files []*File) (*checked, error) {
 	if len(timeUses) > 0 {
 		ast.Inspect(file, func(n ast.Node) bool {
 			if sel, ok := n.(*ast.SelectorExpr); ok {
-				if id, ok := sel.X.(*ast.Ident); ok && timeUses[id] {
-					replaced = append(replaced, [2]token.Pos{sel.Pos(), sel.End()})
+				for id := range timeUses {
+					if sel.Pos() == id.Pos() {
+						replaced = append(replaced, [2]token.Pos{sel.Pos(), sel.End()})
+					}
 				}
 			}
 			return true

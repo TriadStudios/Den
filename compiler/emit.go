@@ -1928,7 +1928,7 @@ var jsReserved = map[string]bool{
 	// finds them): a Go name like setInterval would hide one inside the app.
 	"Date": true, "RegExp": true, "TextEncoder": true, "URL": true, "globalThis": true,
 	"decodeURIComponent": true, "encodeURIComponent": true, "reportError": true,
-	"setTimeout": true, "setInterval": true, "clearTimeout": true,
+	"setTimeout": true, "setInterval": true, "clearTimeout": true, "clearInterval": true,
 	"requestAnimationFrame": true, "cancelAnimationFrame": true,
 	"addEventListener": true, "removeEventListener": true,
 	"history": true, "location": true, "localStorage": true,
