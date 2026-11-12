@@ -429,6 +429,10 @@ func (s *server) serveEvents(w http.ResponseWriter, r *http.Request) {
 		writeSSE(w, ev)
 		fl.Flush()
 	}
+	// A comment is not an event. Without a write and a flush here, a
+	// quiet stream never sends its status, and the browser stays closed.
+	fmt.Fprint(w, ": ok\n\n")
+	fl.Flush()
 	for {
 		select {
 		case <-r.Context().Done():

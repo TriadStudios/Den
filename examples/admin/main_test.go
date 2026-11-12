@@ -223,6 +223,67 @@ func TestEventsReplay(t *testing.T) {
 	}
 }
 
+func TestEventsHeadersBeforeEvent(t *testing.T) {
+	s := newHandler(t.TempDir()).(*server)
+	srv := httptest.NewServer(s)
+	t.Cleanup(srv.Close)
+
+	loginReq, err := http.NewRequest(http.MethodPost, srv.URL+"/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("Origin", srv.URL)
+	client := &http.Client{}
+	loginRes, err := client.Do(loginReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(loginRes.Body)
+	loginRes.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loginRes.StatusCode != http.StatusOK {
+		t.Fatalf("login status %d body %s", loginRes.StatusCode, raw)
+	}
+	var session *http.Cookie
+	for _, c := range loginRes.Cookies() {
+		if c.Name == "session" {
+			session = c
+		}
+	}
+	if session == nil {
+		t.Fatal("login set no session cookie")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(session)
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/events did not return headers: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type %q", ct)
+	}
+	s.mu.Lock()
+	published := s.seq
+	s.mu.Unlock()
+	if published != 0 {
+		t.Fatalf("published %d events before the headers", published)
+	}
+	cancel()
+}
+
 func TestEventCap(t *testing.T) {
 	s := newServer(t)
 	csrf, session, _ := s.login(t)
