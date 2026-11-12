@@ -173,9 +173,21 @@ func compileDir(dir string) (*compiler.Result, error) {
 
 // csp is strict: same-origin scripts only, no eval, no inline code, Trusted
 // Types enforced with no policies allowed (the runtime never needs one).
-const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
-	"require-trusted-types-for 'script'; trusted-types 'none'"
+// The pieces are shared so the header and the page meta cannot drift.
+const (
+	cspBase = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
+		"object-src 'none'; base-uri 'none'; form-action 'self';"
+	cspFrameAncestors = " frame-ancestors 'none';"
+	cspTrustedTypes   = " require-trusted-types-for 'script'; trusted-types 'none'"
+)
+
+// csp is the HTTP Content-Security-Policy header, including frame-ancestors.
+const csp = cspBase + cspFrameAncestors + cspTrustedTypes
+
+// cspMetaNoFrameAncestors is the meta-tag policy. frame-ancestors is
+// header-only and is dropped: a meta element cannot enforce it, and
+// Chromium reports that as a console error.
+const cspMetaNoFrameAncestors = cspBase + cspTrustedTypes
 
 // indexHTML is the page that loads the app, with the document title
 // "den app". An app that routes by path is served at each of its paths
@@ -196,7 +208,7 @@ func indexPage(denCSS, hasCSS, dev, router bool, title string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
-	fmt.Fprintf(&b, "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">\n", csp)
+	fmt.Fprintf(&b, "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">\n", cspMetaNoFrameAncestors)
 	fmt.Fprintf(&b, "<title>%s</title>\n", html.EscapeString(title))
 	if denCSS {
 		fmt.Fprintf(&b, "<link rel=\"stylesheet\" href=\"%sden.css\">\n", root)

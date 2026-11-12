@@ -225,6 +225,23 @@ func TestIndexHTML(t *testing.T) {
 		if !strings.Contains(page, c.den) || !strings.Contains(page, c.css) || !strings.Contains(page, c.js) || strings.Contains(page, c.not) {
 			t.Errorf("router %t:\n%s", c.router, page)
 		}
+		if !strings.Contains(page, `<meta http-equiv="Content-Security-Policy" content="`) {
+			t.Errorf("router %t: no CSP meta tag:\n%s", c.router, page)
+		}
+		if strings.Contains(page, "frame-ancestors") {
+			t.Errorf("router %t: index.html contains frame-ancestors:\n%s", c.router, page)
+		}
+	}
+	if !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Fatalf("header policy %q dropped frame-ancestors", csp)
+	}
+	page := indexHTML(false, false, false, false)
+	meta := `<meta http-equiv="Content-Security-Policy" content="` + cspMetaNoFrameAncestors + `">`
+	if !strings.Contains(page, meta) {
+		t.Fatalf("CSP meta tag:\n%s", page)
+	}
+	if cspMetaNoFrameAncestors != strings.Replace(csp, " frame-ancestors 'none';", "", 1) {
+		t.Fatalf("meta policy %q is not the header policy without frame-ancestors", cspMetaNoFrameAncestors)
 	}
 }
 

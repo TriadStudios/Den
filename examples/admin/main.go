@@ -24,9 +24,10 @@ import (
 	"time"
 )
 
-// csp is the policy den writes into index.html and sends from den dev
-// (cmd/den). It is copied here so this example does not import that main
-// package. A test checks the header against this string.
+// csp matches the Content-Security-Policy header den dev sends (cmd/den).
+// index.html omits frame-ancestors. It is copied here so this example
+// does not import that main package. A test checks the response header
+// against this string.
 const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
 	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
 	"require-trusted-types-for 'script'; trusted-types 'none'"

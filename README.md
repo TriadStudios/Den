@@ -472,11 +472,11 @@ component User(user *Route[UserParams]) {
 A Go server can embed the `dist` directory from `den build` and serve it
 with the standard library. The handler below sends den's CSP,
 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
-`Referrer-Policy: no-referrer` on every response. `index.html` repeats
-the policy in a meta tag, but a meta tag cannot enforce
-`frame-ancestors`. `den dev`, the admin server and this handler send
-`frame-ancestors 'none'` on the CSP header as well as
-`X-Frame-Options: DENY`. `app.js`, `den.css`, `style.css` and `index.html` are
+`Referrer-Policy: no-referrer` on every response. The meta tag in
+`index.html` omits `frame-ancestors`, because a meta element cannot
+enforce it. The header still sends `frame-ancestors 'none'` along with
+`X-Frame-Options: DENY`. `den dev`, the admin server and this handler
+send that header. `app.js`, `den.css`, `style.css` and `index.html` are
 `Cache-Control: no-cache`. A file whose base name is not one of those and
 contains a hyphen followed by at least eight hex digits (for example
 `logo-0123abcd.png`) is `public, max-age=31536000, immutable`. Anything
@@ -508,7 +508,7 @@ import (
 	"strings"
 )
 
-// csp matches the policy den writes into index.html and sends from den dev.
+// csp matches the header den dev sends. index.html omits frame-ancestors.
 const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
 	"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
 	"require-trusted-types-for 'script'; trusted-types 'none'"
