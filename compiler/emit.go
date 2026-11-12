@@ -1997,7 +1997,7 @@ var jsReserved = map[string]bool{
 	"setTimeout": true, "setInterval": true, "clearTimeout": true, "clearInterval": true,
 	"requestAnimationFrame": true, "cancelAnimationFrame": true,
 	"addEventListener": true, "removeEventListener": true,
-	"history": true, "location": true, "localStorage": true,
+	"history": true, "location": true, "localStorage": true, "isFinite": true,
 }
 
 // jsIdent renames Go identifiers that would clash with JS. Go identifiers
