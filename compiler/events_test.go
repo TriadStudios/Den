@@ -116,8 +116,18 @@ for (const li of findAll("li")) log(li.textContent);`)
 
 func TestRunEventsURL(t *testing.T) {
 	got := runApp(t, `
+import "strconv"
+
 type Ev struct {
 	N int "json:\"n\""
+}
+
+func line(s *Stream) string {
+	e := "-"
+	if s.Err() != nil {
+		e = s.Err().Error()
+	}
+	return strconv.FormatBool(s.Connected()) + " " + e
 }
 
 component App() {
@@ -126,25 +136,32 @@ component App() {
 	n := signal(0)
 	on[Ev](s, "tick", func(v Ev) { n.Set(n.Get() + v.N) })
 	<div>
-		<p>{itoa(n.Get())}</p>
+		<p>{line(s)} {itoa(n.Get())}</p>
 		<button onclick={u.Set("/b")}>go</button>
 	</div>
 }`, `
 const es = eventSources[0];
 sseOpen(es);
+await tick();
 sseEvent(es, "tick", '{"n":1}', "1");
 click(find("button"));
 await tick();
+log("gap", find("p").textContent, es.closed, eventSources.length, eventSources[1].url);
 frame();
 await tick();
-log("dropped", find("p").textContent, es.closed, eventSources.length, eventSources[1].url);
+log("dropped", find("p").textContent);
+sseOpen(eventSources[1]);
+await tick();
+log("open", find("p").textContent);
 sseEvent(eventSources[1], "tick", '{"n":5}', "2");
 frame();
 await tick();
 log("got", find("p").textContent);`)
 	expectLines(t, got,
-		`dropped 0 true 2 http://localhost/b`,
-		`got 5`)
+		`gap false - 0 true 2 http://localhost/b`,
+		`dropped false - 0`,
+		`open true - 0`,
+		`got true - 5`)
 }
 
 func TestRunEventsDispose(t *testing.T) {

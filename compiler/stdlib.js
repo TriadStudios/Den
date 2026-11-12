@@ -919,9 +919,10 @@ function $jkey(a, b) {
 // no headers and no token. Deliveries sit in one queue and flush once,
 // on the next animation frame or after 50ms, whichever comes first, so a
 // hidden tab cannot grow the queue for hours. A URL change or the
-// component going away bumps the generation, drops the queue and closes
-// the source. A native error leaves the source open so the browser can
-// reconnect; the next open clears Err.
+// component going away bumps the generation, drops the queue, closes
+// the source and sets Connected false. Err stays as it was until the
+// next open, or until a rejected URL replaces it. A native error leaves
+// the source open so the browser can reconnect; the next open clears Err.
 function $events(c, urlFn) {
   const r = { c: $signal(false), e: $signal(null), hs: [] };
   let es = null, g = 0, q = [], arm = 0, raf = 0, tid = 0;
@@ -933,6 +934,7 @@ function $events(c, urlFn) {
   };
   const drop = () => {
     g++;
+    r.c.set(false);
     const old = es;
     es = null;
     if (old) old.close();

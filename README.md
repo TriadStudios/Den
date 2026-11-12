@@ -652,8 +652,10 @@ component Feed() {
   `Last-Event-ID` across its own reconnects. Headers set for `fetch` do
   not apply, and there is no token-in-URL fallback.
 - A new URL replaces the source and drops events still queued for the old
-  one. Registrations stay, and are attached to the new source. The event
-  name is read once, when `on` is called, not again when the URL changes.
+  one. `Connected` is false until the new source opens; `Err` is left as
+  it was. Registrations stay, and are attached to the new source. The
+  event name is read once, when `on` is called, not again when the URL
+  changes.
 - A native error means the browser is reconnecting. `Connected` becomes
   false and `Err` becomes `events: connection lost`, and the source is
   left open so `Last-Event-ID` survives. The next open clears `Err`.
