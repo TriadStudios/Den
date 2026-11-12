@@ -518,6 +518,35 @@ log(html());`)
 		`<a href="about:blank#blocked">x</a>`)
 }
 
+// A leading tab used to be eaten by the first alternative of $url's
+// regex, so the anchor then missed the spaces that followed it and a
+// javascript: URL survived. Each of these must be blocked, and a normal
+// https URL must still pass.
+func TestRunURLControlBypass(t *testing.T) {
+	got := runApp(t, `
+component App() {
+    u := signal("https://go.dev")
+    <div>
+        <a href={u.Get()}>x</a>
+        <button onclick={u.Set("\t javascript:alert(1)")}>tab</button>
+        <button onclick={u.Set("\n\u0001javascript:alert(1)")}>lf</button>
+        <button onclick={u.Set("\r javascript:alert(1)")}>cr</button>
+    </div>
+}`, `
+log(find("a").getAttribute("href"));
+click(find("button", "tab")); await tick();
+log(find("a").getAttribute("href"));
+click(find("button", "lf")); await tick();
+log(find("a").getAttribute("href"));
+click(find("button", "cr")); await tick();
+log(find("a").getAttribute("href"));`)
+	expectLines(t, got,
+		`https://go.dev`,
+		`about:blank#blocked`,
+		`about:blank#blocked`,
+		`about:blank#blocked`)
+}
+
 const storedSrc = `
 type Item struct {
     Name string
