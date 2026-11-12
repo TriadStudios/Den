@@ -672,6 +672,95 @@ log(find("p").textContent);`)
 	expectLines(t, got, `fetchJSON: GET /tree.json: invalid JSON: exceeded max depth`)
 }
 
+// A JSON string of many megabytes used to throw inside the tokenizer's
+// regex (RangeError, on this machine's node once the contents pass about
+// 8.4 million characters) before the value was decoded. The scanner walks
+// indexOf instead, including across an escaped quote.
+func TestRunJSONLongString(t *testing.T) {
+	got := runApp(t, `
+import "strings"
+
+type Box struct {
+	S string
+}
+
+func show(b Box) string {
+	p := strings.Split(b.S, "\"")
+	if len(p) != 3 {
+		return "parts " + itoa(len(p))
+	}
+	if len(p[0]) == 10000000 && strings.HasPrefix(p[0], "aaaa") && p[1] == "q" && len(p[2]) == 20 && strings.HasSuffix(p[2], "bbbb") {
+		return "yes"
+	}
+	return "no " + itoa(len(p[0])) + " [" + p[1] + "] " + itoa(len(p[2]))
+}
+
+component App() {
+	r := resource(fetchJSON[Box]("/s.json"))
+	<p>{show(r.Data())} {r.Err() != nil}</p>
+}`, `
+const body = '{"S":"' + "a".repeat(10000000) + '\\"q\\"' + "b".repeat(20) + '"}';
+reply(fetches[0], 200, body); await tick();
+log(find("p").textContent);`)
+	expectLines(t, got, `yes false`)
+}
+
+// An integer token longer than 100 characters is refused before BigInt,
+// and the error names only a short prefix of it. A 120-digit integer
+// already misses int64, so the assertion is the shortened text: the
+// message contains "..." and not a long run of the digits.
+func TestRunJSONLongNumber(t *testing.T) {
+	got := runApp(t, `
+type Box struct {
+	N int
+}
+
+func show(r *Resource[Box]) string {
+	if r.Err() == nil {
+		return "ok"
+	}
+	return r.Err().Error()
+}
+
+component App() {
+	r := resource(fetchJSON[Box]("/n.json"))
+	<p>{show(r)}</p>
+}`, `
+reply(fetches[0], 200, '{"N":' + "9".repeat(120) + '}'); await tick();
+log(find("p").textContent);`)
+	digits := strings.Repeat("9", 120)
+	if !strings.Contains(got, "...") || strings.Contains(got, digits) || strings.Contains(got, strings.Repeat("9", 40)) {
+		t.Fatalf("long digit token was not shortened:\n%s", got)
+	}
+}
+
+// A number used as a map key is the same token, and the error names only
+// a short prefix of it.
+func TestRunJSONLongMapKey(t *testing.T) {
+	got := runApp(t, `
+type Box struct {
+	M map[int]int
+}
+
+func show(r *Resource[Box]) string {
+	if r.Err() == nil {
+		return "ok"
+	}
+	return r.Err().Error()
+}
+
+component App() {
+	r := resource(fetchJSON[Box]("/n.json"))
+	<p>{show(r)}</p>
+}`, `
+reply(fetches[0], 200, '{"M":{"' + "9".repeat(120) + '":1}}'); await tick();
+log(find("p").textContent);`)
+	digits := strings.Repeat("9", 120)
+	if !strings.Contains(got, "...") || strings.Contains(got, digits) || strings.Contains(got, strings.Repeat("9", 40)) {
+		t.Fatalf("long map key was not shortened:\n%s", got)
+	}
+}
+
 // The names of the browser's that resource and fetchJSON use are renamed
 // in a program that declares its own, so they keep working.
 func TestRunResourceGlobals(t *testing.T) {

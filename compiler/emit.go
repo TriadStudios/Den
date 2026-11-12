@@ -975,6 +975,10 @@ func (e *emitter) stmt(s ast.Stmt) {
 	case *ast.AssignStmt:
 		e.assign(s)
 	case *ast.IncDecStmt:
+		if name, ok := sizedIntName(e.ck.info.TypeOf(s.X)); ok {
+			e.errAt(s.X, "arithmetic on %s is not supported yet", name)
+			return
+		}
 		if id, ok := ast.Unparen(s.X).(*ast.Ident); ok {
 			e.line("%s%s;", jsIdent(id.Name), s.Tok)
 			return
@@ -1227,6 +1231,16 @@ func (e *emitter) assign(s *ast.AssignStmt) {
 			e.errAt(s, "%s is not supported yet", s.Tok)
 			return
 		}
+		// Identifiers do not go through binary for these, so the check is
+		// here too. A constant operand is not enough: the variable is not.
+		if bitOp(op) {
+			e.errAt(lhs, "operator %s is not supported yet", s.Tok)
+			return
+		}
+		if name, ok := sizedIntName(e.ck.info.TypeOf(lhs)); ok {
+			e.errAt(lhs, "arithmetic on %s is not supported yet", name)
+			return
+		}
 		if id, ok := lhs.(*ast.Ident); ok && op != token.QUO {
 			e.line("%s %s %s;", jsIdent(id.Name), s.Tok, e.expr(rhs))
 			return
@@ -1334,6 +1348,78 @@ func isInt(t types.Type) bool {
 	return ok && b.Info()&types.IsInteger != 0
 }
 
+// sizedIntName is the underlying basic name when t is an integer whose
+// arithmetic or a truncating conversion would not match Go: int8, uint8,
+// int16, uint16, int32, uint32, and named types and aliases with those
+// underlying types (byte is uint8, rune is int32). int, int64, uint,
+// uintptr and time.Duration are not in that set; they stay JS numbers.
+func sizedIntName(t types.Type) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	b, ok := t.Underlying().(*types.Basic)
+	if !ok {
+		return "", false
+	}
+	// Name() is "byte" or "rune" for those aliases. The message uses the
+	// underlying kind's name, uint8 and int32.
+	switch b.Kind() {
+	case types.Int8:
+		return "int8", true
+	case types.Int16:
+		return "int16", true
+	case types.Int32:
+		return "int32", true
+	case types.Uint8:
+		return "uint8", true
+	case types.Uint16:
+		return "uint16", true
+	case types.Uint32:
+		return "uint32", true
+	}
+	return "", false
+}
+
+func bitOp(op token.Token) bool {
+	switch op {
+	case token.AND, token.OR, token.XOR, token.SHL, token.SHR:
+		return true
+	}
+	return false
+}
+
+func arithOp(op token.Token) bool {
+	switch op {
+	case token.ADD, token.SUB, token.MUL, token.QUO, token.REM:
+		return true
+	}
+	return false
+}
+
+// preservesInt reports whether converting from to to keeps every value.
+// to is a sized integer. Identical underlying types are handled by the
+// caller. Widening signed to signed, widening unsigned to unsigned, and
+// unsigned to a wider signed type are kept. Narrowing, a sign change into
+// unsigned, unsigned into a same-width or narrower signed type, and a
+// float are not.
+func preservesInt(from, to types.Type) bool {
+	fb, ok := from.Underlying().(*types.Basic)
+	tb, ok2 := to.Underlying().(*types.Basic)
+	if !ok || !ok2 || fb.Info()&types.IsInteger == 0 || tb.Info()&types.IsInteger == 0 {
+		return false
+	}
+	fBits, tBits := jsonBits[fb.Kind()], jsonBits[tb.Kind()]
+	if fBits == 0 || tBits == 0 || tBits <= fBits {
+		return false
+	}
+	fUn := fb.Info()&types.IsUnsigned != 0
+	tUn := tb.Info()&types.IsUnsigned != 0
+	if fUn == tUn {
+		return true
+	}
+	return fUn && !tUn
+}
+
 var binOps = map[token.Token]string{
 	token.ADD: "+", token.SUB: "-", token.MUL: "*", token.QUO: "/", token.REM: "%",
 	token.EQL: "===", token.NEQ: "!==", token.LSS: "<", token.GTR: ">", token.LEQ: "<=", token.GEQ: ">=",
@@ -1347,6 +1433,19 @@ func (e *emitter) binary(op token.Token, x, y ast.Expr, ys string, result types.
 	if !ok {
 		e.errAt(x, "operator %s is not supported yet", op)
 		return "undefined"
+	}
+	// A constant expression never reaches here: expr folds it first.
+	// Shifts and bitwise ops are reported as the operator, including on a
+	// sized integer, rather than as arithmetic on that integer.
+	if bitOp(op) {
+		e.errAt(x, "operator %s is not supported yet", op)
+		return "undefined"
+	}
+	if arithOp(op) {
+		if name, ok := sizedIntName(result); ok {
+			e.errAt(x, "arithmetic on %s is not supported yet", name)
+			return "undefined"
+		}
 	}
 	xs := e.expr(x)
 	if y != nil {
@@ -1411,7 +1510,10 @@ func (e *emitter) expr(x ast.Expr) string {
 			}
 			return op + s
 		case token.XOR:
-			return "~" + e.expr(x.X)
+			// A constant ^ is folded in expr. A variable would be JS's
+			// 32-bit ~, which is not Go's complement.
+			e.errAt(x, "operator %s is not supported yet", x.Op)
+			return "undefined"
 		case token.AND:
 			e.errAt(x, "pointers are not supported yet")
 			return "undefined"
@@ -1558,6 +1660,12 @@ func (e *emitter) call(x *ast.CallExpr) string {
 		from := e.ck.info.TypeOf(x.Args[0])
 		if types.Identical(tv.Type.Underlying(), from.Underlying()) {
 			return arg
+		}
+		// byte and uint8, and int64 and time.Duration, share an underlying
+		// type and already returned. int(duration) stays: the target is int.
+		if name, ok := sizedIntName(tv.Type); ok && !preservesInt(from, tv.Type) {
+			e.errAt(x, "conversion to %s is not supported yet", name)
+			return "undefined"
 		}
 		if b, ok := tv.Type.Underlying().(*types.Basic); ok {
 			switch {

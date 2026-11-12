@@ -5,7 +5,9 @@ import (
 
 // A board for two services on this origin: a session cookie, an X-CSRF
 // header on writes, and a state/log event stream. The stream is opened
-// only after sign-in, from Board, because a 403 is not retried for us.
+// only after sign-in, from Board. The runtime retries a lost connection,
+// including a 403. When that error is set, the page returns to the
+// sign-in form, and leaving the board disposes the stream.
 
 type Service struct {
 	ID      string `json:"id"`
@@ -31,7 +33,18 @@ type Session struct {
 	CSRF string `json:"csrf"`
 }
 
-component Board(token string) {
+func liveLabel(s *Stream, lost func()) string {
+	if s.Err() != nil {
+		lost()
+		return ""
+	}
+	if s.Connected() {
+		return "Connected"
+	}
+	return "Off"
+}
+
+component Board(token string, lost func()) {
 	_ = http.SetHeader("X-CSRF", token)
 	list := resource(fetchJSON[[]Service]("/api/services"))
 	startURL := signal("/api/services/web/start")
@@ -56,7 +69,7 @@ component Board(token string) {
 		logs.Set(xs)
 	})
 	<div>
-		<p>{if live.Connected() {Connected} else {Off}}</p>
+		<p>{liveLabel(live, lost)}</p>
 		{if list.Err() != nil && !list.Loading() {
 			<p>{http.Status(list.Err())} {http.Message(list.Err())}</p>
 		}}
@@ -118,7 +131,13 @@ component App() {
 				}}
 			</div>
 		} else {
-			<Board token={tok.Get()} />
+			<Board
+				token={tok.Get()}
+				lost={func() {
+					tok.Set("")
+					board.Set(false)
+					_ = http.DeleteHeader("X-CSRF")
+				}} />
 		}}
 	</main>
 }

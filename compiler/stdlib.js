@@ -515,7 +515,22 @@ function $fetchJSON(J, i) {
 // deeper is Go's error.
 function $jparse(s) {
   JSON.parse(s);
-  const t = s.match(/"(?:[^"\\]|\\.)*"|[^\s,:[\]{}"]+|[[\]{}]/g), str = (x) => (x = JSON.parse(x)).toWellFormed?.() ?? x, st = [];
+  // Strings use indexOf: a long run inside a regexp star overflows its stack.
+  // The match below is only the gap before the next quote, and its class does not nest.
+  const t = [], str = (x) => (x = JSON.parse(x)).toWellFormed?.() ?? x, st = [];
+  for (let i = 0, q, b, e, m; i < s.length; ) {
+    if (s[i] == '"') {
+      for (q = i; (b = s.indexOf("\\", q + 1)) >= 0 & (q = s.indexOf('"', q + 1)) > b; q = b + 1);
+      t.push(s.slice(i, ++q));
+      i = q;
+      continue;
+    }
+    e = s.indexOf('"', i);
+    if (e < 0) e = s.length;
+    m = s.slice(i, e).match(/[^\s,:[\]{}"]+|[[\]{}]/g);
+    if (m) for (q of m) t.push(q);
+    i = e;
+  }
   let out;
   for (const x of t) {
     if (x === "]" || x === "}") { st.pop(); continue; }
@@ -557,12 +572,13 @@ function $jone(st, J, i, j, v, c) {
   if (j === null) return k === "l" ? null : k === "m" ? new Map() : v;
   const w = typeof j === "string" ? "string" : typeof j === "boolean" ? "bool" : Array.isArray(j) ? "array" : j.o ? "object" : "number";
   const bad = (x = w, t = d.t) => { throw Error("json: cannot unmarshal " + x + " into Go " + (c ? "struct field " + c[0] + "." + c[1] : "value") + " of type " + t); };
+  const clip = (n) => n.length > 100 ? n.slice(0, 20) + "..." : n;
   if (k === "s" || k === "b") return w === (k === "s" ? "string" : "bool") ? j : bad();
   if (k === "l" && w === "string" && J[d.e].k === "u" && J[d.e].b === 8) return $jbytes(j);
   if (k !== "o" && k !== "m" && k !== "a" && k !== "l") {
     if (w !== "number") bad();
-    const n = $jnum(d, j.n);
-    return n === undefined ? bad("number " + j.n) : n;
+    const n = d.p ? d.p(j.n) : $jnum(d, j.n);
+    return n === undefined ? bad("number " + clip(j.n)) : n;
   }
   if (w !== (k === "o" || k === "m" ? "object" : "array")) bad();
   let x = 0, f, n;
@@ -584,7 +600,7 @@ function $jone(st, J, i, j, v, c) {
     const m = new Map(v), K = J[d.K];
     st.push({
       next() { if (x < j.o.length) { let y; [n, y] = j.o[x++]; return [d.e, y, $jzero(J, d.e), c]; } },
-      put(r) { const key = K.k === "s" ? n : $jnum(K, n); if (key === undefined) bad("number " + n, K.t); m.set(key, r); },
+      put(r) { const key = K.k === "s" ? n : K.p ? K.p(n) : $jnum(K, n); if (key === undefined) bad("number " + clip(n), K.t); m.set(key, r); },
       end: () => m,
     });
   } else {
@@ -605,13 +621,18 @@ function $jone(st, J, i, j, v, c) {
 // when it does not fit: Go reads an integer kind with strconv.ParseInt or
 // ParseUint (so 1.0 and 1e2 are no ints, nor -0 a uint) and checks the
 // kind's range, and reads a float with strconv.ParseFloat for its size,
-// which does not take what rounds to an infinity. Integers beyond 2^53
-// lose precision, as all of den's do.
+// which does not take what rounds to an infinity. float32 is $jff, named
+// from the descriptor, so a program with no float32 does not ship it.
+// Integers beyond 2^53 lose precision, as all of den's do.
 function $jnum(d, s) {
-  if (d.k === "f") { const f = d.b < 64 ? $jf32(s) : +s; return isFinite(f) ? f : undefined; }
-  if (!(d.k === "i" ? /^[+-]?\d+$/ : /^\d+$/).test(s)) return;
+  if (d.k === "f") { const f = +s; return isFinite(f) ? f : undefined; }
+  if (!(d.k === "i" ? /^[+-]?\d+$/ : /^\d+$/).test(s) || s.length > 100) return;
   const n = BigInt(s), m = 2n ** BigInt(d.k === "i" ? d.b - 1 : d.b);
   return n < m && (d.k === "u" || n >= -m) ? Number(n) : undefined;
+}
+function $jff(s) {
+  const f = $jf32(s);
+  return isFinite(f) ? f : undefined;
 }
 // $jf32 is number text s rounded once to the nearest float32, as Go's
 // strconv.ParseFloat(s, 32) does. Number(s) rounds to a float64 first;

@@ -46,7 +46,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
 | `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.3 KB |
-| `examples/fetch` (JSON pager, Reload, and a Save action that posts then reloads) | 8.5 KB |
+| `examples/fetch` (JSON pager, Reload, and a Save action that posts then reloads) | 8.3 KB |
 | `examples/admin` (sign in, a service list, start and stop, a live log) | 9.7 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
@@ -230,17 +230,27 @@ would compile differently.
 ## The language
 
 A `.den` file holds components and plain Go declarations. Den supports a
-subset of Go; anything outside it is a compile error, never silently
-different behavior.
+subset of Go. Unsupported syntax is a compile error. Some programs that
+do compile still differ from Go; the gaps listed after the shift and
+wrap rules are those differences, and they are not Go's behavior.
 
-A few cases still compile and then differ from Go. These are known gaps,
-not a promise that they match Go today. Bitwise and shift operators are
-32-bit. Sized integer conversions and arithmetic do not wrap. An index
-with a side effect can run twice on `+=` and `++`. A generic function is
-not instantiated, so `/`, `==` and a zero value follow the constraint too
-loosely. Two different errors compare equal inside a struct. Division by
-zero is not a panic, and a multi-assignment writes left to right. A JSON
-string of several megabytes can fail the tokenizer.
+Shifts (`<<`, `>>`) and bitwise `&`, `|`, and `^` are a compile error
+when an operand is not a constant. Constant expressions still fold as in
+Go. Arithmetic and a conversion that would wrap or truncate `int8`,
+`uint8`, `int16`, `uint16`, `int32`, `uint32` (and byte, rune, and other
+types with those underlying types) are a compile error unless the
+compiler folds them to a constant.
+
+A few cases still compile and then differ from Go:
+
+- a write to a nil map
+- `%` by zero is NaN
+- a float32 is not rounded to float32 precision
+- NaN map keys
+- distinct errors compare equal inside a struct
+- generics are not instantiated, so `/` and `==` and a zero value follow the constraint too loosely
+- an index with a side effect can run twice on `+=` and `++`
+- a multi-assignment evaluates the right-hand side before left-hand index operands
 
 **Components and markup**
 - `component Name(props) { statements; <markup> }` with exactly one root
@@ -488,7 +498,9 @@ contains `.` is 404, not the app page. A path whose last segment has no
 `.` and is not an existing file or directory is answered with the
 embedded `index.html` and status 200. That response is the file's bytes,
 not a redirect and not a rewrite onto `FileServerFS` (which would 301 a
-URL ending in `/index.html`).
+URL ending in `/index.html`). A directory is answered with that
+directory's `index.html`, or 404 when it has none; the directory is not
+listed. Any path segment whose name starts with `.` is 404.
 
 The handler is package `denpage` at the module root. `cmd/server` is
 package `main` and builds as `./cmd/server` when the module path is
@@ -516,7 +528,6 @@ const csp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 's
 // Handler serves a den build. root is the dist directory (index.html and
 // app.js at its top), not a parent that contains dist.
 func Handler(root fs.FS) http.Handler {
-	files := http.FileServerFS(root)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", csp)
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -529,6 +540,10 @@ func Handler(root fs.FS) http.Handler {
 		}
 		name := path.Clean("/" + r.URL.Path)
 		if name == "/api" || strings.HasPrefix(name, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		if dotSegment(name) {
 			http.NotFound(w, r)
 			return
 		}
@@ -550,7 +565,9 @@ func Handler(root fs.FS) http.Handler {
 				}
 				return
 			} else if ok && info.IsDir() {
-				files.ServeHTTP(w, r)
+				if !serveFile(w, r, root, path.Join(rel, "index.html")) {
+					http.NotFound(w, r)
+				}
 				return
 			}
 		}
@@ -561,6 +578,15 @@ func Handler(root fs.FS) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+}
+
+func dotSegment(name string) bool {
+	for _, seg := range strings.Split(name, "/") {
+		if strings.HasPrefix(seg, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, root fs.FS, name string) bool {
@@ -1309,8 +1335,10 @@ component Signup() {
   functions, named results and multiple return values.
 - Structs (with embedded fields), arrays, slices and maps, with Go's
   semantics: structs and arrays are values, slices share backing arrays and
-  `append` grows them as Go does, maps change in place, and nil slices and
-  maps work. Indexing and slicing are bounds-checked and panic like Go.
+  `append` grows them as Go does, and maps change in place. A nil slice is
+  empty. A nil map reads as empty, and writing a key into a nil map is a
+  gap listed with the other differences from Go. Indexing and slicing are
+  bounds-checked and panic like Go.
 - `if` (with init statements), `for` in all its forms, `range`, `break`,
   `continue`, parallel assignment, closures.
 - `len`, `cap`, `append`, `copy`, `make`, `delete`, `clear`, `min`, `max`,
@@ -1365,19 +1393,30 @@ go run ./examples/admin -dist examples/admin/dist
 ```
 
 `-dist` is required: it is the directory `den build` wrote. `-addr`
-defaults to `localhost:8091`.
+defaults to `localhost:8091` and is only the listen address. `-origin`
+is empty by default. When it is set, it is the full origin login accepts,
+such as `https://your.public.host`. When it is empty, the allow-list host
+comes from `-addr` (an empty host means `localhost`, and the port is kept,
+so the default host is `localhost:8091`) and the scheme is `http`, or
+`https` when this process itself sees TLS.
 
 `POST /api/login` with `{"password":"den"}` signs in. That password is an
 example constant, not a secret. The body must be
 `Content-Type: application/json` (a charset is allowed; `text/plain` is
-415 `content_type`) and the request must carry an `Origin` for this host,
-`http` unless the Go server itself sees TLS, in which case `https`. A
-missing or other origin is 403 `origin`. Success sets one cookie,
+415 `content_type`) and the request must carry an `Origin` whose scheme
+and host match that allow-list. The `Host` header is not the allow-list.
+A missing or other origin is 403 `origin`. The check fails closed behind
+a TLS-terminating proxy: the browser sends `https://...` and this process
+sees plain HTTP (`r.TLS` is nil). Set `-origin https://your.public.host`.
+The host of `-addr` is the allow-list only when `-origin` is empty.
+Success sets one cookie,
 `session`: HttpOnly, `SameSite=Lax`, `Path=/`, with a 12 hour lifetime.
 `Secure` is set only when `r.TLS` is set. This example listens on HTTP
 localhost, so the cookie is not `Secure` there. A TLS terminator in front
 of this process does not set `r.TLS`, and that deployment has to mark the
-cookie `Secure` itself. The body is `{"csrf":"<token>"}`, a different
+cookie `Secure` itself. The server limits request headers to 5 seconds
+and each event-stream write to 10 seconds; it does not set `WriteTimeout`,
+which would cut the stream. The body is `{"csrf":"<token>"}`, a different
 random token kept only in memory on the session. There is no csrf cookie.
 The page sends that token as `X-CSRF`. A wrong password is 401
 `{"error":{"code":"login","message":"..."}}`.
@@ -1450,8 +1489,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
 Each phase ends at a gate with measurable exit criteria. Every release must
 hold these budgets: the runtime under 3 KB gzipped, TodoMVC under 10 KB
 gzipped, the js-framework-benchmark operations within 1.3x of vanilla JS's
-time, memory after creating 1,000 rows within 1.2x of vanilla JS, and a
-rebuild of 100 components under 50 ms.
+time, memory after creating 1,000 rows within 1.2x of vanilla JS, and the
+test rejects a rebuild of 100 components that takes longer than 100 ms.
 
 1. **Core language (Phase 1, done):** markup control flow, structs, slices
    and maps, template cloning, lazy computed values, ownership scopes,

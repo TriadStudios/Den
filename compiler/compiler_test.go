@@ -102,6 +102,18 @@ component App() {
 component App() {
     <svg><animateTransform attributeName="HREF" from="javascript:alert(1)"/></svg>
 }`, `cannot animate href`},
+		{"attributeName with a leading space", `
+component App() {
+    <svg><set attributeName=" href" to="1"/></svg>
+}`, `cannot animate href`},
+		{"attributeName with a trailing space", `
+component App() {
+    <svg><set attributeName="href " to="1"/></svg>
+}`, `cannot animate href`},
+		{"attributeName with space and case", `
+component App() {
+    <svg><set attributeName=" HREF" to="1"/></svg>
+}`, `cannot animate href`},
 		{"set attributeName not constant", `
 component App() {
     name := "href"
@@ -2430,11 +2442,165 @@ component App() {
     on[int](s, Open, func(n int) {})
     <p>x</p>
 }`, `app.den:5:16: event name "open" is reserved`},
+		{"shift left", `
+component App() {
+    var x int
+    _ = x << 1
+    <p>x</p>
+}`, `app.den:4:9: operator << is not supported yet`},
+		{"shift right", `
+component App() {
+    var x int
+    _ = x >> 1
+    <p>x</p>
+}`, `app.den:4:9: operator >> is not supported yet`},
+		{"bitwise and", `
+component App() {
+    var x int
+    _ = x & 1
+    <p>x</p>
+}`, `app.den:4:9: operator & is not supported yet`},
+		{"bitwise or", `
+component App() {
+    var x int
+    _ = x | 1
+    <p>x</p>
+}`, `app.den:4:9: operator | is not supported yet`},
+		{"bitwise xor", `
+component App() {
+    var x int
+    _ = x ^ 1
+    <p>x</p>
+}`, `app.den:4:9: operator ^ is not supported yet`},
+		{"unary xor", `
+component App() {
+    var x int
+    _ = ^x
+    <p>x</p>
+}`, `app.den:4:9: operator ^ is not supported yet`},
+		{"shift assign", `
+component App() {
+    var x int
+    x <<= 1
+    <p>x</p>
+}`, `app.den:4:5: operator <<= is not supported yet`},
+		{"shift right assign", `
+component App() {
+    var x int
+    x >>= 1
+    <p>x</p>
+}`, `app.den:4:5: operator >>= is not supported yet`},
+		{"and assign", `
+component App() {
+    var x int
+    x &= 1
+    <p>x</p>
+}`, `app.den:4:5: operator &= is not supported yet`},
+		{"or assign", `
+component App() {
+    var x int
+    x |= 1
+    <p>x</p>
+}`, `app.den:4:5: operator |= is not supported yet`},
+		{"xor assign", `
+component App() {
+    var x int
+    x ^= 1
+    <p>x</p>
+}`, `app.den:4:5: operator ^= is not supported yet`},
+		{"byte shift is the operator", `
+component App() {
+    var b byte
+    _ = b << 1
+    <p>x</p>
+}`, `app.den:4:9: operator << is not supported yet`},
+		{"byte add", `
+component App() {
+    var b byte
+    _ = b + 1
+    <p>x</p>
+}`, `app.den:4:9: arithmetic on uint8 is not supported yet`},
+		{"byte add assign", `
+component App() {
+    var b byte
+    b += 1
+    <p>x</p>
+}`, `app.den:4:5: arithmetic on uint8 is not supported yet`},
+		{"byte increment", `
+component App() {
+    var b byte
+    b++
+    <p>x</p>
+}`, `app.den:4:5: arithmetic on uint8 is not supported yet`},
+		{"rune add", `
+component App() {
+    var r rune
+    _ = r + 1
+    <p>x</p>
+}`, `app.den:4:9: arithmetic on int32 is not supported yet`},
+		{"named byte add", `
+type MyByte byte
+component App() {
+    var b MyByte
+    _ = b + 1
+    <p>x</p>
+}`, `app.den:5:9: arithmetic on uint8 is not supported yet`},
+		{"convert int to uint8", `
+component App() {
+    var n int
+    _ = uint8(n)
+    <p>x</p>
+}`, `app.den:4:9: conversion to uint8 is not supported yet`},
+		{"convert int16 to int8", `
+component App() {
+    var n int16
+    _ = int8(n)
+    <p>x</p>
+}`, `app.den:4:9: conversion to int8 is not supported yet`},
+		{"convert int8 to uint16", `
+component App() {
+    var n int8
+    _ = uint16(n)
+    <p>x</p>
+}`, `app.den:4:9: conversion to uint16 is not supported yet`},
+		{"convert float to int32", `
+component App() {
+    var f float64
+    _ = int32(f)
+    <p>x</p>
+}`, `app.den:4:9: conversion to int32 is not supported yet`},
+		{"convert uint8 to int8", `
+component App() {
+    var n uint8
+    _ = int8(n)
+    <p>x</p>
+}`, `app.den:4:9: conversion to int8 is not supported yet`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)
 		}
 	}
+}
+
+// Constants still fold, including shifts and sized-integer arithmetic.
+// Non-constant int64 arithmetic, int(duration), and a conversion that
+// keeps every value still compile. Wrapping sized arithmetic does not.
+func TestIntegerSubset(t *testing.T) {
+	expectLines(t, runApp(t, `
+import "time"
+
+const c = 1 << 3
+const d byte = 1 + 2
+type MyByte byte
+
+component App() {
+    var n int64 = 40
+    var u uint8 = 7
+    var wide int16 = int16(u)
+    var same byte = byte(u)
+    dur := time.Second
+    <p>{c} {d} {n + 2} {int(dur)} {wide} {same} {time.Duration(n)}</p>
+}`, `log(html());`), "<p>8 3 42 1000000000 7 7 40</p>")
 }
 
 // SMIL may still set ordinary presentation attributes. Only href is refused.
@@ -2447,6 +2613,10 @@ component App() {
 		`
 component App() {
     <svg><set attributeName="fill" to="red"/></svg>
+}`,
+		`
+component App() {
+    <svg><set attributeName="h ref" to="1"/></svg>
 }`,
 	} {
 		if _, err := compileOne(src); err != nil {
@@ -3077,8 +3247,8 @@ component App() {
 		{`
 component App() {
     key := 1
-    <p>{key == 1} {key != 1} {key + 1} {key - 1} {key * 2} {key / 1} {key % 2} {key & 1} {key | 2} {key ^ 1} {key << 1} {key >> 1} {key < 2} {key <= 0} {key > 0} {key >= 1}</p>
-}`, 0, 16, `<p>true false 2 0 2 1 1 1 3 0 2 0 true false true true</p>`},
+    <p>{key == 1} {key != 1} {key + 1} {key - 1} {key * 2} {key / 1} {key % 2} {key < 2} {key <= 0} {key > 0} {key >= 1}</p>
+}`, 0, 11, `<p>true false 2 0 2 1 1 true false true true</p>`},
 		{`
 component App() {
     key := true
@@ -3132,6 +3302,26 @@ component App() {
 		want, _ := compileOne(c.src)
 		if got, err := compileOne(string(formatted)); err != nil || got.JS != want.JS {
 			t.Errorf("formatted, it compiles differently: %v\n%s", err, formatted)
+		}
+	}
+	// These operators are a compile error when an operand is not a constant,
+	// so they cannot be run. They still have to parse as expressions: a key
+	// block is only `key`, whitespace, then an operand.
+	for _, src := range []string{
+		`
+component App() {
+    key := 1
+    <p>{key & 1} {key | 2} {key ^ 1} {key << 1} {key >> 1}</p>
+}`,
+	} {
+		f, err := Parse("app.den", src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys, exprs := 0, 0
+		countMarkup([]Node{f.Components[len(f.Components)-1].Root}, &keys, &exprs)
+		if keys != 0 || exprs != 5 {
+			t.Errorf("%d key blocks and %d expressions, want 0 and 5:\n%s", keys, exprs, src)
 		}
 	}
 }

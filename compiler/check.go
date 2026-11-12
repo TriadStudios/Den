@@ -2214,7 +2214,7 @@ func isSMILTag(tag string) bool {
 
 // isHrefAttrName reports whether a static attributeName names href.
 func isHrefAttrName(v string) bool {
-	switch asciiLower(v) {
+	switch asciiLower(strings.TrimSpace(v)) {
 	case "href", "xlink:href":
 		return true
 	}

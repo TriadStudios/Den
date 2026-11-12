@@ -595,6 +595,11 @@ func (e *emitter) jsonDescJS(t types.Type, encode bool) string {
 		case info&types.IsBoolean != 0:
 			return `{k: "b"` + ts + `}`
 		case info&types.IsFloat != 0:
+			// p names float32 rounding. $jnum does not call it, so a
+			// program that never decodes a float32 does not ship it.
+			if u.Kind() == types.Float32 {
+				return fmt.Sprintf(`{k: "f"%s, b: %d, p: $jff}`, ts, jsonBits[u.Kind()])
+			}
 			return fmt.Sprintf(`{k: "f"%s, b: %d}`, ts, jsonBits[u.Kind()])
 		case info&types.IsUnsigned != 0:
 			return fmt.Sprintf(`{k: "u"%s, b: %d}`, ts, jsonBits[u.Kind()])

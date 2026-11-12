@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,6 +43,7 @@ const maxEvents = 50
 func main() {
 	dist := flag.String("dist", "", "directory of a den build (required)")
 	addr := flag.String("addr", "localhost:8091", "listen address")
+	origin := flag.String("origin", "", "origin login accepts, such as https://admin.example")
 	flag.Parse()
 	if *dist == "" {
 		fmt.Fprintln(os.Stderr, "admin: -dist is required")
@@ -52,7 +54,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "admin: -dist must be a directory")
 		os.Exit(2)
 	}
-	if err := http.ListenAndServe(*addr, newHandler(*dist)); err != nil {
+	allow := originAllow{host: listenHost(*addr)}
+	if *origin != "" {
+		allow, err = parseOriginFlag(*origin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "admin:", err)
+			os.Exit(2)
+		}
+	}
+	if err := newHTTPServer(*addr, newHandler(*dist, allow)).ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, "admin:", err)
 		os.Exit(1)
 	}
@@ -100,6 +110,7 @@ type subState struct {
 
 type server struct {
 	dist     string
+	allow    originAllow
 	mu       sync.Mutex
 	sessions map[string]session
 	services []service
@@ -108,9 +119,68 @@ type server struct {
 	subs     map[chan sseEvent]*subState
 }
 
-func newHandler(dist string) http.Handler {
+// originAllow is the scheme and host a login Origin must match. When
+// fixed is false, the scheme comes from r.TLS and host is the listen
+// host. When fixed is true, both come from -origin and r.Host is ignored.
+type originAllow struct {
+	scheme string
+	host   string
+	fixed  bool
+}
+
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+}
+
+// listenHost is the host an Origin must match when -origin is empty.
+// An empty host (":8091") means localhost, and the port is kept.
+// "localhost" with no port stays "localhost".
+func listenHost(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		if addr == "" {
+			return "localhost"
+		}
+		return addr
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func parseOriginFlag(s string) (originAllow, error) {
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https") {
+		return originAllow{}, fmt.Errorf("-origin must be an origin such as https://admin.example")
+	}
+	return originAllow{scheme: u.Scheme, host: u.Host, fixed: true}, nil
+}
+
+func (s *server) originOK(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	ou, err := url.Parse(origin)
+	if origin == "" || err != nil || ou.Host == "" {
+		return false
+	}
+	scheme := s.allow.scheme
+	if !s.allow.fixed {
+		scheme = "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+	}
+	return strings.EqualFold(ou.Scheme, scheme) && strings.EqualFold(ou.Host, s.allow.host)
+}
+
+func newHandler(dist string, allow originAllow) http.Handler {
 	return &server{
 		dist:     dist,
+		allow:    allow,
 		sessions: map[string]session{},
 		services: []service{
 			{ID: "web", Name: "Web", Running: false},
@@ -175,13 +245,7 @@ func (s *server) serveLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnsupportedMediaType, "content_type", "Content-Type must be application/json")
 		return
 	}
-	origin := r.Header.Get("Origin")
-	ou, oerr := url.Parse(origin)
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if origin == "" || oerr != nil || ou.Scheme != scheme || !strings.EqualFold(ou.Host, r.Host) {
+	if !s.originOK(r) {
 		writeErr(w, http.StatusForbidden, "origin", "Origin must be this site")
 		return
 	}
@@ -204,6 +268,11 @@ func (s *server) serveLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	for old, sess := range s.sessions {
+		if !now().Before(sess.expiry) {
+			delete(s.sessions, old)
+		}
+	}
 	s.sessions[id] = session{csrf: csrf, expiry: now().Add(12 * time.Hour)}
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
@@ -427,12 +496,16 @@ func (s *server) serveEvents(w http.ResponseWriter, r *http.Request) {
 	ch, replay := s.listen(last)
 	defer s.drop(ch)
 	for _, ev := range replay {
-		writeSSE(w, ev)
+		if err := writeSSE(w, ev); err != nil {
+			return
+		}
 		fl.Flush()
 	}
 	// A comment is not an event. Without a write and a flush here, a
 	// quiet stream never sends its status, and the browser stays closed.
-	fmt.Fprint(w, ": ok\n\n")
+	if err := writeComment(w); err != nil {
+		return
+	}
 	fl.Flush()
 	for {
 		select {
@@ -442,14 +515,28 @@ func (s *server) serveEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			writeSSE(w, ev)
+			if err := writeSSE(w, ev); err != nil {
+				return
+			}
 			fl.Flush()
 		}
 	}
 }
 
-func writeSSE(w http.ResponseWriter, ev sseEvent) {
-	fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.ID, ev.Name, ev.Data)
+func armWrite(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(now().Add(10 * time.Second))
+}
+
+func writeComment(w http.ResponseWriter) error {
+	armWrite(w)
+	_, err := fmt.Fprint(w, ": ok\n\n")
+	return err
+}
+
+func writeSSE(w http.ResponseWriter, ev sseEvent) error {
+	armWrite(w)
+	_, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.ID, ev.Name, ev.Data)
+	return err
 }
 
 func (s *server) serveAsset(w http.ResponseWriter, r *http.Request, p string) {

@@ -150,6 +150,10 @@ func writeFixture(t *testing.T, dir string) {
 		writeFile(t, filepath.Join(dir, name), body)
 	}
 	writeFile(t, filepath.Join(dir, "logo-0123abcd.png"), "PNG")
+	writeFile(t, filepath.Join(dir, "sub", "index.html"), "SUBINDEX")
+	writeFile(t, filepath.Join(dir, "bare", "note.txt"), "NOTE")
+	writeFile(t, filepath.Join(dir, ".secret"), "SECRET")
+	writeFile(t, filepath.Join(dir, "dir", ".env"), "DOTENV")
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -264,6 +268,28 @@ func TestHandler(t *testing.T) {
 	}
 	if w := do(t, h, http.MethodPost, "/"); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST /: %d", w.Code)
+	}
+
+	for _, p := range []string{"/sub", "/sub/"} {
+		w := do(t, h, http.MethodGet, p)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "SUBINDEX") {
+			t.Fatalf("GET %s: %d %q", p, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "<a href") {
+			t.Fatalf("GET %s listed the directory: %q", p, w.Body.String())
+		}
+	}
+	for _, p := range []string{"/bare", "/bare/"} {
+		w := do(t, h, http.MethodGet, p)
+		if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "note.txt") || strings.Contains(w.Body.String(), "NOTE") || strings.Contains(w.Body.String(), "<a href") {
+			t.Fatalf("GET %s: %d %q", p, w.Code, w.Body.String())
+		}
+	}
+	for _, p := range []string{"/.secret", "/dir/.env"} {
+		w := do(t, h, http.MethodGet, p)
+		if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "SECRET") || strings.Contains(w.Body.String(), "DOTENV") {
+			t.Fatalf("GET %s: %d %q", p, w.Code, w.Body.String())
+		}
 	}
 }
 

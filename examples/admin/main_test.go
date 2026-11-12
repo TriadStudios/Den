@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -224,9 +225,14 @@ func TestEventsReplay(t *testing.T) {
 }
 
 func TestEventsHeadersBeforeEvent(t *testing.T) {
-	s := newHandler(t.TempDir()).(*server)
+	s := newHandler(t.TempDir(), originAllow{}).(*server)
 	srv := httptest.NewServer(s)
 	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.allow.host = u.Host
 
 	loginReq, err := http.NewRequest(http.MethodPost, srv.URL+"/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
 	if err != nil {
@@ -327,7 +333,7 @@ func TestPages(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(sentinel), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := newHandler(dir).(*server)
+	s := newHandler(dir, originAllow{}).(*server)
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -440,6 +446,121 @@ func TestSessionExpiry(t *testing.T) {
 	}
 }
 
+func TestSessionSweepOnLogin(t *testing.T) {
+	s := newServer(t)
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	now = func() time.Time { return base }
+	t.Cleanup(func() { now = time.Now })
+	_, session, _ := s.login(t)
+	oldID := session.Value
+	now = func() time.Time { return base.Add(12*time.Hour + time.Second) }
+	_, fresh, _ := s.login(t)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[oldID]; ok {
+		t.Fatal("expired session still present")
+	}
+	if _, ok := s.sessions[fresh.Value]; !ok || len(s.sessions) != 1 {
+		t.Fatalf("sessions %#v, want only %s", s.sessions, fresh.Value)
+	}
+}
+
+func TestOriginIgnoresHost(t *testing.T) {
+	s := newServer(t)
+	both := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	both.Host = "evil.example"
+	both.Header.Set("Content-Type", "application/json")
+	both.Header.Set("Origin", "http://evil.example")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, both)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("both evil status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	if code, _ := errCode(t, rec); code != "origin" {
+		t.Fatalf("both evil code %q", code)
+	}
+
+	ok := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	ok.Host = "evil.example"
+	ok.Header.Set("Content-Type", "application/json")
+	ok.Header.Set("Origin", "http://example.com")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, ok)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("matching origin status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+}
+
+func TestOriginProxy(t *testing.T) {
+	s := newServer(t)
+	s.allow = originAllow{scheme: "https", host: "admin.example", fixed: true}
+	good := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	good.Host = "evil.example"
+	good.Header.Set("Content-Type", "application/json")
+	good.Header.Set("Origin", "https://admin.example")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, good)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy https status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	if rec.Result().Cookies()[0].Secure {
+		t.Fatal("cookie Secure was set without r.TLS")
+	}
+
+	bad := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	bad.Header.Set("Content-Type", "application/json")
+	bad.Header.Set("Origin", "http://admin.example")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, bad)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("proxy http status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	if code, _ := errCode(t, rec); code != "origin" {
+		t.Fatalf("proxy http code %q", code)
+	}
+}
+
+func TestListenHostAndOriginFlag(t *testing.T) {
+	if got := listenHost("localhost:8091"); got != "localhost:8091" {
+		t.Fatalf("default %q", got)
+	}
+	if got := listenHost(":8091"); got != "localhost:8091" {
+		t.Fatalf("empty host %q", got)
+	}
+	if got := listenHost("localhost"); got != "localhost" {
+		t.Fatalf("no port %q", got)
+	}
+	if got := listenHost(""); got != "localhost" {
+		t.Fatalf("empty %q", got)
+	}
+	if got := listenHost("[::1]:8091"); got != "[::1]:8091" {
+		t.Fatalf("ipv6 %q", got)
+	}
+	a, err := parseOriginFlag("https://admin.example")
+	if err != nil || a.scheme != "https" || a.host != "admin.example" || !a.fixed {
+		t.Fatalf("%+v %v", a, err)
+	}
+	a, err = parseOriginFlag("https://admin.example:8443")
+	if err != nil || a.host != "admin.example:8443" {
+		t.Fatalf("%+v %v", a, err)
+	}
+	for _, bad := range []string{"", "admin.example", "https://admin.example/path", "https://user@admin.example", "ftp://admin.example"} {
+		if _, err := parseOriginFlag(bad); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}
+
+func TestReadHeaderTimeout(t *testing.T) {
+	srv := newHTTPServer("localhost:8091", newHandler(t.TempDir(), originAllow{host: "localhost:8091"}))
+	if srv.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout %s", srv.ReadHeaderTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout %s", srv.WriteTimeout)
+	}
+}
+
 func TestLoginOriginAndType(t *testing.T) {
 	s := newServer(t)
 	plain := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
@@ -499,7 +620,7 @@ func TestOpenTraversal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("SECRET"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := newHandler(dist).(*server)
+	s := newHandler(dist, originAllow{}).(*server)
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/..%5c..%5csecret.txt", nil))
@@ -570,7 +691,7 @@ type apiServer struct{ *server }
 
 func newServer(t *testing.T) *apiServer {
 	t.Helper()
-	h := newHandler(t.TempDir())
+	h := newHandler(t.TempDir(), originAllow{host: "example.com"})
 	return &apiServer{h.(*server)}
 }
 

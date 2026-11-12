@@ -69,3 +69,56 @@ log("start", post.opts.method, post.url.replace("http://localhost", ""), post.op
 		`start POST /api/services/worker/start tok {}`,
 	)
 }
+
+// TestAdminPageErrors fails when Start and Stop share one action. Each
+// button has its own error signal, so a failed start does not clear a
+// failed stop.
+func TestAdminPageErrors(t *testing.T) {
+	srcb, err := os.ReadFile("../examples/admin/app.den")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(srcb)
+	if !strings.Contains(src, "if start.Err()") || !strings.Contains(src, "if stop.Err()") {
+		t.Fatal("start.Err() and stop.Err() must both be on the page")
+	}
+}
+
+func TestAdminStreamLost(t *testing.T) {
+	srcb, err := os.ReadFile("../examples/admin/app.den")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := runApp(t, string(srcb), `
+fakeTimers();
+input(find("input"), "den");
+click(find("button", "Sign in"));
+await tick();
+const login = fetches.filter((f) => f.url.endsWith("/api/login"));
+reply(login[0], 200, '{"csrf":"tok"}');
+await tick();
+const svc = fetches.filter((f) => f.url.endsWith("/api/services") && !f.done);
+reply(svc[0], 200, '[{"id":"web","name":"Web","running":false},{"id":"worker","name":"Worker","running":false}]');
+await tick();
+const es = eventSources.at(-1);
+sseOpen(es);
+await tick();
+log("live", find("p").textContent);
+log("starts", findAll("button").filter((b) => b.textContent === "Start").length);
+sseFail(es);
+await tick();
+log("signin", findAll("button").some((b) => b.textContent === "Sign in"));
+log("starts", findAll("button").filter((b) => b.textContent === "Start").length);
+log("sources", eventSources.length);
+await advance(60000);
+log("after", eventSources.length);
+`)
+	expectLines(t, got,
+		`live Connected`,
+		`starts 2`,
+		`signin true`,
+		`starts 0`,
+		`sources 1`,
+		`after 1`,
+	)
+}

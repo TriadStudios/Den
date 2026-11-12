@@ -241,8 +241,23 @@ func importBreaks(src string) []int {
 		}
 		j := i + 1
 		if j < len(toks) && toks[j].t == token.LPAREN {
+			j++
 			for j < len(toks) && toks[j].t != token.RPAREN {
-				j++
+				if toks[j].t == token.SEMICOLON {
+					j++
+					continue
+				}
+				if toks[j].t == token.IDENT || toks[j].t == token.PERIOD {
+					j++
+				}
+				if j < len(toks) && toks[j].t == token.STRING {
+					if j+1 < len(toks) && toks[j+1].t != token.SEMICOLON && toks[j+1].t != token.RPAREN {
+						out = append(out, toks[j].end)
+					}
+					j++
+					continue
+				}
+				break
 			}
 		} else {
 			for j < len(toks) && toks[j].t != token.STRING {
