@@ -117,6 +117,11 @@ component App() {
 				{if email.Touched() && email.Error() != nil {
 					<p class="error">{message(email.Error())}</p>
 				}}
+				<button
+					type="button"
+					onclick={email.SetError(errors.New("That email is already signed up"))}>
+					Simulate server error
+				</button>
 				<label>
 					Age
 					<input

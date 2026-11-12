@@ -1621,6 +1621,10 @@ func (e *emitter) call(x *ast.CallExpr) string {
 				return obj + ".set(" + args() + ")"
 			case "Error":
 				return obj + ".er.get()"
+			case "SetError":
+				// pe is the same slot bind uses for a parse error: Set and
+				// the next edit clear it, and Error prefers it over check.
+				return "(" + obj + ".pe.set(" + args() + ")," + obj + ".tc.set(true))"
 			case "Touched":
 				return obj + ".tc.get()"
 			case "Touch":

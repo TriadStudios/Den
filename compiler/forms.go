@@ -22,12 +22,13 @@ const preludeField = `
 // Field is a value with a check, for forms: field(initial, check).
 type Field[T any] struct{ v T }
 
-func (f *Field[T]) Get() T        { return f.v }
-func (f *Field[T]) Set(v T)       {}
-func (f *Field[T]) Error() error  { return nil }
-func (f *Field[T]) Touched() bool { return false }
-func (f *Field[T]) Touch()        {}
-func (f *Field[T]) Reset()        {}
+func (f *Field[T]) Get() T             { return f.v }
+func (f *Field[T]) Set(v T)            {}
+func (f *Field[T]) Error() error       { return nil }
+func (f *Field[T]) SetError(err error) {}
+func (f *Field[T]) Touched() bool      { return false }
+func (f *Field[T]) Touch()             {}
+func (f *Field[T]) Reset()             {}
 
 // field is a value with a check, which may be nil.
 func field[T any](initial T, check func(T) error) *Field[T] { return &Field[T]{v: initial} }

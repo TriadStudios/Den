@@ -147,6 +147,38 @@ input(a, "5"); await tick(); show();`)
 		`"5" too young 5 true`)
 }
 
+// SetError shows a server message at once, and the next edit or Set clears it.
+func TestRunFieldSetError(t *testing.T) {
+	got := runApp(t, `
+import "errors"
+
+component App() {
+    email := field("", nil)
+    <div>
+        <input bind={email} />
+        {if email.Touched() && email.Error() != nil {
+            <p>{email.Error().Error()}</p>
+        }}
+        <i>{email.Touched()}</i>
+        <button onclick={email.SetError(errors.New("taken"))}>server</button>
+        <button onclick={email.Set("ok@x.com")}>set</button>
+    </div>
+}`, `
+const a = find("input");
+const show = () => log(findAll("p").map((p) => p.textContent).join() || "-", find("i").textContent);
+show();
+click(find("button", "server")); await tick(); show();
+input(a, "a@b.com"); await tick(); show();
+click(find("button", "server")); await tick(); show();
+click(find("button", "set")); await tick(); show();`)
+	expectLines(t, got,
+		`- false`,
+		`taken true`,
+		`- true`,
+		`taken true`,
+		`- true`)
+}
+
 // A string field with a check, as in a signup form, and one with no check.
 func TestRunBindFieldString(t *testing.T) {
 	got := runApp(t, `

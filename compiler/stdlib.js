@@ -354,10 +354,11 @@ function $tclock(t, f) { return t ? new Date(t.w)[f]() : 0; }
 // rest over 1e9, which can differ in the last bit from d / 1e9.
 function $tsecs(d) { const n = d % 1e9; return (d - n) / 1e9 + n / 1e9; }
 // Forms: field(initial, check) and bind={x}. A field is a signal with pe,
-// a signal of the parse error of its element's text (null when it parses);
-// tc, a signal of whether it was touched; er, a computed of its error (pe,
-// else check(value), check being null or a func); and rs, which resets it.
-// Its set clears pe, as the element then shows the value set.
+// a signal of the parse error of its element's text (null when it parses),
+// also written by SetError for a server message; tc, a signal of whether
+// it was touched; er, a computed of its error (pe, else check(value),
+// check being null or a func); and rs, which resets it. Its set clears pe,
+// as the element then shows the value set, and so does the next edit.
 function $field(v, check) {
   const s = $signal(v), set = s.set, pe = (s.pe = $signal(null)), tc = (s.tc = $signal(false));
   s.set = (x) => { pe.set(null); set.call(s, x); };

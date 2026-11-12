@@ -45,7 +45,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/motion` (list rows that enter, leave and glide, a panel, a spring) | 5.9 KB |
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
-| `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.2 KB |
+| `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.3 KB |
 | `examples/fetch` (JSON pager, Reload, and a Save action that posts then reloads) | 8.5 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
@@ -980,13 +980,16 @@ component Signup() {
 - `field(initial, check)` is a `*Field[T]`: a value with a check, a
   `func(T) error` that may be nil. `Get` and `Set` work as on a signal.
   `f.Error()` is the parse error of the element's text if there is one,
-  and otherwise `check(f.Get())`. `f.Touched()` is false until an element
-  bound to `f` loses focus, or `f.Touch()` is called. An element that den
-  takes away while it has focus does not touch `f`: that is not the user
-  leaving the field, though browsers send the same event. `f.Reset()` sets
-  `f` back to its initial value, untouched and with no parse error; `Set`
-  clears a parse error too, as the element then shows the value set.
-  `Get`, `Error` and `Touched` are reactive, like `.Get()` on a signal.
+  and otherwise `check(f.Get())`. `f.SetError(err)` puts a server (or other)
+  message in that same slot and marks the field touched so it shows at
+  once; the next edit, or `Set` / `Reset`, clears it. `f.Touched()` is
+  false until an element bound to `f` loses focus, or `f.Touch()` /
+  `SetError` is called. An element that den takes away while it has focus
+  does not touch `f`: that is not the user leaving the field, though
+  browsers send the same event. `f.Reset()` sets `f` back to its initial
+  value, untouched and with no parse error; `Set` clears a parse or
+  server error too, as the element then shows the value set. `Get`,
+  `Error` and `Touched` are reactive, like `.Get()` on a signal.
 - A form is plain composition: `ok := computed(name.Error() == nil &&
   email.Error() == nil)`, shown with `{if}`, and `<form onsubmit={...}>`
   with `e.PreventDefault()` to submit it.
