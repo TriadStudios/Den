@@ -293,7 +293,7 @@ func (e *emitter) component(cc *checkedComponent) {
 	fmt.Fprintf(e.w, "function %s(%s) {\n", jsIdent(cc.c.Name), strings.Join(params, ", "))
 	if e.ck.usesLife(cc.decl) {
 		// The component's lifecycle record, which every onMount, onCleanup,
-		// after, every and resource in its Go uses: its statements, func
+		// after, every, resource and action in its Go uses: its statements, func
 		// literals and handlers, hoisted row handlers and slot markup
 		// included, all of which are written inside this function.
 		e.line("const $c = $life();")
@@ -1592,6 +1592,25 @@ func (e *emitter) call(x *ast.CallExpr) string {
 		}
 		recv := e.ck.recvName(fun)
 		obj := e.expr(fun.X)
+		if recv == "Action" {
+			if sel := e.ck.info.Selections[fun]; sel != nil && e.ck.isPrelude(sel.Obj()) {
+				switch fun.Sel.Name {
+				case "Data":
+					return obj + ".d.get()"
+				case "Err":
+					return obj + ".e.get()"
+				case "Pending":
+					return obj + ".p.get()"
+				case "Do":
+					if len(x.Args) == 0 {
+						return obj + ".go()"
+					}
+					return obj + ".go(" + e.expr(x.Args[0]) + ")"
+				case "Then":
+					return obj + ".n(" + args() + ")"
+				}
+			}
+		}
 		if e.ck.isFieldMethod(fun) {
 			// A field is a signal, with its parse error pe, whether it
 			// was touched tc, its error er and its reset rs (stdlib.js).
@@ -1735,6 +1754,8 @@ func (e *emitter) call(x *ast.CallExpr) string {
 					return "$field(" + args() + ")"
 				case "resource":
 					return e.resourceCall(x)
+				case "action":
+					return e.actionCall(x)
 				}
 				e.errAt(x, "%s is internal to den", o.Name())
 				return "undefined"
@@ -2021,7 +2042,7 @@ var jsReserved = map[string]bool{
 	"history": true, "location": true, "localStorage": true, "isFinite": true,
 	// and the ones resource and fetchJSON use
 	"fetch": true, "AbortController": true, "BigInt": true,
-	"atob": true, "DataView": true, "ArrayBuffer": true,
+	"atob": true, "btoa": true, "DataView": true, "ArrayBuffer": true,
 }
 
 // jsIdent renames Go identifiers that would clash with JS. Go identifiers

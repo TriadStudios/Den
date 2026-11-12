@@ -198,6 +198,36 @@ const preludeFetchJSON = `
 func fetchJSON[T any](url string) (T, error) { var v T; return v, nil }
 `
 
+// preludeAction declares action and Action, unless the program declares
+// its own action or Action: action returns an *Action[In, Out], so the
+// two come and go together. sendJSON returns (In, Out, error), not
+// (Out, error): In is not in a two-result call, so Go could not infer it,
+// and the In result is only that hint (a zero In), never a value Do sends.
+const preludeAction = `
+// Action is one request the program starts itself: action(sendJSON[In, Out](method, url)).
+type Action[In, Out any] struct{ v Out }
+
+func (a *Action[In, Out]) Do(in ...In)    {}
+func (a *Action[In, Out]) Pending() bool  { return false }
+func (a *Action[In, Out]) Err() error     { return nil }
+func (a *Action[In, Out]) Data() Out      { var v Out; return v }
+func (a *Action[In, Out]) Then(f func(Out)) {}
+
+// action takes the call sendJSON[In, Out](method, url). The In result is
+// a zero In, so both type arguments can be inferred; Do sends the value
+// it is given, not this hint.
+func action[In, Out any](hint In, v Out, err error) *Action[In, Out] { return nil }
+`
+
+// preludeSendJSON declares sendJSON, unless the program declares its own
+// or has neither action nor Action of den's, whose argument it is.
+const preludeSendJSON = `
+// sendJSON is a POST, PUT, PATCH or DELETE of url on the page's origin,
+// encoding an In as JSON and decoding the response into an Out; only as
+// action's argument. The In result is a zero In, so action can infer In.
+func sendJSON[In, Out any](method, url string) (hint In, v Out, err error) { return }
+`
+
 // preludeDen ends the prelude of a program that imports the built-in
 // package den, which is every program that does not declare its own den.
 const preludeDen = `
@@ -448,6 +478,7 @@ func check(files []*File) (*checked, error) {
 	// field returns a *Field[T], so the two come and go together.
 	fieldTaken := own["field"] != "" || own["Field"] != ""
 	resourceBy := resourceNames(own)
+	actionBy := actionNames(own)
 	// A prop is den.Children when its type is, directly or through aliases,
 	// so gen knows which props take markup before the types are checked.
 	for _, f := range files {
@@ -512,6 +543,12 @@ func check(files []*File) (*checked, error) {
 	}
 	if resourceBy["fetchJSON"] == "" {
 		src.WriteString(preludeFetchJSON)
+	}
+	if actionBy["Action"] == "" {
+		src.WriteString(preludeAction)
+	}
+	if actionBy["sendJSON"] == "" {
+		src.WriteString(preludeSendJSON)
 	}
 	if denTaken {
 		src.WriteString(preludePlain)
@@ -658,7 +695,16 @@ next:
 		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && resourceBy[name] != "" {
 			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[resourceBy[name]])
 		}
+		if name, ok := strings.CutPrefix(msg, "undefined: "); ok && actionBy[name] != "" {
+			msg = fmt.Sprintf("%s is not available because this program %s; rename it", name, own[actionBy[name]])
+		}
 		msg = preludeInfer(msg)
+		// A sendJSON whose types cannot be inferred is not a three-result
+		// call, so Go also says action got one argument. The line above
+		// already says to write sendJSON[In, Out].
+		if strings.HasPrefix(msg, "not enough arguments in call to action") && strings.Contains(msg, "hint In") {
+			continue
+		}
 		msg = strings.Replace(msg, "struct containing denOpaque cannot be compared", "a Transition or Layout cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing denOpaqueRef cannot be compared", "a Ref cannot be compared", 1)
 		msg = strings.Replace(msg, "struct containing time.opaque cannot be compared", "den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0", 1)
@@ -710,6 +756,7 @@ next:
 		preludeValues(file, info, fset, byName, errAt)
 		ctx = checkContext(file, info, pkg, fset, byName, errAt)
 		checkResources(file, info, pkg, fset, byName, own, errAt)
+		checkActions(file, info, pkg, fset, byName, own, errAt)
 	}
 	// Map keys become JS Map keys, which compare like Go only for basic types.
 	badKey := map[token.Pos]bool{}
@@ -2016,14 +2063,19 @@ func (ck *checked) reactive(n ast.Node) bool {
 		switch fun := callee(ck.info, ast.Unparen(call.Fun)).(type) {
 		case *ast.SelectorExpr:
 			// A route's Matches and Params read the path signal, and a
-			// resource's Data, Err and Loading read its state's signals.
+			// resource's Data, Err and Loading, and an action's Data,
+			// Err and Pending, read its state's signals.
 			switch recv := ck.recvName(fun); fun.Sel.Name {
 			case "Get":
 				found = recv == "Signal" || recv == "Computed"
 			case "Matches", "Params":
 				found = recv == "Route"
-			case "Data", "Err", "Loading":
+			case "Data", "Err":
+				found = recv == "Resource" || recv == "Action"
+			case "Loading":
 				found = recv == "Resource"
+			case "Pending":
+				found = recv == "Action"
 			}
 			// A field's Get, Error and Touched read its signals.
 			switch fun.Sel.Name {

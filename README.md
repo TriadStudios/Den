@@ -46,7 +46,7 @@ field or method Titel)` before any JavaScript is written.
 | `examples/clock` (a clock, a stopwatch, a search box focused on mount) | 3.8 KB |
 | `examples/theme` (a theme store and compound tabs, passed down with context) | 3.7 KB |
 | `examples/form` (a signup form: bound inputs, checks shown after blur, a summary) | 4.2 KB |
-| `examples/fetch` (a pager over JSON pages, loading and error states, Reload) | 5.9 KB |
+| `examples/fetch` (JSON pager, Reload, and a Save action that posts then reloads) | 8.5 KB |
 | The whole runtime, every feature included | 3.0 KB |
 
 On the js-framework-benchmark operations den runs at **1.00x the time of
@@ -564,6 +564,84 @@ component Users() {
   that has its own at the top level keeps it. `resource` and `Resource`
   go together, and `fetchJSON` goes with them; using one then says why.
 
+<a id="actions"></a>**Actions (sending changes)**
+
+```go
+type Note struct {
+    Text string `json:"text"`
+}
+type Saved struct {
+    OK bool `json:"ok"`
+}
+
+component Editor(notes *Resource[[]Note]) {
+    a := action(sendJSON[Note, Saved]("POST", "/notes"))
+    a.Then(func(_ Saved) { notes.Reload() })
+    <div>
+        <button disabled={a.Pending()} onclick={a.Do(Note{Text: "hi"})}>Save</button>
+        {if a.Err() != nil { <p>{a.Err().Error()}</p> }}
+    </div>
+}
+```
+
+- `action(sendJSON[In, Out](method, url))` is a `*Action[In, Out]`. The
+  method must be the constant `"POST"`, `"PUT"`, `"PATCH"` or `"DELETE"`.
+  The URL is read when `Do` runs, not when the action is made, so a signal
+  in it is not subscribed: change the URL, then call `Do`.
+- `a.Do(v)` starts one request. While `a.Pending()` is true, another `Do`
+  does not send: it sets `a.Err()` to `action: Do called while a request
+  is pending`, and the request in flight still settles and replaces that
+  error. `a.Data()` is the latest successful `Out` (zero before one);
+  `a.Err()` is the latest finished error, or nil after a success. All
+  three are reactive.
+- When `In` is the unnamed `struct{}`, write `a.Do()` with no value: it
+  sends `{}`, except `"DELETE"`, which sends no body. A named empty
+  struct is a normal value and needs `a.Do(Named{})`, which sends `{}`.
+- `a.Then(f)` replaces the success callback (one function). It runs only
+  after a 2xx reply, under the component's lifecycle, so what it makes is
+  owned and cleaned up with the component. A common pattern is
+  `a.Then(func(_ Out) { list.Reload() })`.
+- The request uses the page's shared headers from `"den/http"`,
+  `mode`/`credentials` `same-origin`, and `Content-Type: application/json`
+  when there is a body. Cross-origin, non-http(s), or userinfo URLs error
+  with no request (`sendJSON: … is not on this origin`). Non-2xx errors
+  keep the same shape as `fetchJSON` (`sendJSON: POST /notes: 422 …`) and
+  carry status/code/message for `http.Status` / `Code` / `Message`. A 204
+  or an empty body is the zero `Out`.
+- The body is encoded as Go's `encoding/json` encodes it (tags,
+  `omitempty`, `omitzero`, `-`, embedded fields, maps with string or
+  integer keys sorted as strings, `[]byte` as base64). Unsupported types
+  are compile errors at `In` or `Out`, worded like `fetchJSON`'s.
+- When the component that made the action goes away, the request in
+  flight is aborted and nothing lands afterwards, including `Then`.
+- These are compile errors: `sendJSON` anywhere but as `action`'s whole
+  argument; `action` outside a component's statements; a non-constant or
+  other method; `Do` with the wrong arity for `In`; types den cannot
+  encode or decode; and `action` or `sendJSON` used as values.
+  `action`, `Action` and `sendJSON` are ordinary names and give way
+  together when the program declares its own.
+
+### HTTP errors and headers
+
+Import `"den/http"` (package `http`) for browser request controls. These are
+Den operations, distinct from Go's `net/http`. `http.Status(err) int` and
+`http.Code(err) string` return zero and empty for ordinary errors and nil.
+`http.Message(err) string` returns the server's message, falling back to
+`err.Error()` (empty for nil). Non-2xx errors keep their existing error text
+and status even when reading or parsing the response fails. A JSON response
+`{"error":{"code":"invalid","message":"Check your input"}}` adds its string
+code and message.
+
+`http.SetHeader(name, value string) error` replaces a shared request header;
+`http.DeleteHeader(name string) error` removes it, ignoring case. Check the
+returned error. Each request takes a snapshot, so changes affect subsequent
+requests. For example, set `X-CSRF-Token` after login, and delete it at logout;
+never put tokens in URLs. Headers apply only to same-origin requests; the
+browser also refuses cross-origin redirects. Invalid names, control characters,
+non-byte values and Fetch-forbidden names are rejected. `Proxy-` and `Sec-`
+prefixes and all three method-override headers are rejected, even for safe
+method values. Deleting a forbidden or invalid name also returns an error.
+
 **Styles**
 
 ```go
@@ -1022,24 +1100,3 @@ rebuild of 100 components under 50 ms.
 ## License
 
 Den is licensed under the [Apache License 2.0](LICENSE).
-
-### HTTP errors and headers
-
-Import `"den/http"` (package `http`) for browser request controls. These are
-Den operations, distinct from Go's `net/http`. `http.Status(err) int` and
-`http.Code(err) string` return zero and empty for ordinary errors and nil.
-`http.Message(err) string` returns the server's message, falling back to
-`err.Error()` (empty for nil). Non-2xx errors keep their existing error text
-and status even when reading or parsing the response fails. A JSON response
-`{"error":{"code":"invalid","message":"Check your input"}}` adds its string
-code and message.
-
-`http.SetHeader(name, value string) error` replaces a shared request header;
-`http.DeleteHeader(name string) error` removes it, ignoring case. Check the
-returned error. Each request takes a snapshot, so changes affect subsequent
-requests. For example, set `X-CSRF-Token` after login, and delete it at logout;
-never put tokens in URLs. Headers apply only to same-origin requests; the
-browser also refuses cross-origin redirects. Invalid names, control characters,
-non-byte values and Fetch-forbidden names are rejected. `Proxy-` and `Sec-`
-prefixes and all three method-override headers are rejected, even for safe
-method values. Deleting a forbidden or invalid name also returns an error.

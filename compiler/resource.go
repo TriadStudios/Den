@@ -55,6 +55,8 @@ func preludeInfer(msg string) string {
 		return msg
 	case m[1] == "fetchJSON":
 		return "fetchJSON needs the type to decode the JSON into: fetchJSON[T](url)"
+	case m[1] == "sendJSON":
+		return "sendJSON needs the types to encode and to decode: sendJSON[In, Out](method, url)"
 	}
 	return fmt.Sprintf("in call to %s, cannot infer %s: write it, as in %s[%s](...)", m[1], m[2], m[1], m[2])
 }
@@ -173,11 +175,15 @@ func checkResources(file *ast.File, info *types.Info, pkg *types.Package, fset *
 	}
 }
 
-// jsonChecker checks the types fetchJSON decodes JSON into.
+// jsonChecker checks the types fetchJSON decodes JSON into, or, with
+// encode set, the types sendJSON encodes JSON from. who is the function
+// name in the errors ("fetchJSON" or "sendJSON").
 type jsonChecker struct {
-	fset  *token.FileSet
-	errAt func(token.Pos, string)
-	tags  map[string]bool // the tag options reported, by field and option
+	fset   *token.FileSet
+	errAt  func(token.Pos, string)
+	tags   map[string]bool // the tag options reported, by field and option
+	who    string
+	encode bool
 }
 
 // check reports the first type reached from t, as encoding/json reaches
@@ -185,9 +191,16 @@ type jsonChecker struct {
 // It also reports json tag options other than omitempty and omitzero on
 // the fields it decodes, at the field, once each.
 func (jc *jsonChecker) check(t types.Type, pos token.Pos) {
+	if jc.who == "" {
+		jc.who = "fetchJSON"
+	}
 	var seen []types.Type
 	if bad, where, why := jc.walk(t, "", &seen); bad != nil {
-		msg := errorf("fetchJSON cannot decode JSON into %s", bad)
+		verb := "decode JSON into"
+		if jc.encode {
+			verb = "encode JSON from"
+		}
+		msg := errorf("%s cannot %s %s", jc.who, verb, bad)
 		if where != "" {
 			msg += " (" + where + ")"
 		}
@@ -203,7 +216,10 @@ func (jc *jsonChecker) walk(written types.Type, where string, seen *[]types.Type
 		return nil, "", ""
 	}
 	*seen = append(*seen, t)
-	const only = "den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them"
+	only := "den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them"
+	if jc.encode {
+		only = "den encodes JSON from strings, numbers, bools, and structs, arrays, slices and maps of them"
+	}
 	if n, ok := t.(*types.Named); ok && (jc.fset.Position(n.Obj().Pos()).Filename == preludeFile || isChildren(t)) || isOpaque(t) {
 		return written, where, "it is one of den's own types"
 	}
@@ -218,7 +234,11 @@ func (jc *jsonChecker) walk(written types.Type, where string, seen *[]types.Type
 		return jc.walk(u.Elem(), errorf("the elements of %s", written), seen)
 	case *types.Map:
 		if k, ok := u.Key().Underlying().(*types.Basic); !ok || k.Info()&(types.IsString|types.IsInteger) == 0 {
-			return written, where, "the keys of a JSON object decode only into strings and integers"
+			why := "the keys of a JSON object decode only into strings and integers"
+			if jc.encode {
+				why = "the keys of a JSON object encode only from strings and integers"
+			}
+			return written, where, why
 		}
 		return jc.walk(u.Elem(), errorf("the values of %s", written), seen)
 	case *types.Struct:
@@ -227,7 +247,7 @@ func (jc *jsonChecker) walk(written types.Type, where string, seen *[]types.Type
 			key := jc.fset.Position(f.v.Pos()).String() + " name"
 			if !jc.tags[key] {
 				jc.tags[key] = true
-				jc.errAt(f.v.Pos(), errorf("fetchJSON does not support the json tag name %q (on field %s of %s): versions of Go's encoding/json read it differently; use letters, digits, spaces and ASCII punctuation other than quotes, backquotes and backslashes", f.name, f.v.Name(), written))
+				jc.errAt(f.v.Pos(), errorf("%s does not support the json tag name %q (on field %s of %s): versions of Go's encoding/json read it differently; use letters, digits, spaces and ASCII punctuation other than quotes, backquotes and backslashes", jc.who, f.name, f.v.Name(), written))
 			}
 		}
 		for _, f := range fields {
@@ -239,7 +259,11 @@ func (jc *jsonChecker) walk(written types.Type, where string, seen *[]types.Type
 				key := jc.fset.Position(f.v.Pos()).String() + " " + o
 				if o != "" && o != "omitempty" && o != "omitzero" && !jc.tags[key] {
 					jc.tags[key] = true
-					jc.errAt(f.v.Pos(), fmt.Sprintf("fetchJSON does not support the json tag option %q yet (on %s): only omitempty and omitzero, which change nothing in decoding", o, at))
+					if jc.encode {
+						jc.errAt(f.v.Pos(), fmt.Sprintf("sendJSON does not support the json tag option %q yet (on %s): only omitempty and omitzero", o, at))
+					} else {
+						jc.errAt(f.v.Pos(), fmt.Sprintf("%s does not support the json tag option %q yet (on %s): only omitempty and omitzero, which change nothing in decoding", jc.who, o, at))
+					}
 				}
 			}
 			if bad, w, why := jc.walk(f.v.Type(), at, seen); bad != nil {
@@ -250,6 +274,9 @@ func (jc *jsonChecker) walk(written types.Type, where string, seen *[]types.Type
 	case *types.Pointer:
 		return written, where, "den does not support pointers yet"
 	case *types.Interface:
+		if jc.encode {
+			return written, where, "den does not encode JSON from interfaces"
+		}
 		return written, where, "den does not decode JSON into interfaces"
 	}
 	return written, where, only
@@ -500,34 +527,50 @@ func (e *emitter) requester(f *ast.CallExpr, t types.Type) string {
 }
 
 // jsonTable holds the program's JSON descriptors, which emit writes as
-// the JS array $jt: one for each type that fetchJSON decodes into or that
-// such a type holds. $jdec decodes JSON into the type that $jt[i]
-// describes. A descriptor is an object with k, its kind: "s" string, "b"
+// the JS array $jt: one for each type that fetchJSON decodes into, that
+// sendJSON encodes, or that such a type holds. $jdec decodes JSON into
+// the type that $jt[i] describes, and $jenc encodes a value of it.
+// A descriptor is an object with k, its kind: "s" string, "b"
 // bool, "i" signed and "u" unsigned integer and "f" float of b bits; "l"
 // slice and "a" array (of n) of the type $jt[e]; "m" map from $jt[K] to
 // $jt[e]; "o" struct, with s, its name, z, a function returning its zero
 // value, and f, its fields as [key, folded key, JS path, type, Go path
 // when promoted], in breadth-first order; and F, when its keys have
-// letters outside ASCII, the table $jfold folds them by (foldTable). t is
-// the type as den names it in errors.
+// letters outside ASCII, the table $jfold folds them by (foldTable). When
+// the type is encoded, g is its fields again as [key, JS path, type,
+// omit], in field order: omit is 1 for omitempty, 2 for omitzero, 3 for
+// both. t is the type as den names it in errors. enc records which
+// descriptors were built with g.
 type jsonTable struct {
 	types []types.Type
 	js    []string
+	enc   []bool
 }
 
 // jsonDesc returns the index in $jt of the descriptor of t, adding it
 // and the descriptors it refers to when they are not there yet.
-func (e *emitter) jsonDesc(t types.Type) int {
+func (e *emitter) jsonDesc(t types.Type) int { return e.jsonDescMode(t, false) }
+
+// jsonDescMode is jsonDesc. With encode set, the descriptor can also
+// encode t ($jenc reads g), and so can every type it holds. A descriptor
+// built for decoding only is rebuilt once something encodes that type;
+// the fields $jdec reads stay as they were.
+func (e *emitter) jsonDescMode(t types.Type, encode bool) int {
 	t = types.Unalias(t)
 	for i, s := range e.json.types {
 		if types.Identical(s, t) {
+			if encode && !e.json.enc[i] {
+				e.json.enc[i] = true
+				e.json.js[i] = e.jsonDescJS(t, true)
+			}
 			return i
 		}
 	}
 	i := len(e.json.types)
 	e.json.types = append(e.json.types, t) // first, for the types that hold t
+	e.json.enc = append(e.json.enc, encode)
 	e.json.js = append(e.json.js, "")
-	e.json.js[i] = e.jsonDescJS(t)
+	e.json.js[i] = e.jsonDescJS(t, encode)
 	return i
 }
 
@@ -539,7 +582,7 @@ var jsonBits = map[types.BasicKind]int{
 	types.Float32: 32, types.Float64: 64,
 }
 
-func (e *emitter) jsonDescJS(t types.Type) string {
+func (e *emitter) jsonDescJS(t types.Type, encode bool) string {
 	ts := ", t: " + jsString(errorf("%s", t))
 	switch u := t.Underlying().(type) {
 	case *types.Basic:
@@ -557,11 +600,11 @@ func (e *emitter) jsonDescJS(t types.Type) string {
 			return fmt.Sprintf(`{k: "i"%s, b: %d}`, ts, jsonBits[u.Kind()])
 		}
 	case *types.Slice:
-		return fmt.Sprintf(`{k: "l"%s, e: %d}`, ts, e.jsonDesc(u.Elem()))
+		return fmt.Sprintf(`{k: "l"%s, e: %d}`, ts, e.jsonDescMode(u.Elem(), encode))
 	case *types.Array:
-		return fmt.Sprintf(`{k: "a"%s, e: %d, n: %d}`, ts, e.jsonDesc(u.Elem()), u.Len())
+		return fmt.Sprintf(`{k: "a"%s, e: %d, n: %d}`, ts, e.jsonDescMode(u.Elem(), encode), u.Len())
 	case *types.Map:
-		return fmt.Sprintf(`{k: "m"%s, K: %d, e: %d}`, ts, e.jsonDesc(u.Key()), e.jsonDesc(u.Elem()))
+		return fmt.Sprintf(`{k: "m"%s, K: %d, e: %d}`, ts, e.jsonDescMode(u.Key(), encode), e.jsonDescMode(u.Elem(), encode))
 	}
 	// A struct, the only other type checkResources lets through.
 	name := ""
@@ -574,6 +617,12 @@ func (e *emitter) jsonDescJS(t types.Type) string {
 	// first in breadth-first order, as Go's encoding/json does since it is
 	// built on json/v2 (before, the first in field order).
 	jfs, _ := jsonFields(t)
+	var gfields []string
+	if encode {
+		for _, f := range jfs {
+			gfields = append(gfields, e.encodeFieldJS(t, f))
+		}
+	}
 	slices.SortFunc(jfs, func(a, b jsonField) int { return a.id - b.id })
 	for _, f := range jfs {
 		var path, goPath []string
@@ -584,7 +633,7 @@ func (e *emitter) jsonDescJS(t types.Type) string {
 			goPath = append(goPath, fv.Name())
 			in = fv.Type()
 		}
-		entry := fmt.Sprintf("[%s, %s, [%s], %d", jsString(f.name), jsString(foldName(f.name)), strings.Join(path, ", "), e.jsonDesc(f.v.Type()))
+		entry := fmt.Sprintf("[%s, %s, [%s], %d", jsString(f.name), jsString(foldName(f.name)), strings.Join(path, ", "), e.jsonDescMode(f.v.Type(), encode))
 		if len(goPath) > 1 {
 			// Go names a promoted field in errors by the embedded fields
 			// it is reached through, then its key.
@@ -602,7 +651,41 @@ func (e *emitter) jsonDescJS(t types.Type) string {
 		sort.Strings(fs)
 		s += ", F: {" + strings.Join(fs, ", ") + "}"
 	}
+	if encode {
+		// g is the same fields in field order, with the omit flags $jenc
+		// reads. Decoding never looks at it, so a type that is only
+		// decoded stays byte for byte what it was.
+		s += ", g: [" + strings.Join(gfields, ", ") + "]"
+	}
 	return s + "}"
+}
+
+// encodeFieldJS is one g entry: [json key, JS path, descriptor, omit].
+// omit is 1 for omitempty, 2 for omitzero and 3 for both, as encoding/json
+// omits a field when either option applies.
+func (e *emitter) encodeFieldJS(parent types.Type, f jsonField) string {
+	var path []string
+	in := parent
+	for _, i := range f.index {
+		fv := in.Underlying().(*types.Struct).Field(i)
+		path = append(path, jsString(fieldName(fv.Name())))
+		in = fv.Type()
+	}
+	return fmt.Sprintf("[%s, [%s], %d, %d]", jsString(f.name), strings.Join(path, ", "), e.jsonDescMode(f.v.Type(), true), omitMask(f.opts))
+}
+
+// omitMask is the omit flags of a json tag's options.
+func omitMask(opts string) int {
+	n := 0
+	for _, o := range strings.Split(opts, ",") {
+		switch o {
+		case "omitempty":
+			n |= 1
+		case "omitzero":
+			n |= 2
+		}
+	}
+	return n
 }
 
 // out returns the JS declaring $jt, or "" when the program decodes no

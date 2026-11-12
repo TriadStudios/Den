@@ -4,6 +4,7 @@ import "den/http"
 // signal n names, and loads it again when n changes. den build copies
 // public/ into dist, so the pages are served next to the app. There are
 // three; Next on the last asks for a fourth, and the server answers 404.
+// Save posts a note and, when that succeeds, reloads the page.
 
 type Planet struct {
 	Name  string `json:"name"`
@@ -14,6 +15,14 @@ type Planet struct {
 type Page struct {
 	Planets []Planet `json:"planets"`
 	Last    bool     `json:"last"`
+}
+
+type Note struct {
+	Text string `json:"text"`
+}
+
+type Saved struct {
+	OK bool `json:"ok"`
 }
 
 func moons(n int) string {
@@ -27,6 +36,9 @@ component App() {
 	n := signal(1)
 	_ = http.SetHeader("X-Demo", "planets")
 	page := resource(fetchJSON[Page]("pages/" + itoa(n.Get()) + ".json"))
+	note := signal("")
+	save := action(sendJSON[Note, Saved]("POST", "/notes"))
+	save.Then(func(_ Saved) { page.Reload() })
 	<main class="app">
 		<h1>Planets</h1>
 		<p class="sub">Each page is JSON, fetched and decoded into Go types.</p>
@@ -39,6 +51,18 @@ component App() {
 				Clear demo header
 			</button>
 		</nav>
+		<div class="note">
+			<input value={note.Get()} placeholder="Note" oninput={note.Set(e.Value())} />
+			<button
+				type="button"
+				disabled={save.Pending()}
+				onclick={save.Do(Note{Text: note.Get()})}>
+				Save
+			</button>
+		</div>
+		{if save.Err() != nil {
+			<p class="error">{save.Err().Error()}</p>
+		}}
 		{if page.Loading() {
 			<p class="status">Loading page {n.Get()}…</p>
 		}}

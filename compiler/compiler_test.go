@@ -2205,6 +2205,164 @@ component App() {
 component App() {
     <input BIND="s" />
 }`, `app.den:3:12: unknown attribute "BIND" (use lowercase: bind={...})`},
+		{"sendJSON outside action", `
+component App() {
+    n, _, _ := sendJSON[int, int]("POST", "/n")
+    <p>{n}</p>
+}`, `app.den:3:16: sendJSON can only be used as action's argument: action(sendJSON[In, Out](method, url))`},
+		{"sendJSON in a function", `
+func load() (int, int, error) { return sendJSON[int, int]("POST", "/n") }
+component App() {
+    <p>x</p>
+}`, `app.den:2:40: sendJSON can only be used as action's argument: action(sendJSON[In, Out](method, url))`},
+		{"sendJSON without its types", `
+component App() {
+    a := action(sendJSON("POST", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:17: sendJSON needs the types to encode and to decode: sendJSON[In, Out](method, url)`},
+		{"sendJSON used as a value", `
+component App() {
+    f := sendJSON[int, int]
+    <p>{f == nil}</p>
+}`, `app.den:3:10: sendJSON can only be called, not used as a value`},
+		{"action used as a value", `
+component App() {
+    f := action[int, int]
+    <p>{f == nil}</p>
+}`, `app.den:3:10: action can only be called, not used as a value`},
+		{"action in a handler", `
+component App() {
+    <button onclick={action(sendJSON[int, int]("POST", "/n")).Do(1)}>x</button>
+}`, `app.den:3:22: action can only be called in a component's statements`},
+		{"action in markup", `
+component App() {
+    <p>{action(sendJSON[int, int]("POST", "/n")).Pending()}</p>
+}`, `app.den:3:9: action can only be called in a component's statements`},
+		{"action in a func literal", `
+component App() {
+    load := func() *Action[int, int] { return action(sendJSON[int, int]("POST", "/n")) }
+    <p>{load == nil}</p>
+}`, `app.den:3:47: action can only be called in a component's statements`},
+		{"action in computed", `
+component App() {
+    n := computed(action(sendJSON[int, int]("POST", "/n")).Data())
+    <p>{n.Get()}</p>
+}`, `app.den:3:19: action can only be called in a component's statements`},
+		{"action in a function", `
+func load() *Action[int, int] { return action(sendJSON[int, int]("POST", "/n")) }
+component App() {
+    <p>x</p>
+}`, `app.den:2:40: action can only be called in a component's statements`},
+		{"action in a prop", `
+component App() {
+    <Show a={action(sendJSON[int, int]("POST", "/n"))} />
+}
+component Show(a *Action[int, int]) {
+    <p>{a.Pending()}</p>
+}`, `app.den:3:14: action can only be called in a component's statements`},
+		{"action of something other than sendJSON", `
+func load() (int, int, error) { return 0, 0, nil }
+component App() {
+    a := action(load())
+    <p>{a.Pending()}</p>
+}`, `app.den:4:17: action takes a call of sendJSON, as in action(sendJSON[In, Out](method, url))`},
+		{"den's sendJSON hidden by the program's", `
+func sendJSON(url string) (int, int, error) { return 0, 0, nil }
+component App() {
+    a := action(sendJSON("/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:4:17: action takes a call of den's sendJSON, which is not available because this program declares its own sendJSON; rename it`},
+		{"sendJSON hidden by the program's action", `
+func action(n int) int { return n }
+component App() {
+    n, _, _ := sendJSON[int, int]("POST", "/n")
+    <p>{action(n)}</p>
+}`, `app.den:4:16: sendJSON is not available because this program declares its own action; rename it`},
+		{"action hidden by the program's Action", `
+type Action struct{ N int }
+component App() {
+    a := action(sendJSON[int, int]("POST", "/n"))
+    <p>{a.N}</p>
+}`, "app.den:4:10: action is not available because this program declares its own Action; rename it\napp.den:4:17: sendJSON is not available because this program declares its own Action; rename it"},
+		{"sendJSON method GET", `
+component App() {
+    a := action(sendJSON[int, int]("GET", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:36: sendJSON's method must be "POST", "PUT", "PATCH" or "DELETE", not "GET"`},
+		{"sendJSON method not a constant", `
+component App() {
+    m := signal("POST")
+    a := action(sendJSON[int, int](m.Get(), "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:4:36: sendJSON's method must be the constant "POST", "PUT", "PATCH" or "DELETE"`},
+		{"sendJSON of a func", `
+component App() {
+    a := action(sendJSON[func(), int]("POST", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:26: sendJSON cannot encode JSON from func(): den encodes JSON from strings, numbers, bools, and structs, arrays, slices and maps of them`},
+		{"sendJSON of a map with bool keys", `
+component App() {
+    a := action(sendJSON[map[bool]int, int]("POST", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:26: sendJSON cannot encode JSON from map[bool]int: the keys of a JSON object encode only from strings and integers`},
+		{"sendJSON of an interface", `
+component App() {
+    a := action(sendJSON[any, int]("POST", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:26: sendJSON cannot encode JSON from any: den does not encode JSON from interfaces`},
+		{"sendJSON into a func", `
+component App() {
+    a := action(sendJSON[int, func()]("POST", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:31: sendJSON cannot decode JSON into func(): den decodes JSON into strings, numbers, bools, and structs, arrays, slices and maps of them`},
+		{"sendJSON with the string tag option", `
+type T struct {
+    ID int "json:\"id,string\""
+}
+component App() {
+    a := action(sendJSON[T, int]("POST", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:5: sendJSON does not support the json tag option "string" yet (on field ID of T): only omitempty and omitzero`},
+		{"sendJSON with a tag name Go versions read differently", `
+type T struct {
+    Price int "json:\"price€\""
+}
+component App() {
+    a := action(sendJSON[T, int]("POST", "/n"))
+    <p>{a.Pending()}</p>
+}`, `app.den:3:5: sendJSON does not support the json tag name "price€" (on field Price of T): versions of Go's encoding/json read it differently; use letters, digits, spaces and ASCII punctuation other than quotes, backquotes and backslashes`},
+		{"Do with no value", `
+component App() {
+    a := action(sendJSON[int, int]("POST", "/n"))
+    a.Do()
+    <p>{a.Pending()}</p>
+}`, `app.den:4:7: Do takes the value to send, as in a.Do(v)`},
+		{"Do with two values", `
+component App() {
+    a := action(sendJSON[int, int]("POST", "/n"))
+    a.Do(1, 2)
+    <p>{a.Pending()}</p>
+}`, `app.den:4:7: Do takes the value to send, as in a.Do(v)`},
+		{"Do with an ellipsis", `
+component App() {
+    a := action(sendJSON[int, int]("POST", "/n"))
+    xs := []int{1}
+    a.Do(xs...)
+    <p>{a.Pending()}</p>
+}`, `app.den:5:7: Do takes the value to send, as in a.Do(v)`},
+		{"Do with a value when In is struct{}", `
+component App() {
+    a := action(sendJSON[struct{}, int]("POST", "/n"))
+    a.Do(struct{}{})
+    <p>{a.Pending()}</p>
+}`, `app.den:4:7: Do takes no value when In is struct{}: a.Do() sends {} (or no body, for DELETE)`},
+		{"Do with no value on a named empty struct", `
+type E struct{}
+component App() {
+    a := action(sendJSON[E, int]("POST", "/n"))
+    a.Do()
+    <p>{a.Pending()}</p>
+}`, `app.den:5:7: Do takes the value to send, as in a.Do(v)`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)

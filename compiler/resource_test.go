@@ -724,7 +724,7 @@ component App() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"$resource", "$fetchJSON", "$jparse", "$jdec", "$jt", "AbortController"} {
+	for _, name := range []string{"$resource", "$fetchJSON", "$jparse", "$jdec", "$jt", "AbortController", "$action", "$sendJSON", "$jenc"} {
 		if strings.Contains(res.JS, name) {
 			t.Errorf("an app without resource ships %s", name)
 		}
@@ -736,6 +736,11 @@ component App() {
 	for _, name := range []string{"$resource", "$fetchJSON", "$jparse", "$jdec", "$jt", "$jzero", "$jnum", "$jfold"} {
 		if !strings.Contains(res.JS, name) {
 			t.Errorf("an app with resource does not ship %s", name)
+		}
+	}
+	for _, name := range []string{"$action", "$sendJSON", "$jenc", "$jflt", "$jb64"} {
+		if strings.Contains(res.JS, name) {
+			t.Errorf("an app with resource and no action ships %s", name)
 		}
 	}
 }
@@ -772,7 +777,12 @@ click(next); await tick(); show();
 await tick(); show();
 click(find("button", "Reload")); await tick(); await tick(); show();
 click(prev); await tick(); await tick(); show();
-log(fetches.map((f) => f.url.slice("http://localhost".length)).join(" "));`)
+log(fetches.map((f) => f.url.slice("http://localhost".length)).join(" "));
+input(find("input"), "io");
+click(find("button", "Save")); await tick(); await tick();
+const save = fetches.at(-1);
+log(save.opts.method, save.opts.body, save.opts.headers["content-type"], save.opts.headers["x-demo"]);
+log(findAll("p").map((p) => p.textContent).find((t) => t.includes("sendJSON")));`)
 	expectLines(t, got,
 		`Each page is JSON, fetched and decoded into Go types. / Loading page 1… | `,
 		`Each page is JSON, fetched and decoded into Go types. | Mercuryrocky, 0 moons, Venusrocky, 0 moons, Earthrocky, 1 moon`,
@@ -783,7 +793,9 @@ log(fetches.map((f) => f.url.slice("http://localhost".length)).join(" "));`)
 		`Each page is JSON, fetched and decoded into Go types. / 404: fetchJSON: GET pages/4.json: 404 Not Found  | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
 		`Each page is JSON, fetched and decoded into Go types. / 404: fetchJSON: GET pages/4.json: 404 Not Found  | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
 		`Each page is JSON, fetched and decoded into Go types. / That is every planet. Next asks for a page that is not there. | Uranusice giant, 28 moons, Neptuneice giant, 16 moons`,
-		`/pages/1.json /pages/2.json /pages/3.json /pages/4.json /pages/4.json /pages/3.json`)
+		`/pages/1.json /pages/2.json /pages/3.json /pages/4.json /pages/4.json /pages/3.json`,
+		`POST {"text":"io"} application/json planets`,
+		`sendJSON: POST /notes: 404 Not Found`)
 }
 
 // A resource's URL can read a provided context value, and an input bound

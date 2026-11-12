@@ -662,3 +662,250 @@ function $jin(o, p, g) { const [n, ...r] = p; return { ...o, [n]: r.length ? $ji
 function $jfold(k, F) {
   return [...k].map((c) => { const r = c.codePointAt(0); return r < 128 ? c.toUpperCase() : r === 383 ? "S" : r === 8490 ? "K" : F?.[c] ?? c; }).join("");
 }
+// $action is action(sendJSON[In, Out](method, url)). a returns [method, url],
+// read when Do runs (go), inside $scope, so a signal it reads is not
+// subscribed and a panic is reported rather than sent. q is $sendJSON.
+// d, e and p are Data, Err and Pending. A Do while one is pending sets Err
+// and sends nothing; the request in flight still settles, and that outcome
+// replaces Err. n is Then, one function, replaced, called only after a
+// success. k is the AbortController in flight. When the component goes
+// (c is its lifecycle record), the request is aborted and nothing lands.
+function $action(c, a, q, z) {
+  const r = { d: $signal(z), e: $signal(null), p: $signal(false) };
+  let k = null, f = null;
+  const stop = () => { if (k) k.abort(); k = null; };
+  r.go = (v) => {
+    if (r.p.v) { r.e.set(Error("action: Do called while a request is pending")); return; }
+    let m, u;
+    try { [m, u] = $scope(a)[0]; } catch (e) { reportError(e); return; }
+    const ac = new AbortController();
+    k = ac;
+    r.p.set(true);
+    q(m, u, v, ac.signal).then(
+      (x) => { if (k === ac) { r.d.set(x); r.e.set(null); r.p.set(false); if (f) $lifeTry(c, () => f(x)); } },
+      (x) => { if (k === ac) { r.e.set(x); r.p.set(false); } },
+    );
+  };
+  r.n = (g) => { f = g; };
+  $onCleanup(c, stop);
+  return r;
+}
+// $sendJSON(J, inn, out) is the requester of sendJSON[In, Out]: method and
+// url were read by Do, v is the In (undefined when In is struct{} and the
+// call was Do()), signal aborts it. The URL must be on the page's origin,
+// checked before anything is sent. struct{} sends {}, except DELETE, which
+// sends no body. A 204 or an empty body is the zero Out.
+function $sendJSON(J, inn, out) {
+  return async (method, u, v, signal) => {
+    let p = "sendJSON: ", t;
+    try { t = new URL(u, location.href); } catch {}
+    if (t?.origin !== location.origin || !/^https?:$/.test(t.protocol) || t.username || t.password) throw Error(p + u + " is not on this origin");
+    p += method + " " + u + ": ";
+    let body = null;
+    if (v === undefined) body = method === "DELETE" ? null : "{}";
+    else body = $jenc(J, inn, v);
+    const headers = $httpSnapshot();
+    if (body !== null && headers["content-type"] === undefined) headers["content-type"] = "application/json";
+    let s;
+    try {
+      const opts = { method, mode: "same-origin", credentials: "same-origin", headers, signal };
+      if (body !== null) opts.body = body;
+      t = await fetch(t.href, opts);
+      s = t.ok && t.status !== 204 ? await t.text() : "";
+    } catch (x) { throw signal.aborted ? x : Error(p + x.message); }
+    if (!t.ok) throw await $httpError(t, p);
+    if (t.status === 204 || s === "") return $jzero(J, out);
+    try { s = $jparse(s); } catch (x) { throw Error(p + "invalid JSON: " + x.message); }
+    return $jdec(J, out, s, $jzero(J, out));
+  };
+}
+// $jenc encodes v as the type J[i] describes, the way encoding/json does:
+// tags and omitempty/omitzero from g, embedded fields flattened, map keys
+// sorted as strings in code-point order, []byte as base64, HTML-escaped
+// strings. It walks a stack, like $jdec, so a deep value does not recurse.
+// $jput encodes one value, or for an object or array pushes a frame and
+// returns st, the sentinel that the value is not ready yet.
+function $jenc(J, i, v) {
+  const st = [];
+  let r = $jput(st, J, i, v);
+  while (st.length) {
+    const f = st.at(-1);
+    if (r !== st) f.add(r);
+    const n = f.next();
+    if (n) r = $jput(st, J, n[0], n[1]);
+    else { st.pop(); r = f.end(); }
+  }
+  return r;
+}
+function $jput(st, J, i, v) {
+  const d = J[i], k = d.k;
+  if (v == null && (k === "l" || k === "m")) return "null";
+  if (k === "b") return v ? "true" : "false";
+  if (k === "s") return $jstr(v);
+  if (k === "f") return $jflt(v, d.b);
+  if (k === "i" || k === "u") return $jint(v);
+  if (k === "l" && J[d.e].k === "u" && J[d.e].b === 8) return $jstr($jb64(v));
+  if (k === "o") {
+    const g = d.g;
+    let x = 0, buf = "{", sep = "";
+    st.push({
+      next() {
+        while (x < g.length) {
+          const [, path, ti, omit] = g[x++];
+          let cur = v;
+          for (const p of path) cur = cur[p];
+          if (omit && $jomit(J, ti, cur, omit)) continue;
+          this.k = g[x - 1][0];
+          return [ti, cur];
+        }
+      },
+      add(s) { buf += sep + $jstr(this.k) + ":" + s; sep = ","; },
+      end: () => buf + "}",
+    });
+    return st;
+  }
+  if (k === "m") {
+    const keys = [...v.keys()].sort($jkey);
+    let x = 0, buf = "{", sep = "";
+    const K = J[d.K];
+    st.push({
+      next() {
+        if (x < keys.length) {
+          const key = keys[x++];
+          this.k = K.k === "s" ? key : $jint(key);
+          return [d.e, v.get(key)];
+        }
+      },
+      add(s) { buf += sep + $jstr(this.k) + ":" + s; sep = ","; },
+      end: () => buf + "}",
+    });
+    return st;
+  }
+  const n = k === "a" ? d.n : v.n, arr = k === "a" ? v : v.a, off = k === "a" ? 0 : v.o;
+  let x = 0, buf = "[", sep = "";
+  st.push({
+    next() { if (x < n) { const i = x++; return [d.e, arr[off + i]]; } },
+    add(s) { buf += sep + s; sep = ","; },
+    end: () => buf + "]",
+  });
+  return st;
+}
+// $jomit reports whether encoding/json omits a field with this omit mask:
+// 1 omitempty, 2 omitzero, 3 both, and either one is enough. A struct is
+// never empty. omitzero of a struct is every field zero, and a map or a
+// slice is zero only when it is nil. Den's maps are never nil (a nil map
+// is an empty one), so an empty map is kept by omitzero and encoded as {}.
+function $jomit(J, i, v, flag) {
+  if (flag & 2 && $jisz(v)) return true;
+  if (flag & 1 && $jempty(J, i, v)) return true;
+  return false;
+}
+function $jempty(J, i, v) {
+  const k = J[i].k;
+  if (k === "b") return !v;
+  if (k === "s") return v === "";
+  if (k === "i" || k === "u" || k === "f") return v === 0;
+  if (k === "l") return v == null || v.n === 0;
+  if (k === "m") return v == null || v.size === 0;
+  if (k === "a") return J[i].n === 0;
+  return false;
+}
+function $jisz(v) {
+  if (v == null) return true;
+  if (typeof v !== "object") return v === false || v === 0 || v === "";
+  if (v instanceof $Slice || v instanceof Map) return false;
+  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) if (!$jisz(v[i])) return false; return true; }
+  for (const p in v) if (!$jisz(v[p])) return false;
+  return true;
+}
+// $jstr is a JSON string as encoding/json writes it, with <, > and & and
+// U+2028 and U+2029 escaped so the text is safe in HTML.
+function $jstr(s) {
+  let o = '"';
+  for (const c of s) {
+    const r = c.codePointAt(0);
+    if (c === '"' || c === "\\") o += "\\" + c;
+    else if (c === "\b") o += "\\b";
+    else if (c === "\f") o += "\\f";
+    else if (c === "\n") o += "\\n";
+    else if (c === "\r") o += "\\r";
+    else if (c === "\t") o += "\\t";
+    else if (r < 32 || c === "<" || c === ">" || c === "&") o += "\\u00" + r.toString(16).padStart(2, "0");
+    else if (r === 0x2028 || r === 0x2029) o += "\\u" + r.toString(16);
+    else o += c;
+  }
+  return o + '"';
+}
+// $jflt is a float as encoding/json's ES6 formatting writes it. float64
+// follows JSON.stringify except for -0, which stays -0. float32 is the
+// shortest round trip through a float32, the same digits Go prints.
+function $jflt(n, bits) {
+  if (n !== n) throw Error("json: unsupported value: NaN");
+  if (n === Infinity) throw Error("json: unsupported value: +Inf");
+  if (n === -Infinity) throw Error("json: unsupported value: -Inf");
+  if (bits < 64) n = Math.fround(n);
+  if (Object.is(n, -0)) return "-0";
+  if (bits >= 64) return JSON.stringify(n);
+  const neg = n < 0, abs = Math.abs(n), sci = abs < 1e-6 || abs >= 1e21;
+  for (let p = 1; p <= 9; p++) {
+    const raw = abs.toPrecision(p);
+    if (Math.fround((neg ? -1 : 1) * Number(raw)) !== n) continue;
+    return (neg ? "-" : "") + $jrender(raw, sci);
+  }
+  return JSON.stringify(Math.abs(n) === n ? n : abs);
+}
+function $jparts(raw) {
+  let i = raw.indexOf("e");
+  if (i < 0) i = raw.indexOf("E");
+  const m = i < 0 ? raw : raw.slice(0, i);
+  let e = i < 0 ? 0 : +raw.slice(i + 1);
+  const d = m.indexOf(".");
+  if (i < 0) e = (d < 0 ? m.length : d) - 1;
+  return [d < 0 ? m : m.slice(0, d) + m.slice(d + 1), e];
+}
+function $jrender(raw, sci) {
+  let [digits, e] = $jparts(raw);
+  while (digits.endsWith("0")) digits = digits.slice(0, -1);
+  if (!digits) digits = "0";
+  if (digits === "0") return "0";
+  if (sci) {
+    const frac = digits.slice(1);
+    return digits[0] + (frac ? "." + frac : "") + "e" + (e < 0 ? "" + e : "+" + e);
+  }
+  if (e >= 0) {
+    if (digits.length <= e + 1) return digits + "0".repeat(e + 1 - digits.length);
+    return digits.slice(0, e + 1) + "." + digits.slice(e + 1);
+  }
+  return "0." + "0".repeat(-e - 1) + digits;
+}
+function $jint(n) {
+  if (n !== n) throw Error("json: unsupported value: NaN");
+  if (n === Infinity) throw Error("json: unsupported value: +Inf");
+  if (n === -Infinity) throw Error("json: unsupported value: -Inf");
+  n = Math.trunc(n);
+  if (n === 0) return "0";
+  return String(n);
+}
+// $jb64 is the standard base64 of a []byte, as encoding/json writes it.
+function $jb64(v) {
+  let s = "";
+  for (let i = 0; i < v.n; i += 0x8000) {
+    const c = Math.min(0x8000, v.n - i), u = [];
+    for (let j = 0; j < c; j++) u.push(v.a[v.o + i + j]);
+    s += String.fromCharCode.apply(null, u);
+  }
+  return btoa(s);
+}
+// $jkey orders map keys as encoding/json does: the UTF-8 byte order of
+// their string form, which is code-point order. JS "<" is UTF-16 code-unit
+// order and disagrees for characters outside the BMP.
+function $jkey(a, b) {
+  if (typeof a !== "string") a = $jint(a);
+  if (typeof b !== "string") b = $jint(b);
+  const x = [...a], y = [...b], n = x.length < y.length ? x.length : y.length;
+  for (let i = 0; i < n; i++) {
+    const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+    if (d) return d;
+  }
+  return x.length - y.length;
+}
