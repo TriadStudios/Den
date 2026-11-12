@@ -287,3 +287,128 @@ function $spring(f) {
   $cleanup(() => { if (id) cancelAnimationFrame(id); });
   return s;
 }
+// Lifecycle: a component that calls onMount, onCleanup, after or every
+// gets a record c = $life() first thing when it is built, kept in the
+// scope it is built in: s, the functions to run when the component goes
+// (its cleanups, and the stops of its timers), run newest first; and x,
+// set once it has gone; and p, the owner of the nodes the component makes
+// (see $scope). As the oldest entry the component puts in that scope, the
+// record goes after everything the component made, as a deferred call
+// would. Other stdlib code ties work to a component with $onCleanup(c, f).
+function $life() {
+  const c = { s: new Set(), x: 0, p: $owner?.p };
+  $cleanup(() => { c.x = 1; [...c.s].reverse().forEach((f) => $lifeTry(c, f)); c.s.clear(); });
+  return c;
+}
+// $lifeTry runs f, a callback of component c, as den runs an event
+// handler: untracked, and reporting a panic rather than passing it on.
+// It runs in a scope of its own that goes with c, so what f makes (a
+// computed, a spring) stops with the component, and has the component's
+// owner, so it never runs while the block that would take the component
+// away is due. A callback that makes nothing adds nothing to the record.
+function $lifeTry(c, f) {
+  const o = $owner;
+  $owner = c;
+  try { const h = $scope(f)[1]; h && $onCleanup(c, () => $free(h)); } catch (e) { reportError(e); } finally { $owner = o; }
+}
+// $onCleanup runs f when the component goes, or at once if it has gone.
+// It returns a function that takes f back, for work that ends first.
+function $onCleanup(c, f) {
+  const g = () => f();
+  c.x ? $lifeTry(c, g) : c.s.add(g);
+  return () => c.s.delete(g);
+}
+// $onMount runs f once the build that made the component, which puts it
+// in the document, is over, unless the component has gone by then.
+function $onMount(c, f) { queueMicrotask(() => c.x || $lifeTry(c, f)); }
+// $after runs f once after d ns, or with every set, every d ns, until the
+// stop it returns is called or the component goes. A timer that has fired
+// once and for all takes itself off the record. On a component that has
+// gone, the timer is stopped as it is made.
+function $after(c, d, f, every) {
+  if (every && !(d > 0)) $panic("non-positive interval for every");
+  if (d > 2147483647e6) $panic("duration too long");
+  const t = (every ? setInterval : setTimeout)(() => { every || stop(); $lifeTry(c, f); }, d / 1e6),
+    off = $onCleanup(c, () => clearTimeout(t)), stop = () => { clearTimeout(t); off(); };
+  return stop;
+}
+function $every(c, d, f) { return $after(c, d, f, 1); }
+// ref={r}: r holds the element from when it is made until the scope that
+// made it goes, unless another element has taken r over by then.
+function $setRef(e, r) { r.e = e; $cleanup(() => { if (r.e === e) r.e = null; }); }
+// time: a Time is {w, m}, the wall clock (ms since the epoch) and the
+// monotonic clock (performance.now(), when there is one), as Go keeps
+// both; the zero Time is null, Go's year 1 UTC. Sub uses the monotonic
+// readings of two Times that have them, and Hour and the like the wall
+// clock, which follows the system clock even after the computer sleeps.
+// A Duration is a number of ns, which Sub saturates as Go does.
+function $tnow() { return { w: Date.now(), m: globalThis.performance?.now() }; }
+function $tms(t) { return t ? t.w : -62135596800000; }
+function $tsub(t, u) {
+  const d = t?.m != null && u?.m != null ? t.m - u.m : $tms(t) - $tms(u);
+  return Math.min(Math.max(Math.round(d * 1e6), -9223372036854775808), 9223372036854775807);
+}
+function $tsince(t) { return $tsub($tnow(), t); }
+function $tclock(t, f) { return t ? new Date(t.w)[f]() : 0; }
+// $tsecs is Duration.Seconds as Go computes it: whole seconds plus the
+// rest over 1e9, which can differ in the last bit from d / 1e9.
+function $tsecs(d) { const n = d % 1e9; return (d - n) / 1e9 + n / 1e9; }
+// Forms: field(initial, check) and bind={x}. A field is a signal with pe,
+// a signal of the parse error of its element's text (null when it parses);
+// tc, a signal of whether it was touched; er, a computed of its error (pe,
+// else check(value), check being null or a func); and rs, which resets it.
+// Its set clears pe, as the element then shows the value set.
+function $field(v, check) {
+  const s = $signal(v), set = s.set, pe = (s.pe = $signal(null)), tc = (s.tc = $signal(false));
+  s.set = (x) => { pe.set(null); set.call(s, x); };
+  s.er = $computed(() => pe.get() ?? (check ? check(s.get()) : null));
+  s.rs = () => { s.set(v); tc.set(false); };
+  return s;
+}
+// $bind binds the value of element el to x, a signal or a field: event t
+// sets x to the text read by p ($str, $atoi, $int(lo, hi) or $float, each
+// returning [value, error]). Text that does not read leaves x as it is,
+// and is a field's parse error until it reads. An effect writes x to the
+// element when x changes, or a field's parse error goes, unless the text
+// there already reads as x, as "1." and "01" do while they are typed. Each
+// bind helper returns x.
+function $bind(el, x, t, p) {
+  el.addEventListener(t, () => { const [v, err] = p(el.value); err ? x.pe?.set(err) : x.set(v); });
+  $effect(() => { const v = x.get(), [w, err] = p(el.value); if (!x.pe?.get() && (err || w !== v)) el.value = String(v); });
+  return x;
+}
+function $str(s) { return [s]; }
+// $int(lo, hi) reads an int as $atoi does, between lo and hi. (Not
+// "return (s) =>": the minifier would make that "returns=>".)
+function $int(lo, hi) {
+  return function (s) { const r = $atoi(s); return r[1] || (r[0] >= lo && r[0] <= hi) ? r : [0, new Error("strconv.Atoi: parsing " + JSON.stringify(s) + ": value out of range")]; };
+}
+// $float reads a decimal number, as strconv.ParseFloat does.
+function $float(s) {
+  const n = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(s) ? +s : NaN;
+  return isFinite(n) ? [n] : [0, new Error("strconv.ParseFloat: parsing " + JSON.stringify(s) + (n ? ": value out of range" : ": invalid syntax"))];
+}
+// $check binds a checkbox to a bool.
+function $check(el, x) {
+  el.addEventListener("change", () => x.set(el.checked));
+  $effect(() => { el.checked = x.get(); });
+  return x;
+}
+// $radio binds a radio to x == v, its value: a value, or a computed one
+// when it reads signals. Checking it sets x to v.
+function $radio(el, x, v) {
+  const f = () => (v?.get ? v.get() : v);
+  el.addEventListener("change", () => el.checked && x.set(f()));
+  $effect(() => { el.checked = x.get() === f(); });
+  return x;
+}
+// $touch marks field x touched when its element loses focus, but only
+// while the block that made the element is there: when den takes the
+// element away it frees that block first, and the focusout that follows
+// (browsers fire one at a focused element that is removed, and $exit
+// blurs focus inside a leaving one) is not the user leaving the field.
+function $touch(el, x) {
+  let on = 1;
+  $cleanup(() => { on = 0; });
+  el.addEventListener("focusout", () => on && x.tc.set(true));
+}

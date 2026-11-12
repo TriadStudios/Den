@@ -119,6 +119,180 @@ component App() {
 component App() {
     <ul>{for i, x := range []int{} key x { <li>{x}</li> }}</ul>
 }`, `app.den:3:14: declared and not used: i`},
+		// Forms: bind={x} and field.
+		{"bind on a component", `
+component Card(title string) {
+    <p>{title}</p>
+}
+component App() {
+    name := signal("")
+    <Card title="a" bind={name} />
+}`, `app.den:7:21: bind works on <input>, <textarea> and <select>, not on components: <Card> has no prop "bind"`},
+		{"bind on a div", `
+component App() {
+    name := signal("")
+    <div bind={name}></div>
+}`, `app.den:4:10: bind works on <input>, <textarea> and <select>, not on <div>`},
+		{"bind on a select multiple", `
+component App() {
+    plan := signal("a")
+    <select multiple bind={plan}><option>a</option></select>
+}`, `app.den:4:13: bind does not work on <select multiple>: it binds one value, and such a select has several`},
+		{"bind with a dynamic type", `
+component App() {
+    t := "text"
+    name := signal("")
+    <input type={t} bind={name} />
+}`, `app.den:5:12: bind needs the type of its <input> written out, as in type="number": with type={...} den cannot tell what bind should set`},
+		{"bind on a file input", `
+component App() {
+    name := signal("")
+    <input type="file" bind={name} />
+}`, `app.den:4:24: bind does not work on <input type="file">, which has no value to bind`},
+		{"bind on a submit input", `
+component App() {
+    name := signal("")
+    <input type="Submit" bind={name} />
+}`, `app.den:4:26: bind does not work on <input type="submit">, which has no value to bind`},
+		{"bind on an input of unknown type", `
+component App() {
+    name := signal("")
+    <input type="foo" bind={name} />
+}`, `app.den:4:23: bind does not know <input type="foo">; it works with text types, "number", "range", "checkbox" and "radio"`},
+		{"bind without braces", `
+component App() {
+    <input bind="name" />
+}`, `app.den:3:12: bind takes a signal or a field in braces, like bind={name}`},
+		{"bind with no value", `
+component App() {
+    <input bind />
+}`, `app.den:3:12: bind takes a signal or a field in braces, like bind={name}`},
+		{"bind an int to a text input", `
+component App() {
+    count := signal(0)
+    <input bind={count} />
+}`, `app.den:4:18: bind to an int needs type="number" or "range"`},
+		{"bind a bool to a text input", `
+component App() {
+    on := signal(false)
+    <input type="search" bind={on} />
+}`, `app.den:4:32: bind to a bool needs type="checkbox"`},
+		{"bind a string to a number input", `
+component App() {
+    name := signal("")
+    <input type="number" bind={name} />
+}`, `app.den:4:32: bind to a string needs a text <input> or a <textarea>, not type="number"`},
+		{"bind an int to a checkbox", `
+component App() {
+    count := signal(0)
+    <input type="checkbox" bind={count} />
+}`, `app.den:4:34: bind to an int needs type="number" or "range", not type="checkbox"`},
+		{"bind a float to a textarea", `
+component App() {
+    x := signal(1.5)
+    <textarea bind={x} />
+}`, `app.den:4:21: bind to a float64 needs type="number" or "range", not a <textarea>`},
+		{"bind a bool to a select", `
+component App() {
+    on := signal(false)
+    <select bind={on}><option>a</option></select>
+}`, `app.den:4:19: bind to a bool needs type="checkbox", not a <select>`},
+		{"bind a struct", `
+type P struct{ A int }
+component App() {
+    p := signal(P{1})
+    <input bind={p} />
+}`, `app.den:5:18: bind works with strings, numbers and bools, not P`},
+		{"bind a radio without a value", `
+component App() {
+    plan := signal("a")
+    <input type="radio" bind={plan} />
+}`, `app.den:4:25: a radio with bind needs a value, the one bind sets when it is checked: value="pro" or value={v}`},
+		{"bind a radio with a string value to an int", `
+component App() {
+    n := signal(1)
+    <input type="radio" value="1" bind={n} />
+}`, `app.den:4:41: a radio bound to an int needs value={...} of type int: value="1" is a string`},
+		{"bind a radio with a value of another type", `
+component App() {
+    n := signal(1)
+    <input type="radio" value={"one"} bind={n} />
+}`, `app.den:4:32: cannot use "one" (untyped string constant) as int value in value=, the value of a radio bound to an int`},
+		{"bind a radio with a value that does not fit", `
+component App() {
+    n := signal(int8(1))
+    <input type="radio" value={300} bind={n} />
+}`, `app.den:4:32: cannot use 300 (untyped int constant) as int8 value in value= (overflows), the value of a radio bound to an int8`},
+		{"bind a radio with a typed value of another type", `
+type Plan string
+const Pro Plan = "pro"
+component App() {
+    plan := signal("free")
+    <input type="radio" value={Pro} bind={plan} />
+}`, `app.den:6:32: cannot use Pro (constant "pro" of string type Plan) as string value in value=, the value of a radio bound to a string`},
+		{"bind with value", `
+component App() {
+    name := signal("")
+    <input value={name.Get()} bind={name} />
+}`, `app.den:4:12: value and bind would both set value: bind sets it, so leave value out`},
+		{"bind with checked", `
+component App() {
+    on := signal(false)
+    <input type="checkbox" checked bind={on} />
+}`, `app.den:4:28: checked and bind would both set checked: bind sets it, so leave checked out`},
+		{"bind a radio with checked", `
+component App() {
+    plan := signal("a")
+    <input type="radio" value="a" checked={true} bind={plan} />
+}`, `app.den:4:35: checked and bind would both set checked: bind sets it, so leave checked out`},
+		{"bind a textarea with content", `
+component App() {
+    name := signal("")
+    <textarea bind={name}>hi</textarea>
+}`, `app.den:4:15: a <textarea> with bind shows the value of bind, so it cannot have content of its own`},
+		{"bind a computed", `
+component App() {
+    n := signal(1)
+    c := computed(n.Get() * 2)
+    <input type="number" bind={c} />
+}`, `app.den:5:32: bind cannot set a *Computed[int]: it takes a *Signal or a *Field`},
+		{"bind a value", `
+component App() {
+    name := signal("")
+    <input bind={name.Get()} />
+}`, `app.den:4:18: bind takes a *Signal or a *Field, like bind={name}, not string`},
+		{"bind nil", `
+component App() {
+    <input bind={nil} />
+}`, `app.den:3:18: bind takes a *Signal or a *Field, like bind={name}, not untyped nil`},
+		{"bind that reads a signal", `
+type Row struct{ Name *Signal[string] }
+component App() {
+    rows := signal([]Row{{signal("a")}})
+    <input bind={rows.Get()[0].Name} />
+}`, `app.den:5:18: bind cannot depend on a signal: den reads it once, when it makes the element, and binds that`},
+		{"bind two values", `
+func two() (*Signal[int], int) { return nil, 0 }
+component App() {
+    <input type="number" bind={two()} />
+}`, `app.den:4:32: too many arguments in bind=`},
+		{"field when the program has its own Field", `
+type Field struct{ A int }
+component App() {
+    f := field("", nil)
+    <p>{f.A}</p>
+}`, `app.den:4:10: field is not available because this program declares its own Field; rename it`},
+		{"Field when the program has its own field", `
+func field() int { return 1 }
+component App(f *Field[int]) {
+    <p>{field()}</p>
+}`, `app.den:3:18: Field is not available because this program declares its own field; rename it`},
+		{"errors.Is", `
+import "errors"
+func same(a, b error) bool { return errors.Is(a, b) }
+component App() {
+    <p>{same(nil, nil)}</p>
+}`, `app.den:3:44: undefined: errors.Is`},
 		{"if needs bool", `
 component App() {
     <p>{if 1 { yes }}</p>
@@ -138,7 +312,7 @@ component App() {
 import "fmt"
 component App() {
     <p>x</p>
-}`, `app.den:2:8: package "fmt" is not available in den; you can import strconv, strings`},
+}`, `app.den:2:8: package "fmt" is not available in den; you can import errors, strconv, strings, time`},
 		{"unused import", `
 import (
     "strings"
@@ -1509,6 +1683,254 @@ func id(n int) int { return n }
 component App() {
     <ul>{for _, s := range []string{"a"} key id(func() int { denText(s); return 1 }()) { <li>{s}</li> }}</ul>
 }`, `app.den:4:62: denText is internal to den`},
+		// Lifecycle: onMount, onCleanup, after and every need the component
+		// instance calling them.
+		{"onMount in a top-level func", `
+func start() {
+    onMount(func() {})
+}
+component App() {
+    start()
+    <p>x</p>
+}`, `app.den:3:5: onMount can only be called in a component: in its statements, handlers or func literals`},
+		{"onCleanup in a top-level func", `
+func done() { onCleanup(func() {}) }
+component App() {
+    done()
+    <p>x</p>
+}`, `app.den:2:15: onCleanup can only be called in a component: in its statements, handlers or func literals`},
+		{"every in a top-level func", `
+import "time"
+func tick() { every(time.Second, func() {}) }
+component App() {
+    tick()
+    <p>x</p>
+}`, `app.den:3:15: every can only be called in a component: in its statements, handlers or func literals`},
+		{"after in a func literal in a top-level func", `
+import "time"
+func start() func() {
+    return func() { after(time.Second, func() {}) }
+}
+component App() {
+    f := start()
+    <button onclick={f()}>x</button>
+}`, `app.den:4:21: after can only be called in a component: in its statements, handlers or func literals`},
+		// and they, and ref, cannot be in Go that den evaluates again, or
+		// for each row or element.
+		{"after in computed", `
+import "time"
+component App() {
+    n := computed(func() int { after(time.Second, func() {}); return 1 }())
+    <p>{n.Get()}</p>
+}`, `app.den:4:32: after cannot be called in computed(...): it would run again each time the value is recomputed`},
+		{"ref in spring", `
+component App() {
+    x := spring(float64(len([]*Ref{ref()})))
+    <p>{x.Get()}</p>
+}`, `app.den:3:36: ref cannot be called in spring(...): it would run again each time the value is recomputed`},
+		{"onCleanup in computed in a handler", `
+component App() {
+    <button onclick={computed(func() int { onCleanup(func() {}); return 1 }())}>x</button>
+}`, `app.den:3:44: onCleanup cannot be called in computed(...): it would run again each time the value is recomputed`},
+		{"ref in markup text", `
+component App() {
+    <p>{len([]*Ref{ref()})}</p>
+}`, `app.den:3:20: ref cannot be called in markup {...}: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in an attribute", `
+component App() {
+    <p title={itoa(len([]*Ref{ref()}))}>x</p>
+}`, `app.den:3:31: ref cannot be called in markup {...}: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"after in an if condition", `
+import "time"
+component App() {
+    <div>{if after(time.Second, func() {}) != nil { x }}</div>
+}`, `app.den:4:14: after cannot be called in an {if} condition: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in a for clause", `
+component App() {
+    <ul>{for i := range len([]*Ref{ref()}) key i { <li>{i}</li> }}</ul>
+}`, `app.den:3:36: ref cannot be called in a {for} clause: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in a list key", `
+component App() {
+    <ul>{for i := range 3 key i + len([]*Ref{ref()}) { <li>{i}</li> }}</ul>
+}`, `app.den:3:46: ref cannot be called in a list key: den evaluates it for each row, again whenever the list changes`},
+		{"ref in a key value", `
+component App() {
+    <div>{key len([]*Ref{ref()}) { <p>x</p> }}</div>
+}`, `app.den:3:26: ref cannot be called in a {key} value: den evaluates it each time it builds that markup, and again when a signal it reads changes`},
+		{"ref in a prop", `
+component App() {
+    <Field box={ref()} />
+}
+component Field(box *Ref) {
+    <input ref={box} />
+}`, `app.den:3:17: ref cannot be called in a prop: den evaluates props each time it builds the component`},
+		{"ref in a transition", `
+func pick(r *Ref) Transition { return fade() }
+component App() {
+    show := signal(true)
+    <div>{if show.Get() { <p exit={pick(ref())}>x</p> }}</div>
+}`, `app.den:5:41: ref cannot be called in exit=: den evaluates it each time it makes the element`},
+		{"ref in ref=", `
+component App() {
+    <input ref={ref()} />
+}`, `app.den:3:17: ref cannot be called in ref=: den evaluates it each time it makes the element`},
+		{"ref= on a component", `
+component App() {
+    r := ref()
+    <Card ref={r} />
+}
+component Card() {
+    <p>card</p>
+}`, `app.den:4:11: ref works on HTML and SVG elements, not on components: <Card> has no prop "ref"; pass the *Ref as a prop and put ref= on an element inside`},
+		{"ref= with no value", `
+component App() {
+    <input ref />
+}`, `app.den:3:12: ref takes a *Ref in braces, like ref={box} where box := ref()`},
+		{"ref= with a string", `
+component App() {
+    <input ref="box" />
+}`, `app.den:3:12: ref takes a *Ref in braces, like ref={box} where box := ref()`},
+		{"ref= with a number", `
+component App() {
+    <input ref={1} />
+}`, `app.den:3:17: cannot use 1 (untyped int constant) as *Ref value in ref=`},
+		{"ref= that reads a signal", `
+component App() {
+    r := signal(ref())
+    <input ref={r.Get()} />
+}`, `app.den:4:17: ref= cannot depend on a signal: den reads it once, when it makes the element`},
+		{"ref with the program's own Ref", `
+type Ref int
+component App() {
+    r := ref()
+    <p>{r}</p>
+}`, `app.den:4:10: ref is not available because this program declares its own Ref; rename it`},
+		{"comparing times", `
+import "time"
+component App() {
+    same := time.Now() == time.Now()
+    <p>{same}</p>
+}`, `app.den:4:13: invalid operation: time.Now() == time.Now() (den cannot compare times; compare t.UnixMilli() values, or test t.Sub(u) == 0)`},
+		{"comparing refs", `
+component App() {
+    same := *ref() != *ref()
+    <p>{same}</p>
+}`, `app.den:3:13: invalid operation: *ref() != *ref() (a Ref cannot be compared)`},
+		{"a Ref value", `
+component App() {
+    var r Ref
+    <button onclick={r.Focus()}>x</button>
+}`, `app.den:4:22: den's Ref is used only as a *Ref, made by ref(): a Ref value never holds an element`},
+		{"after as a value", `
+component App() {
+    f := after
+    <button onclick={f(0, func() {})}>x</button>
+}`, `app.den:3:10: after can only be called, not used as a value`},
+		// Context: provide(v) and use[T]().
+		{"provide of an untyped constant", `
+component App() {
+    provide(3)
+    <p>x</p>
+}`, `app.den:3:13: context values are found by their type, so provide needs a named type: declare one, as in type Theme struct{...}`},
+		{"provide with a basic type argument", `
+component App() {
+    provide[int](3)
+    <p>x</p>
+}`, `app.den:3:13: context values are found by their type, so provide needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of a basic type", `
+component App() {
+    s := use[string]()
+    <p>{s}</p>
+}`, `app.den:3:14: context values are found by their type, so use needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of a signal pointer", `
+component App() {
+    s := use[*Signal[int]]()
+    <p>{s.Get()}</p>
+}`, `app.den:3:14: context values are found by their type, so use needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of a slice", `
+type Item struct{ N int }
+component App() {
+    xs := use[[]Item]()
+    <p>{len(xs)}</p>
+}`, `app.den:4:15: context values are found by their type, so use needs a named type: declare one, as in type Theme struct{...}`},
+		{"provide of an alias of a slice", `
+type Item struct{ N int }
+type Items = []Item
+component App() {
+    provide(Items{})
+    <p>x</p>
+}`, `app.den:5:13: context values are found by their type, so provide needs a named type: declare one, as in type Theme struct{...}`},
+		{"use of den's own type", `
+component App() {
+    s := use[Signal[int]]()
+    <p>{s.Get()}</p>
+}`, `app.den:3:14: context values are found by their type, so use needs a type this program declares, not Signal[int]: declare one, as in type Theme struct{...}`},
+		{"use of error", `
+component App() {
+    err := use[error]()
+    <p>{err.Error()}</p>
+}`, `app.den:3:16: context values are found by their type, so use needs a type this program declares, not error: declare one, as in type Theme struct{...}`},
+		{"use of den.Children", `
+component App() {
+    c := use[den.Children]()
+    <div>{c}</div>
+}`, `app.den:3:14: context values are found by their type, so use needs a type this program declares, not den.Children: declare one, as in type Theme struct{...}`},
+		{"provide in an if statement", `
+type T struct{ N int }
+component App() {
+    if true {
+        provide(T{1})
+    }
+    <p>x</p>
+}`, `app.den:5:9: provide must be a statement of its own at the top level of a component`},
+		{"provide in a closure", `
+type T struct{ N int }
+component App() {
+    f := func() { provide(T{1}) }
+    f()
+    <p>x</p>
+}`, `app.den:4:19: provide must be a statement of its own at the top level of a component`},
+		{"provide in a handler", `
+type T struct{ N int }
+component App() {
+    <button onclick={provide(T{1})}>x</button>
+}`, `app.den:4:22: provide must be a statement of its own at the top level of a component`},
+		{"provide in a function", `
+type T struct{ N int }
+func f() { provide(T{1}) }
+component App() {
+    f()
+    <p>x</p>
+}`, `app.den:3:12: provide must be a statement of its own at the top level of a component`},
+		{"provide used as a value", `
+type T struct{ N int }
+component App() {
+    x := provide(T{1})
+    <p>{x}</p>
+}`, `app.den:4:10: provide(T{…}) (no value) used as value`},
+		{"use in a function", `
+type T struct{ N int }
+func f() T { return use[T]() }
+component App() {
+    <p>{f().N}</p>
+}`, `app.den:3:21: use can only be called in a component`},
+		{"provide as a value", `
+component App() {
+    f := provide[int]
+    f(1)
+    <p>x</p>
+}`, `app.den:3:10: provide can only be called, not used as a value`},
+		{"use as a value", `
+type T struct{ N int }
+component App() {
+    f := use[T]
+    <p>{f().N}</p>
+}`, `app.den:4:10: use can only be called, not used as a value`},
+		{"use without a type", `
+component App() {
+    x := use()
+    <p>{x}</p>
+}`, `app.den:3:10: use needs the type of the value it finds, as in use[Theme]()`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1535,6 +1957,85 @@ component App() {
     l := layout()
     <div>{if show.Get() { <p animate={l}>x</p> }}</div>
 }`, `app.den:5:30: animate works only on an element directly inside a {for} row, whose place it animates when the list changes`},
+		{"ref= in a for row", `
+component App() {
+    r := ref()
+    <ul>{for i := range 3 key i { <li><input ref={r} /></li> }}</ul>
+}`, `app.den:4:46: ref= inside a {for} row: every row would set the same ref`},
+		{"ref= in slot markup in a for row", `
+component App() {
+    r := ref()
+    <ul>{for i := range 3 key i { <Item><input ref={r} /></Item> }}</ul>
+}
+component Item(children den.Children) {
+    <li>{children}</li>
+}`, `app.den:4:48: ref= inside a {for} row: every row would set the same ref`},
+		{"ref= with the program's own Ref", `
+type Ref int
+component App() {
+    <input ref={1} />
+}`, `app.den:4:12: ref is not available because this program declares its own Ref; rename it`},
+		// The prelude's own import of package time is not the program's.
+		{"the prelude's time in statements", `
+component App() {
+    d := denTime.Second
+    <p>{d}</p>
+}`, `app.den:3:10: undefined: denTime`},
+		{"the prelude's time in markup", `
+component App() {
+    <p>{denTime.Now().Hour()}</p>
+}`, `app.den:3:9: undefined: denTime`},
+		{"a name the prelude's time does not have", `
+component App() {
+    d := denTime.Nope
+    <p>{d}</p>
+}`, `app.den:3:10: undefined: denTime`},
+		{"the prelude's time alone", `
+component App() {
+    d := denTime
+    <p>{d}</p>
+}`, `app.den:3:10: undefined: denTime`},
+		{"the prelude's time through chained selectors", `
+component App() {
+    <p>{denTime.Now().Nope}</p>
+}`, `app.den:3:9: undefined: denTime`},
+		{"the prelude's time when the program has a denTime", `
+func denTime() int { return 1 }
+component App() {
+    <p>{denTime_.Second}</p>
+}`, `app.den:4:9: undefined: denTime_`},
+		// A func literal that is a whole prop may call after; one called
+		// as a prop is evaluated may not.
+		{"after in a func literal called in a prop", `
+import "time"
+func id(n int) int { return n }
+component App() {
+    <Kid n={id(func() int { after(time.Second, func() {}); return 1 }())} />
+}
+component Kid(n int) {
+    <p>{n}</p>
+}`, `app.den:5:29: after cannot be called in a prop: den evaluates props each time it builds the component`},
+		// So is a bind that gen rejects.
+		{"bind on a div using a variable", `
+component App() {
+    name := signal("")
+    <div bind={name}></div>
+}`, `app.den:4:10: bind works on <input>, <textarea> and <select>, not on <div>`},
+		{"bind on a radio with no value using a variable", `
+component App() {
+    plan := signal("a")
+    <input type="radio" bind={plan} />
+}`, `app.den:4:25: a radio with bind needs a value, the one bind sets when it is checked: value="pro" or value={v}`},
+		// Before, Bind={s} said "cannot render *Signal[string]".
+		{"Bind in the wrong case", `
+component App() {
+    s := signal("")
+    <input Bind={s} />
+}`, `app.den:4:12: unknown attribute "Bind" (use lowercase: bind={...})`},
+		{"BIND in the wrong case without braces", `
+component App() {
+    <input BIND="s" />
+}`, `app.den:3:12: unknown attribute "BIND" (use lowercase: bind={...})`},
 	} {
 		if _, err := compileOne(c.src); err == nil || err.Error() != c.want {
 			t.Errorf("%s: want only %q\ngot: %v", c.name, c.want, err)
@@ -1732,6 +2233,199 @@ func TestRuntimeNames(t *testing.T) {
 			seen[m[1]] = true
 		}
 	}
+}
+
+// TestReservedGlobals checks that every global the shipped JS uses, the
+// browser's (setTimeout, history, Date...) and the language's (Math,
+// Map...), is in jsReserved. A Go name that is not renamed would shadow
+// it inside the app's function: with its own func setInterval, every
+// would never tick.
+func TestReservedGlobals(t *testing.T) {
+	free := jsGlobals(minifyJS(runtimeJS + "\n" + stdlibJS))
+	// The globals emit writes into the code it generates.
+	free = append(free, "document", "String", "queueMicrotask", "Array", "Math", "Map", "Number", "Object")
+	if !slices.Contains(free, "setTimeout") || !slices.Contains(free, "history") || slices.Contains(free, "$owner") {
+		t.Fatalf("the scan is broken: %v", free)
+	}
+	for _, name := range free {
+		// $ names ($evs, which the compiler writes) are never Go names.
+		if !jsReserved[name] && name[0] != '$' {
+			t.Errorf("%s is a global the runtime or stdlib uses, but not in jsReserved", name)
+		}
+	}
+}
+
+// jsKeywords are the JS keywords and literals that jsGlobals meets in
+// den's own JS; they are no names.
+var jsKeywords = map[string]bool{
+	"break": true, "case": true, "catch": true, "class": true, "const": true, "continue": true,
+	"default": true, "delete": true, "do": true, "else": true, "extends": true, "finally": true,
+	"for": true, "function": true, "if": true, "in": true, "instanceof": true, "let": true,
+	"new": true, "of": true, "return": true, "super": true, "switch": true, "this": true,
+	"throw": true, "try": true, "typeof": true, "var": true, "void": true, "while": true,
+	"null": true, "undefined": true, "true": true, "false": true,
+}
+
+// jsGlobals returns the names that js, den's minified runtime and stdlib,
+// uses without declaring them anywhere: a token-level scan, not a parser,
+// that is enough for den's own JS. It drops property names (after . or
+// ?.), object keys ({k: v}), and every name the code binds anywhere
+// (declarations, parameters, arrow parameters, destructuring, catch),
+// ignoring scopes.
+func jsGlobals(js string) []string {
+	var toks []string
+	last := byte('\n')
+	for i := 0; i < len(js); {
+		c := js[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			i++
+			continue
+		case c == '"' || c == '\'' || c == '`' || c == '/' && strings.IndexByte("(,=:[!&|?{};\n", last) >= 0:
+			// A string, a template (the names in ${} are locals) or a
+			// regular expression, as minifyJS reads them.
+			j, class := i+1, false
+			for ; j < len(js); j++ {
+				switch {
+				case js[j] == '\\':
+					j++
+				case c == '/' && js[j] == '[':
+					class = true
+				case c == '/' && js[j] == ']':
+					class = false
+				case js[j] == c && !class:
+					goto end
+				}
+			}
+		end:
+			for j++; c == '/' && j < len(js) && isLetter(js[j]); j++ {
+			}
+			toks = append(toks, `""`)
+			i = j
+		case isLetter(c) || c == '$':
+			j := i
+			for j < len(js) && (isLetter(js[j]) || js[j] == '$' || js[j] >= '0' && js[j] <= '9') {
+				j++
+			}
+			toks = append(toks, js[i:j])
+			i = j
+		case c >= '0' && c <= '9':
+			j := i
+			for j < len(js) && (isLetter(js[j]) || js[j] >= '0' && js[j] <= '9' || js[j] == '.') {
+				j++
+			}
+			toks = append(toks, "0")
+			i = j
+		default:
+			n := 1
+			for _, p := range []string{"...", "?.", "=>"} {
+				if strings.HasPrefix(js[i:], p) {
+					n = len(p)
+				}
+			}
+			toks = append(toks, js[i:i+n])
+			i += n
+		}
+		last = js[i-1]
+	}
+	isName := func(s string) bool { return s != "" && (isLetter(s[0]) || s[0] == '$') && !jsKeywords[s] }
+	// match returns the index of the bracket that closes the one at i.
+	match := func(i int) int {
+		depth := 0
+		for j := i; j < len(toks); j++ {
+			switch toks[j] {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				if depth--; depth == 0 {
+					return j
+				}
+			}
+		}
+		return len(toks) - 1
+	}
+	bound := map[string]bool{}
+	notUse := map[int]bool{}
+	// bindAll binds the names in toks[from:to] that follow one of ( [ {
+	// , or ...: parameters and destructuring patterns.
+	bindAll := func(from, to int) {
+		for j := from; j < to; j++ {
+			if isName(toks[j]) && j > 0 && slices.Contains([]string{"(", "[", "{", ",", "..."}, toks[j-1]) {
+				bound[toks[j]] = true
+				notUse[j] = true
+			}
+		}
+	}
+	for i, tk := range toks {
+		next := func(k int) string {
+			if i+k < len(toks) {
+				return toks[i+k]
+			}
+			return ""
+		}
+		switch {
+		case tk == "function" || tk == "class":
+			if isName(next(1)) {
+				bound[next(1)] = true
+				notUse[i+1] = true
+			}
+		case tk == "catch" && next(1) == "(":
+			bindAll(i+1, match(i+1))
+		case tk == "let" || tk == "const" || tk == "var":
+			// Declarators up to the ; or the of/in of a for, at depth 0.
+			depth := 0
+			for j := i + 1; j < len(toks); j++ {
+				s := toks[j]
+				if depth == 0 && (s == ";" || s == "of" || s == "in" || s == ")") {
+					break
+				}
+				if depth == 0 && (toks[j-1] == tk || toks[j-1] == ",") {
+					if isName(s) {
+						bound[s] = true
+						notUse[j] = true
+					} else if s == "[" || s == "{" {
+						bindAll(j, match(j))
+					}
+				}
+				switch s {
+				case "(", "[", "{":
+					depth++
+				case ")", "]", "}":
+					depth--
+				}
+			}
+		case tk == "=>":
+			if toks[i-1] == ")" {
+				for j := i - 1; j >= 0; j-- {
+					if toks[j] == "(" && match(j) == i-1 {
+						bindAll(j, i-1)
+						break
+					}
+				}
+			} else if isName(toks[i-1]) {
+				bound[toks[i-1]] = true
+				notUse[i-1] = true
+			}
+		case isName(tk) && next(1) == "(" && match(i+1)+1 < len(toks) && toks[match(i+1)+1] == "{":
+			// A function or method with its body: the name is declared
+			// (function f) or a method (get() {...}), and the parameters
+			// are bound.
+			notUse[i] = true
+			bindAll(i+1, match(i+1))
+		}
+	}
+	var free []string
+	for i, tk := range toks {
+		switch {
+		case !isName(tk) || notUse[i] || bound[tk]:
+		case i > 0 && (toks[i-1] == "." || toks[i-1] == "?."):
+		case i > 0 && i+1 < len(toks) && toks[i+1] == ":" && (toks[i-1] == "{" || toks[i-1] == ","):
+		case !slices.Contains(free, tk):
+			free = append(free, tk)
+		}
+	}
+	slices.Sort(free)
+	return free
 }
 
 // An app that uses neither route nor path ships none of the router, and

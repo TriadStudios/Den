@@ -35,6 +35,50 @@ func Itoa(i int) string           { return "" }
 func Atoi(s string) (int, error)  { return 0, nil }
 func FormatBool(b bool) string    { return "" }
 `,
+	// A Duration is a JS number of nanoseconds, exact up to 2^53 (about
+	// 104 days). A Time is {w, m} in JS, its wall clock and monotonic
+	// clock readings in ms (see $tnow in stdlib.js), and the zero Time is
+	// null: Go's zero time, January 1, year 1, UTC. Time holds a func, so
+	// go/types rejects comparing two of them, which Go allows (check
+	// rewords the error).
+	"time": `package time
+
+type Duration int64
+
+const (
+	Nanosecond  Duration = 1
+	Microsecond          = 1000 * Nanosecond
+	Millisecond          = 1000 * Microsecond
+	Second               = 1000 * Millisecond
+	Minute               = 60 * Second
+	Hour                 = 60 * Minute
+)
+
+func (d Duration) Milliseconds() int64 { return 0 }
+func (d Duration) Seconds() float64    { return 0 }
+
+type Time struct{ _ opaque }
+
+type opaque func()
+
+func Now() Time                    { return Time{} }
+func Since(t Time) Duration        { return 0 }
+func (t Time) Sub(u Time) Duration { return 0 }
+func (t Time) UnixMilli() int64    { return 0 }
+func (t Time) Hour() int           { return 0 }
+func (t Time) Minute() int         { return 0 }
+func (t Time) Second() int         { return 0 }
+`,
+	"errors": `package errors
+
+func New(text string) error { return nil }
+`,
+}
+
+// isTime reports whether t is the Time of den's package time.
+func isTime(t types.Type) bool {
+	n, ok := types.Unalias(t).(*types.Named)
+	return ok && n.Obj().Name() == "Time" && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "time"
 }
 
 //go:embed stdlib.js

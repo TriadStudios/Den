@@ -1,0 +1,47 @@
+// errors.New makes an error whose Error() is its text. Two are never
+// equal, even with the same text; an error equals itself and its copies.
+
+import "errors"
+
+func check(n int) error {
+	if n < 0 {
+		return errors.New("negative: " + itoa(n))
+	}
+	return nil
+}
+
+func first(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func run() string {
+	out := ""
+	a, b := errors.New("x"), errors.New("x")
+	if a != b {
+		out += "differ "
+	}
+	c := a
+	if c == a && a.Error() == b.Error() {
+		out += "same "
+	}
+	if err := check(-2); err != nil {
+		out += err.Error() + " "
+	}
+	if check(1) == nil {
+		out += "nil "
+	}
+	var e error
+	if e == nil {
+		out += "zero "
+	}
+	if first(nil, check(3), check(-4), a) != nil {
+		out += first(nil, check(-4)).Error() + " "
+	}
+	e = errors.New("")
+	return out + "<" + e.Error() + ">"
+}
