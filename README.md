@@ -233,6 +233,15 @@ A `.den` file holds components and plain Go declarations. Den supports a
 subset of Go; anything outside it is a compile error, never silently
 different behavior.
 
+A few cases still compile and then differ from Go. These are known gaps,
+not a promise that they match Go today. Bitwise and shift operators are
+32-bit. Sized integer conversions and arithmetic do not wrap. An index
+with a side effect can run twice on `+=` and `++`. A generic function is
+not instantiated, so `/`, `==` and a zero value follow the constraint too
+loosely. Two different errors compare equal inside a struct. Division by
+zero is not a panic, and a multi-assignment writes left to right. A JSON
+string of several megabytes can fail the tokenizer.
+
 **Components and markup**
 - `component Name(props) { statements; <markup> }` with exactly one root
   element; props are a Go parameter list, checked at every use.
