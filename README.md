@@ -1351,31 +1351,42 @@ go run ./examples/admin -dist examples/admin/dist
 defaults to `localhost:8091`.
 
 `POST /api/login` with `{"password":"den"}` signs in. That password is an
-example constant, not a secret. Success sets two cookies to the same
-random token: `session` is HttpOnly, `csrf` is not, and both are
-`SameSite=Lax` with `Path=/`. The body is `{"csrf":"<token>"}`. A wrong
-password is 401 `{"error":{"code":"login","message":"..."}}`.
+example constant, not a secret. The body must be
+`Content-Type: application/json` (a charset is allowed; `text/plain` is
+415 `content_type`) and the request must carry an `Origin` for this host,
+`http` unless the Go server itself sees TLS, in which case `https`. A
+missing or other origin is 403 `origin`. Success sets one cookie,
+`session`: HttpOnly, `SameSite=Lax`, `Path=/`, with a 12 hour lifetime.
+`Secure` is set only when `r.TLS` is set. This example listens on HTTP
+localhost, so the cookie is not `Secure` there. A TLS terminator in front
+of this process does not set `r.TLS`, and that deployment has to mark the
+cookie `Secure` itself. The body is `{"csrf":"<token>"}`, a different
+random token kept only in memory on the session. There is no csrf cookie.
+The page sends that token as `X-CSRF`. A wrong password is 401
+`{"error":{"code":"login","message":"..."}}`.
 
-`GET /api/services` needs the `session` cookie. Without it the status is
-403 and the code is `session`. The list is `web` and `worker`, each with
-a name and whether it is running.
+`GET /api/services` needs the `session` cookie. Without it, or once the
+12 hours are up, the status is 403 and the code is `session`. The list is
+`web` and `worker`, each with a name and whether it is running.
 
 `POST /api/services/{id}/start` and `.../stop` need that cookie and an
-`X-CSRF` header equal to the `csrf` cookie. No session is 403 `session`.
-A session whose header is missing or not the cookie is 403 `csrf`. An
-unknown id is 404. Starting a service that is already running is 422
+`X-CSRF` header equal to the token from the login JSON. No session is
+403 `session`. A session whose header is missing or wrong is 403 `csrf`.
+An unknown id is 404. Starting a service that is already running is 422
 `{"error":{"code":"running","message":"Already running"}}`. Success is
 200 `{"ok":true}`.
 
-`GET /api/events` is `text/event-stream` for a signed-in session. Events
-are named `state` and `log`, and each one has an `id:` line, a monotonic
-integer. `state` is the service list plus an `error` string, empty when
-the change succeeded. `log` is `{"id":N,"text":"..."}`. A start or a stop
-appends a log line and sends `state`, then `log`, including a start that
-was rejected with 422 (the error string is the message). The server keeps
-the last 50 of those events. A client that sends `Last-Event-ID` receives
-only events with a greater id, so a new subscriber sees at most 50. The
-page shows the latest 20 log lines.
+`GET /api/events` is `text/event-stream` for a signed-in session. The page
+opens that stream only after sign-in. Events are named `state` and `log`,
+and each one has an `id:` line, a monotonic integer. `state` is the
+service list plus an `error` string, empty when the change succeeded.
+`log` is `{"id":N,"text":"..."}`. A start or a stop appends a log line
+and sends `state`, then `log`, including a start that was rejected with
+422 (the error string is the message). The server keeps the last 50 of
+those events. A client that sends `Last-Event-ID` receives only events
+with a greater id, so a new subscriber sees at most 50. The page shows
+the latest 20 log lines. A subscriber that does not read is dropped
+instead of blocking writes to the others.
 
 GET and HEAD for a path whose last segment has no `.`, and is not a file
 in `-dist`, answer with `index.html`, status 200, and no redirect.
@@ -1394,7 +1405,7 @@ In Edge, against the server you started:
 - [ ] Start it again and see 422, the status, and the note's message.
 - [ ] Edit the note and see that message clear.
 - [ ] Stop the service.
-- [ ] Reload an extensionless path and land on the board, with no redirect.
+- [ ] Reload an extensionless path and land on the sign-in form, with no redirect. The signed-in flag is memory, so a reload shows the form; the session cookie is still HttpOnly and unreadable.
 - [ ] Confirm the response `Content-Security-Policy` matches `den dev`, and that the network panel shows no other origin.
 
 ## Developing den

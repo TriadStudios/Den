@@ -7,17 +7,21 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // csp is the policy den writes into index.html and sends from den dev
@@ -75,25 +79,43 @@ type sseEvent struct {
 	Data string
 }
 
+// now is the clock sessions expire against. Tests replace it.
+var now = time.Now
+
+// session is the server-side record for one session cookie. csrf is not a
+// cookie: it is returned once, in the login JSON, and compared with X-CSRF.
+type session struct {
+	csrf   string
+	expiry time.Time
+}
+
+// subState guards one subscriber. The server mutex is not held across a
+// send; this mutex is, so a full channel can be closed without a send on
+// a closed channel.
+type subState struct {
+	mu   sync.Mutex
+	dead bool
+}
+
 type server struct {
 	dist     string
 	mu       sync.Mutex
-	sessions map[string]struct{}
+	sessions map[string]session
 	services []service
 	seq      int
 	buf      []sseEvent
-	subs     map[chan sseEvent]struct{}
+	subs     map[chan sseEvent]*subState
 }
 
 func newHandler(dist string) http.Handler {
 	return &server{
 		dist:     dist,
-		sessions: map[string]struct{}{},
+		sessions: map[string]session{},
 		services: []service{
 			{ID: "web", Name: "Web", Running: false},
 			{ID: "worker", Name: "Worker", Running: false},
 		},
-		subs: map[chan sseEvent]struct{}{},
+		subs: map[chan sseEvent]*subState{},
 	}
 }
 
@@ -146,6 +168,21 @@ func serviceOp(p string) (string, bool, bool) {
 }
 
 func (s *server) serveLogin(w http.ResponseWriter, r *http.Request) {
+	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || media != "application/json" {
+		writeErr(w, http.StatusUnsupportedMediaType, "content_type", "Content-Type must be application/json")
+		return
+	}
+	origin := r.Header.Get("Origin")
+	ou, oerr := url.Parse(origin)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if origin == "" || oerr != nil || ou.Scheme != scheme || !strings.EqualFold(ou.Host, r.Host) {
+		writeErr(w, http.StatusForbidden, "origin", "Origin must be this site")
+		return
+	}
 	var body struct {
 		Password string `json:"password"`
 	}
@@ -154,28 +191,29 @@ func (s *server) serveLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "login", "Wrong password")
 		return
 	}
-	tok, err := newToken()
+	id, err := newToken()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "login", "Could not start a session")
+		return
+	}
+	csrf, err := newToken()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "login", "Could not start a session")
 		return
 	}
 	s.mu.Lock()
-	s.sessions[tok] = struct{}{}
+	s.sessions[id] = session{csrf: csrf, expiry: now().Add(12 * time.Hour)}
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
-		Value:    tok,
+		Value:    id,
 		Path:     "/",
+		MaxAge:   int((12 * time.Hour).Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
 	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     "csrf",
-		Value:    tok,
-		Path:     "/",
-		SameSite: http.SameSiteLaxMode,
-	})
-	writeJSON(w, http.StatusOK, map[string]string{"csrf": tok})
+	writeJSON(w, http.StatusOK, map[string]string{"csrf": csrf})
 }
 
 func newToken() (string, error) {
@@ -186,27 +224,30 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-func (s *server) authed(r *http.Request) bool {
+func (s *server) authed(r *http.Request) (session, bool) {
 	c, err := r.Cookie("session")
 	if err != nil || c.Value == "" {
-		return false
+		return session{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.sessions[c.Value]
-	return ok
+	sess, ok := s.sessions[c.Value]
+	if !ok {
+		return session{}, false
+	}
+	if !now().Before(sess.expiry) {
+		delete(s.sessions, c.Value)
+		return session{}, false
+	}
+	return sess, true
 }
 
-func csrfOK(r *http.Request) bool {
-	c, err := r.Cookie("csrf")
-	if err != nil || c.Value == "" {
-		return false
-	}
-	return r.Header.Get("X-CSRF") == c.Value
+func csrfOK(r *http.Request, sess session) bool {
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF")), []byte(sess.csrf)) == 1
 }
 
 func (s *server) serveServices(w http.ResponseWriter, r *http.Request) {
-	if !s.authed(r) {
+	if _, ok := s.authed(r); !ok {
 		writeErr(w, http.StatusForbidden, "session", "Sign in")
 		return
 	}
@@ -217,11 +258,12 @@ func (s *server) serveServices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) serveToggle(w http.ResponseWriter, r *http.Request, id string, start bool) {
-	if !s.authed(r) {
+	sess, ok := s.authed(r)
+	if !ok {
 		writeErr(w, http.StatusForbidden, "session", "Sign in")
 		return
 	}
-	if !csrfOK(r) {
+	if !csrfOK(r, sess) {
 		writeErr(w, http.StatusForbidden, "csrf", "Bad CSRF token")
 		return
 	}
@@ -284,7 +326,7 @@ func (s *server) publish(name, data string) {
 	ev := sseEvent{ID: s.seq, Name: name, Data: data}
 	subs := s.enqueueLocked(ev)
 	s.mu.Unlock()
-	deliver(subs, ev)
+	s.deliver(subs, ev)
 }
 
 func (s *server) publishLog(text string) {
@@ -299,7 +341,7 @@ func (s *server) publishLog(text string) {
 	ev := sseEvent{ID: id, Name: "log", Data: string(data)}
 	subs := s.enqueueLocked(ev)
 	s.mu.Unlock()
-	deliver(subs, ev)
+	s.deliver(subs, ev)
 }
 
 func (s *server) enqueueLocked(ev sseEvent) []chan sseEvent {
@@ -314,9 +356,32 @@ func (s *server) enqueueLocked(ev sseEvent) []chan sseEvent {
 	return subs
 }
 
-func deliver(subs []chan sseEvent, ev sseEvent) {
+func (s *server) deliver(subs []chan sseEvent, ev sseEvent) {
 	for _, ch := range subs {
-		ch <- ev
+		s.mu.Lock()
+		st := s.subs[ch]
+		s.mu.Unlock()
+		if st == nil {
+			continue
+		}
+		st.mu.Lock()
+		if st.dead {
+			st.mu.Unlock()
+			continue
+		}
+		select {
+		case ch <- ev:
+			st.mu.Unlock()
+		default:
+			st.dead = true
+			st.mu.Unlock()
+			s.mu.Lock()
+			if s.subs[ch] == st {
+				delete(s.subs, ch)
+				close(ch)
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -324,7 +389,7 @@ func (s *server) listen(last int) (chan sseEvent, []sseEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ch := make(chan sseEvent, 64)
-	s.subs[ch] = struct{}{}
+	s.subs[ch] = &subState{}
 	var replay []sseEvent
 	for _, ev := range s.buf {
 		if ev.ID > last {
@@ -341,7 +406,7 @@ func (s *server) drop(ch chan sseEvent) {
 }
 
 func (s *server) serveEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.authed(r) {
+	if _, ok := s.authed(r); !ok {
 		writeErr(w, http.StatusForbidden, "session", "Sign in")
 		return
 	}
@@ -367,7 +432,10 @@ func (s *server) serveEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case ev := <-ch:
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
 			writeSSE(w, ev)
 			fl.Flush()
 		}
@@ -426,11 +494,17 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, rel string) b
 }
 
 func (s *server) open(rel string) (*os.File, os.FileInfo, error) {
+	if strings.Contains(rel, `\`) || strings.Contains(rel, ":") {
+		return nil, nil, os.ErrNotExist
+	}
 	rel = path.Clean(rel)
 	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
 		return nil, nil, os.ErrNotExist
 	}
 	full := filepath.Join(s.dist, filepath.FromSlash(rel))
+	if out, err := filepath.Rel(s.dist, full); err != nil || out == ".." || strings.HasPrefix(out, ".."+string(filepath.Separator)) {
+		return nil, nil, os.ErrNotExist
+	}
 	f, err := os.Open(full)
 	if err != nil {
 		return nil, nil, err

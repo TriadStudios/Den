@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -30,21 +31,37 @@ func TestLogin(t *testing.T) {
 		t.Fatalf("wrong password set cookies: %v", bad.Header().Get("Set-Cookie"))
 	}
 
-	tok, session, csrf, rec := s.login(t)
+	tok, session, rec := s.login(t)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login status %d body %s", rec.Code, rec.Body.Bytes())
 	}
-	if tok == "" || session == nil || csrf == nil {
-		t.Fatalf("login tok %q session %v csrf %v", tok, session, csrf)
+	if tok == "" || session == nil {
+		t.Fatalf("login tok %q session %v", tok, session)
 	}
-	if session.Value != tok || csrf.Value != tok {
-		t.Fatalf("cookie values session %q csrf %q tok %q", session.Value, csrf.Value, tok)
+	if session.Value == tok {
+		t.Fatalf("body csrf equals the session cookie %q", tok)
 	}
 	if !session.HttpOnly || session.SameSite != http.SameSiteLaxMode || session.Path != "/" {
 		t.Fatalf("session cookie %+v", session)
 	}
-	if csrf.HttpOnly || csrf.SameSite != http.SameSiteLaxMode || csrf.Path != "/" {
-		t.Fatalf("csrf cookie %+v", csrf)
+	if session.MaxAge != 12*3600 {
+		t.Fatalf("session MaxAge %d", session.MaxAge)
+	}
+	if session.Secure {
+		t.Fatalf("session Secure on plain HTTP: %+v", session)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "csrf" {
+			t.Fatalf("csrf cookie set: %+v", c)
+		}
+	}
+	if len(tok) != 64 {
+		t.Fatalf("csrf len %d %q", len(tok), tok)
+	}
+	for _, c := range tok {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			t.Fatalf("csrf is not hex: %q", tok)
+		}
 	}
 	var body struct {
 		CSRF string `json:"csrf"`
@@ -59,7 +76,7 @@ func TestLogin(t *testing.T) {
 
 func TestServices(t *testing.T) {
 	s := newServer(t)
-	no := s.get(t, "/api/services", nil, nil)
+	no := s.get(t, "/api/services", nil)
 	if no.Code != http.StatusForbidden {
 		t.Fatalf("no session status %d", no.Code)
 	}
@@ -68,8 +85,8 @@ func TestServices(t *testing.T) {
 		t.Fatalf("no session code %q", code)
 	}
 
-	_, session, csrf, _ := s.login(t)
-	rec := s.get(t, "/api/services", session, csrf)
+	_, session, _ := s.login(t)
+	rec := s.get(t, "/api/services", session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status %d body %s", rec.Code, rec.Body.Bytes())
 	}
@@ -87,9 +104,9 @@ func TestServices(t *testing.T) {
 
 func TestStartStop(t *testing.T) {
 	s := newServer(t)
-	_, session, csrf, _ := s.login(t)
+	csrf, session, _ := s.login(t)
 
-	noHeader := s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf, "")
+	noHeader := s.call(t, http.MethodPost, "/api/services/web/start", "", session, "")
 	if noHeader.Code != http.StatusForbidden {
 		t.Fatalf("no csrf status %d", noHeader.Code)
 	}
@@ -97,7 +114,7 @@ func TestStartStop(t *testing.T) {
 	if code != "csrf" {
 		t.Fatalf("no csrf code %q", code)
 	}
-	mismatch := s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf, "other")
+	mismatch := s.call(t, http.MethodPost, "/api/services/web/start", "", session, "other")
 	if mismatch.Code != http.StatusForbidden {
 		t.Fatalf("bad csrf status %d", mismatch.Code)
 	}
@@ -105,7 +122,7 @@ func TestStartStop(t *testing.T) {
 		t.Fatalf("bad csrf code %q", code)
 	}
 
-	ok := s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf, csrf.Value)
+	ok := s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf)
 	if ok.Code != http.StatusOK {
 		t.Fatalf("start status %d body %s", ok.Code, ok.Body.Bytes())
 	}
@@ -116,7 +133,7 @@ func TestStartStop(t *testing.T) {
 		t.Fatalf("start body %s", ok.Body.Bytes())
 	}
 
-	again := s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf, csrf.Value)
+	again := s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf)
 	if again.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("second start status %d body %s", again.Code, again.Body.Bytes())
 	}
@@ -125,11 +142,11 @@ func TestStartStop(t *testing.T) {
 		t.Fatalf("second start %q %q", code, msg)
 	}
 
-	stopped := s.call(t, http.MethodPost, "/api/services/web/stop", "", session, csrf, csrf.Value)
+	stopped := s.call(t, http.MethodPost, "/api/services/web/stop", "", session, csrf)
 	if stopped.Code != http.StatusOK {
 		t.Fatalf("stop status %d body %s", stopped.Code, stopped.Body.Bytes())
 	}
-	list := s.get(t, "/api/services", session, csrf)
+	list := s.get(t, "/api/services", session)
 	var services []service
 	if err := json.Unmarshal(list.Body.Bytes(), &services); err != nil {
 		t.Fatal(err)
@@ -138,7 +155,7 @@ func TestStartStop(t *testing.T) {
 		t.Fatalf("web still running: %+v", services)
 	}
 
-	missing := s.call(t, http.MethodPost, "/api/services/nope/start", "", session, csrf, csrf.Value)
+	missing := s.call(t, http.MethodPost, "/api/services/nope/start", "", session, csrf)
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("unknown id status %d", missing.Code)
 	}
@@ -155,10 +172,10 @@ func TestEventsReplay(t *testing.T) {
 		t.Fatalf("no session code %q body %s", code, no.Body.Bytes())
 	}
 
-	_, session, csrf, _ := s.login(t)
+	csrf, session, _ := s.login(t)
 	w, stop := s.stream(t, "", session)
 	defer stop()
-	s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf, csrf.Value)
+	s.call(t, http.MethodPost, "/api/services/web/start", "", session, csrf)
 	got := waitEvents(t, w, 2)
 	if len(got) != 2 || got[0].Event != "state" || got[1].Event != "log" {
 		t.Fatalf("after start: %+v", got)
@@ -183,7 +200,7 @@ func TestEventsReplay(t *testing.T) {
 	last := got[1].ID
 	stop()
 
-	s.call(t, http.MethodPost, "/api/services/web/stop", "", session, csrf, csrf.Value)
+	s.call(t, http.MethodPost, "/api/services/web/stop", "", session, csrf)
 	w2, stop2 := s.stream(t, strconv.Itoa(last), session)
 	defer stop2()
 	next := waitEvents(t, w2, 2)
@@ -208,7 +225,7 @@ func TestEventsReplay(t *testing.T) {
 
 func TestEventCap(t *testing.T) {
 	s := newServer(t)
-	_, session, csrf, _ := s.login(t)
+	csrf, session, _ := s.login(t)
 	// 60 successful start/stop pairs would be 120, but 30 pairs is 60
 	// toggles and 120 events: state then log each time.
 	const toggles = 60
@@ -217,7 +234,7 @@ func TestEventCap(t *testing.T) {
 		if i%2 == 1 {
 			op = "stop"
 		}
-		rec := s.call(t, http.MethodPost, "/api/services/web/"+op, "", session, csrf, csrf.Value)
+		rec := s.call(t, http.MethodPost, "/api/services/web/"+op, "", session, csrf)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("toggle %d status %d body %s", i, rec.Code, rec.Body.Bytes())
 		}
@@ -303,6 +320,188 @@ func TestPages(t *testing.T) {
 	}
 }
 
+func TestEventsAfterSignIn(t *testing.T) {
+	b, err := os.ReadFile("app.den")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := strings.ReplaceAll(string(b), "\r\n", "\n")
+	board := strings.Index(src, "component Board")
+	app := strings.Index(src, "component App")
+	ev := strings.Index(src, "events(")
+	if strings.Count(src, "events(") != 1 || board < 0 || ev < 0 || app < 0 || !(board < ev && ev < app) {
+		t.Fatalf("events( must sit once between component Board and component App (board %d events %d app %d count %d)", board, ev, app, strings.Count(src, "events("))
+	}
+}
+
+func TestLoginSecure(t *testing.T) {
+	s := newServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	req.Host = "example.com"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://example.com")
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			session = c
+		}
+		if c.Name == "csrf" {
+			t.Fatalf("csrf cookie set: %+v", c)
+		}
+	}
+	if session == nil || !session.Secure || !session.HttpOnly {
+		t.Fatalf("session %+v", session)
+	}
+}
+
+func TestSessionExpiry(t *testing.T) {
+	s := newServer(t)
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	now = func() time.Time { return base }
+	t.Cleanup(func() { now = time.Now })
+	_, session, _ := s.login(t)
+	now = func() time.Time { return base.Add(12*time.Hour + time.Second) }
+	rec := s.get(t, "/api/services", session)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	if code, _ := errCode(t, rec); code != "session" {
+		t.Fatalf("code %q", code)
+	}
+}
+
+func TestLoginOriginAndType(t *testing.T) {
+	s := newServer(t)
+	plain := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	plain.Header.Set("Content-Type", "text/plain")
+	plain.Header.Set("Origin", "http://example.com")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, plain)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	if code, _ := errCode(t, rec); code != "content_type" {
+		t.Fatalf("text/plain code %q", code)
+	}
+
+	noOrigin := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	noOrigin.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, noOrigin)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing origin status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	if code, _ := errCode(t, rec); code != "origin" {
+		t.Fatalf("missing origin code %q", code)
+	}
+
+	badOrigin := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	badOrigin.Header.Set("Content-Type", "application/json")
+	badOrigin.Header.Set("Origin", "http://evil.example")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, badOrigin)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong origin status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+	if code, _ := errCode(t, rec); code != "origin" {
+		t.Fatalf("wrong origin code %q", code)
+	}
+
+	charset := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"password":"`+demoPassword+`"}`))
+	charset.Header.Set("Content-Type", "application/json; charset=utf-8")
+	charset.Header.Set("Origin", "http://example.com")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, charset)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("charset status %d body %s", rec.Code, rec.Body.Bytes())
+	}
+}
+
+func TestOpenTraversal(t *testing.T) {
+	dir := t.TempDir()
+	dist := filepath.Join(dir, "dist")
+	if err := os.Mkdir(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newHandler(dist).(*server)
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/..%5c..%5csecret.txt", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("backslash URL status %d body %q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "SECRET") {
+		t.Fatalf("body leaked SECRET: %q", rec.Body.String())
+	}
+	if _, _, err := s.open(`..\..\secret.txt`); err == nil {
+		t.Fatal("open with a backslash succeeded")
+	}
+	if _, _, err := s.open("a:b"); err == nil {
+		t.Fatal("open with a colon succeeded")
+	}
+	ok := httptest.NewRecorder()
+	s.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/index.html", nil))
+	if ok.Code != http.StatusOK || ok.Body.String() != "OK" {
+		t.Fatalf("index status %d body %q", ok.Code, ok.Body.String())
+	}
+}
+
+func TestStalledSubscriber(t *testing.T) {
+	s := newServer(t)
+	stuck, _ := s.listen(0)
+	live, _ := s.listen(0)
+	for i := 0; i < 64; i++ {
+		s.publishLog("x")
+	}
+	for i := 0; i < 64; i++ {
+		select {
+		case <-live:
+		case <-time.After(time.Second):
+			t.Fatalf("reader missed event %d", i)
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		s.publishLog("last")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("65th publishLog blocked")
+	}
+	s.mu.Lock()
+	_, stuckOK := s.subs[stuck]
+	_, liveOK := s.subs[live]
+	s.mu.Unlock()
+	if stuckOK {
+		t.Fatal("stalled channel still subscribed")
+	}
+	if !liveOK {
+		t.Fatal("reader was dropped")
+	}
+	select {
+	case ev := <-live:
+		if ev.Name != "log" {
+			t.Fatalf("reader event %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reader missed the event after the stall")
+	}
+}
+
 type apiServer struct{ *server }
 
 func newServer(t *testing.T) *apiServer {
@@ -313,26 +512,27 @@ func newServer(t *testing.T) *apiServer {
 
 func (s *apiServer) post(t *testing.T, target, body string, session *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
-	return s.call(t, http.MethodPost, target, body, session, nil, "")
+	return s.call(t, http.MethodPost, target, body, session, "")
 }
 
-func (s *apiServer) get(t *testing.T, target string, session, csrf *http.Cookie) *httptest.ResponseRecorder {
+func (s *apiServer) get(t *testing.T, target string, session *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
-	return s.call(t, http.MethodGet, target, "", session, csrf, "")
+	return s.call(t, http.MethodGet, target, "", session, "")
 }
 
-func (s *apiServer) call(t *testing.T, method, target, body string, session, csrf *http.Cookie, csrfHeader string) *httptest.ResponseRecorder {
+func (s *apiServer) call(t *testing.T, method, target, body string, session *http.Cookie, csrfHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	var r io.Reader
 	if body != "" {
 		r = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, target, r)
+	req.Header.Set("Origin", "http://example.com")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if session != nil {
 		req.AddCookie(session)
-	}
-	if csrf != nil {
-		req.AddCookie(csrf)
 	}
 	if csrfHeader != "" {
 		req.Header.Set("X-CSRF", csrfHeader)
@@ -342,7 +542,7 @@ func (s *apiServer) call(t *testing.T, method, target, body string, session, csr
 	return rec
 }
 
-func (s *apiServer) login(t *testing.T) (string, *http.Cookie, *http.Cookie, *httptest.ResponseRecorder) {
+func (s *apiServer) login(t *testing.T) (string, *http.Cookie, *httptest.ResponseRecorder) {
 	t.Helper()
 	rec := s.post(t, "/api/login", `{"password":"`+demoPassword+`"}`, nil)
 	if rec.Code != http.StatusOK {
@@ -354,19 +554,19 @@ func (s *apiServer) login(t *testing.T) (string, *http.Cookie, *http.Cookie, *ht
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	var session, csrf *http.Cookie
+	var session *http.Cookie
 	for _, c := range rec.Result().Cookies() {
 		switch c.Name {
 		case "session":
 			session = c
 		case "csrf":
-			csrf = c
+			t.Fatalf("csrf cookie set: %+v", c)
 		}
 	}
-	if session == nil || csrf == nil || body.CSRF == "" {
-		t.Fatalf("login cookies session %v csrf %v body %q", session, csrf, body.CSRF)
+	if session == nil || body.CSRF == "" {
+		t.Fatalf("login session %v body %q", session, body.CSRF)
 	}
-	return body.CSRF, session, csrf, rec
+	return body.CSRF, session, rec
 }
 
 func errCode(t *testing.T, rec *httptest.ResponseRecorder) (string, string) {

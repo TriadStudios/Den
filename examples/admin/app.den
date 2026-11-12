@@ -4,7 +4,8 @@ import (
 )
 
 // A board for two services on this origin: a session cookie, an X-CSRF
-// header on writes, and a state/log event stream.
+// header on writes, and a state/log event stream. The stream is opened
+// only after sign-in, from Board, because a 403 is not retried for us.
 
 type Service struct {
 	ID      string `json:"id"`
@@ -30,17 +31,9 @@ type Session struct {
 	CSRF string `json:"csrf"`
 }
 
-component App() {
-	pass := field("", nil)
-	note := field("", nil)
-	board := signal(false)
-	login := action(sendJSON[Cred, Session]("POST", "/api/login"))
+component Board(token string) {
+	_ = http.SetHeader("X-CSRF", token)
 	list := resource(fetchJSON[[]Service]("/api/services"))
-	login.Then(func(t Session) {
-		_ = http.SetHeader("X-CSRF", t.CSRF)
-		board.Set(true)
-		list.Reload()
-	})
 	startURL := signal("/api/services/web/start")
 	stopURL := signal("/api/services/web/stop")
 	start := action(sendJSON[struct{}, struct{}]("POST", startURL.Get()))
@@ -48,6 +41,7 @@ component App() {
 	start.Then(func(_ struct{}) { list.Reload() })
 	stop.Then(func(_ struct{}) { list.Reload() })
 	logs := signal([]Log{})
+	note := field("", nil)
 	live := events("/api/events")
 	on[State](live, "state", func(s State) {
 		if s.Error != "" {
@@ -60,6 +54,56 @@ component App() {
 			xs = xs[len(xs)-20:]
 		}
 		logs.Set(xs)
+	})
+	<div>
+		<p>{if live.Connected() {Connected} else {Off}}</p>
+		{if list.Err() != nil && !list.Loading() {
+			<p>{http.Status(list.Err())} {http.Message(list.Err())}</p>
+		}}
+		<ul>
+			{for _, s := range list.Data() key s.ID {
+				<li>
+					{s.Name}
+					{if s.Running {running} else {stopped}}
+					<button
+						type="button"
+						onclick={startURL.Set("/api/services/" + s.ID + "/start"); start.Do()}>
+						Start
+					</button>
+					<button
+						type="button"
+						onclick={stopURL.Set("/api/services/" + s.ID + "/stop"); stop.Do()}>
+						Stop
+					</button>
+				</li>
+			}}
+		</ul>
+		{if start.Err() != nil {
+			<p>{http.Status(start.Err())} {http.Message(start.Err())}</p>
+		}}
+		{if stop.Err() != nil {
+			<p>{http.Status(stop.Err())} {http.Message(stop.Err())}</p>
+		}}
+		<input bind={note} placeholder="Note" />
+		{if note.Error() != nil {
+			<p>{note.Error().Error()}</p>
+		}}
+		<ul>
+			{for _, row := range logs.Get() key row.ID {
+				<li>{row.Text}</li>
+			}}
+		</ul>
+	</div>
+}
+
+component App() {
+	pass := field("", nil)
+	board := signal(false)
+	tok := signal("")
+	login := action(sendJSON[Cred, Session]("POST", "/api/login"))
+	login.Then(func(t Session) {
+		tok.Set(t.CSRF)
+		board.Set(true)
 	})
 	<main>
 		<h1>Admin</h1>
@@ -74,45 +118,7 @@ component App() {
 				}}
 			</div>
 		} else {
-			<div>
-				<p>{if live.Connected() {Connected} else {Off}}</p>
-				{if list.Err() != nil && !list.Loading() {
-					<p>{http.Status(list.Err())} {http.Message(list.Err())}</p>
-				}}
-				<ul>
-					{for _, s := range list.Data() key s.ID {
-						<li>
-							{s.Name}
-							{if s.Running {running} else {stopped}}
-							<button
-								type="button"
-								onclick={startURL.Set("/api/services/" + s.ID + "/start"); start.Do()}>
-								Start
-							</button>
-							<button
-								type="button"
-								onclick={stopURL.Set("/api/services/" + s.ID + "/stop"); stop.Do()}>
-								Stop
-							</button>
-						</li>
-					}}
-				</ul>
-				{if start.Err() != nil {
-					<p>{http.Status(start.Err())} {http.Message(start.Err())}</p>
-				}}
-				{if stop.Err() != nil {
-					<p>{http.Status(stop.Err())} {http.Message(stop.Err())}</p>
-				}}
-				<input bind={note} placeholder="Note" />
-				{if note.Error() != nil {
-					<p>{note.Error().Error()}</p>
-				}}
-				<ul>
-					{for _, row := range logs.Get() key row.ID {
-						<li>{row.Text}</li>
-					}}
-				</ul>
-			</div>
+			<Board token={tok.Get()} />
 		}}
 	</main>
 }
